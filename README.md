@@ -2,7 +2,7 @@
 
 Kael is a Go library for building LLM agents. Give an agent a system prompt, some tools, and optionally a messenger to talk over, a memory store, and identities to act as on external systems, and Kael handles the rest: the tool-calling loop, running scheduled workflows, and delegating tasks between agents.
 
-This repo is just the platform: the agent loop, the messaging/memory/identity interfaces, and an OpenAI-compatible LLM client. It ships no bot integrations and no example business logic beyond `examples/` — you bring your own agents, messengers, and tools by importing this module.
+This repo is just the platform: the agent loop, the messaging/memory/identity interfaces, Slack and Telegram messenger implementations, and an OpenAI-compatible LLM client. It ships no `Identity` implementations and no example business logic beyond `examples/` — you bring your own agents, tools, and identities by importing this module.
 
 ## Install
 
@@ -57,7 +57,7 @@ A workflow, wherever it's triggered from, runs the same way: a *fresh* transcrip
 
 ## Talking to the outside world
 
-`messaging.Messenger` is the interface a platform adapter implements — `Send`, `Listen`, `Platform`, `DefaultConversation`. This module ships no implementations of it; wire up your own (Telegram, Slack, a CLI, whatever) against that interface and pass it to `AddMessenger`. An agent only gets `send_message` in its toolset once something's actually been registered — no messenger, no tool, rather than a tool that's guaranteed to fail the moment it's called.
+`messaging.Messenger` is the interface a platform adapter implements — `Send`, `Listen`, `Platform`, `DefaultConversation`. This module ships Slack and Telegram implementations (`messaging/slack.go`, `messaging/telegram.go`); wire up additional ones (a CLI, Discord, whatever) against the same interface and pass them to `AddMessenger`. An agent only gets `send_message` in its toolset once something's actually been registered — no messenger, no tool, rather than a tool that's guaranteed to fail the moment it's called.
 
 `ConversationRef{Platform, ChatID}` is how a reply gets routed back to the right place; `messaging.WithConversation`/`ConversationFromContext` thread the active one through `ctx` so a tool handler built with no knowledge of any specific conversation (or even of its own agent, in a workflow's case) can still find out where to reply.
 
@@ -128,7 +128,7 @@ openai.NewClient(model string, enableReasoning bool) llm.LLM
 ```text
 agent/       the loop, RunLoop, runDelegatedTask, workflows-as-tools, delegation, built-in send_message/end_loop
 runtime/     agent registry, shared event bus, Launch
-messaging/   Messenger interface, ConversationRef, ctx helpers — no implementations
+messaging/   Messenger interface, ConversationRef, ctx helpers, Slack and Telegram implementations
 identity/    Identity interface, ctx helpers — no implementations
 memory/      Memory interface, InMemoryHistory, FileHistory
 workflow/    Workflow struct
@@ -142,7 +142,7 @@ examples/    a runnable two-agent example (examples/basic) and a delegation-only
 
 ## What isn't finished
 
-- **Cron doesn't actually fire workflows.** `Agent.Start` schedules the job and logs when it triggers, but the scheduled task only publishes an event — it never runs the loop. A workflow only executes today when something (a user, or the model's own reasoning) invokes it as a tool mid-conversation.
+- **Cron doesn't actually fire workflows.** `Agent.Start` schedules the job and logs when it triggers, but the scheduled task only publishes an event — it never runs the loop. A cron-triggered workflow only executes today when something (a user, or the model's own reasoning) invokes it as a tool mid-conversation. Webhook triggers don't have this problem — `Agent.HandleWebhookEvent(ctx, eventKey, userTrigger)` runs the matching workflow directly; wire it to whatever's receiving the actual HTTP webhook.
 - **One channel, one agent.** An agent needs its own `Messenger` instance to be reachable directly — there's no router letting several agents share one channel with a human choosing between them.
 - `Runtime.Launch` starts agents fire-and-forget, no coordinated shutdown.
 - No test coverage yet for the loop's guard rails (repeat-blocking, tool-less nudge, runaway-batch cap) — these have been manually verified during development but aren't pinned down by tests.
