@@ -20,8 +20,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/go-co-op/gocron/v2"
+	"github.com/robfig/cron/v3"
 )
 
 type LLMStatus string
@@ -571,6 +573,46 @@ type EventPublisher interface {
 	PublishEvent(eventType, agentName, workflow, message string, err error, data map[string]interface{})
 }
 
+// missedCronLookback bounds how far back warnIfCronRunLikelyMissed searches
+// for cronExpr's most recent past occurrence — 8 days comfortably covers
+// even a weekly schedule (the least frequent trigger any workflow here
+// actually uses) with margin to spare.
+const missedCronLookback = 8 * 24 * time.Hour
+
+// missedCronWindow is how close to "now" that most recent past occurrence
+// can be before it's treated as a likely-skipped run.
+const missedCronWindow = 15 * time.Minute
+
+// warnIfCronRunLikelyMissed logs a warning when cronExpr's most recent past
+// occurrence fell within missedCronWindow of the moment this workflow is
+// being (re-)registered. gocron only ever schedules the *next* occurrence
+// forward from whenever a process starts — it has no memory of whether a
+// run it should have fired actually happened, so a restart (redeploy,
+// crash) landing close enough to a trigger time silently drops that run
+// with nothing else anywhere logging it. This can't distinguish "genuinely
+// skipped" from "fired moments ago under the previous process and this is a
+// coincidental restart" — it's a heads-up to go check, not a certainty.
+func warnIfCronRunLikelyMissed(agentName, workflowName, cronExpr string) {
+	sched, err := cron.ParseStandard(cronExpr)
+	if err != nil {
+		return // cronExpr's own validity is checked separately, at actual schedule time
+	}
+
+	now := time.Now()
+	last := now.Add(-missedCronLookback)
+	for {
+		next := sched.Next(last)
+		if next.After(now) {
+			break
+		}
+		last = next
+	}
+
+	if gap := now.Sub(last); gap < missedCronWindow {
+		log.Printf("⚠️%s: workflow %q's cron schedule (%s) was due at %s, %s before this process started — if that run didn't actually happen, it was likely skipped by a restart landing right on the trigger time", agentName, workflowName, cronExpr, last.Format(time.RFC3339), gap.Round(time.Second))
+	}
+}
+
 func (a *Agent) Start(ctx context.Context) error {
 
 	if a.inBox != nil {
@@ -600,6 +642,7 @@ func (a *Agent) Start(ctx context.Context) error {
 				log.Printf("⚠️%s: workflow %q has CronTriggerType but Value isn't a string (got %T) — skipping", a.Name, wf.Name, wf.Trigger.Value)
 				continue
 			}
+			warnIfCronRunLikelyMissed(a.Name, wf.Name, cronExpr)
 			s, _ := gocron.NewScheduler()
 			cronJob := gocron.CronJob(cronExpr, false)
 			task := gocron.NewTask(func() {
