@@ -917,7 +917,39 @@ func (a *Agent) workflowToolSpecs(includeUserReply bool) []*tools.ToolSpec {
 // a timer, no model involved in the decision to run it at all), so both
 // paths behave identically once a run actually starts: same system prompt
 // assembly, same toolset rules, same iteration cap resolution.
+// delegationDepthKey is the ctx key a hop count is carried under — see
+// incrementDelegationDepth.
+type delegationDepthKey struct{}
+
+// maxDelegationDepth bounds how many delegate/workflow hops a single call
+// chain can take before it's rejected outright. Not a tight bound: a
+// legitimate chain (conversation → delegate → target's own workflow →
+// delegate again) is already 4 hops without anything unusual happening, so
+// this exists to catch a genuinely circular configuration — e.g. Agent A's
+// AllowDelegation workflow delegating to Agent B, whose own AllowDelegation
+// workflow delegates back to Agent A — failing loudly within a few hops
+// rather than after dozens of nested, expensive LLM loops.
+const maxDelegationDepth = 4
+
+// incrementDelegationDepth reads the current hop count off ctx (0 if unset),
+// returns a context carrying count+1, and reports whether the NEW count is
+// still within maxDelegationDepth. Called at the top of both runWorkflow and
+// runDelegatedTask — the only two entry points that can lead to another
+// delegate/workflow hop.
+func incrementDelegationDepth(ctx context.Context) (context.Context, int, bool) {
+	depth, _ := ctx.Value(delegationDepthKey{}).(int)
+	depth++
+	return context.WithValue(ctx, delegationDepthKey{}, depth), depth, depth <= maxDelegationDepth
+}
+
 func (a *Agent) runWorkflow(ctx context.Context, wf *workflow.Workflow, includeUserReply bool, userTrigger string) (*LoopResult, error) {
+	var depth int
+	var withinLimit bool
+	ctx, depth, withinLimit = incrementDelegationDepth(ctx)
+	if !withinLimit {
+		return nil, fmt.Errorf("workflow %q: delegation depth exceeded (%d > %d) — likely a delegation cycle across workflows", wf.Name, depth, maxDelegationDepth)
+	}
+
 	messages := []llm.Message{
 		{Role: "system", Content: wf.SystemPrompt + " " + loopProtocolInstructions},
 		{Role: "user", Content: userTrigger},
@@ -927,6 +959,9 @@ func (a *Agent) runWorkflow(ctx context.Context, wf *workflow.Workflow, includeU
 		base = a.baseTools()
 	}
 	toolset := mergeTools(base, toolMapValues(wf.Tools))
+	if wf.AllowDelegation {
+		toolset = mergeTools(toolset, a.delegateToolSpecs())
+	}
 	toolset = filterToolsForPlatform(toolset, a.resolvePlatform(ctx))
 
 	maxIter := wf.Iteration
@@ -940,8 +975,10 @@ func (a *Agent) runWorkflow(ctx context.Context, wf *workflow.Workflow, includeU
 // workflowToolSpec wraps a single workflow as a tool. Invoking it runs a
 // nested loop (via runWorkflow) scoped to that workflow's own system
 // prompt and tools (plus the agent's own tools, and send_message too when
-// includeUserReply is true) — one level of nesting only, a workflow never
-// sees other workflows as tools, to keep this from ever recursing.
+// includeUserReply is true), plus delegate_to_<sibling> tools when
+// wf.AllowDelegation is set — off by default, so most workflows still see
+// only their own tools, and runWorkflow's depth guard bounds how far any
+// resulting delegation chain can actually go.
 func (a *Agent) workflowToolSpec(wf *workflow.Workflow, includeUserReply bool) *tools.ToolSpec {
 	return tools.NewToolBuilder(wf.ID, wf.Description).
 		Parameter("context", "string", "Any extra detail from the user's message relevant to this workflow (optional).", false).
@@ -1044,6 +1081,13 @@ func (a *Agent) delegateToolSpec(target *Agent) *tools.ToolSpec {
 //     no further delegation, preventing a cycle) — because this method
 //     simply never calls the functions that would add them.
 func (a *Agent) runDelegatedTask(ctx context.Context, task string) (*LoopResult, error) {
+	var depth int
+	var withinLimit bool
+	ctx, depth, withinLimit = incrementDelegationDepth(ctx)
+	if !withinLimit {
+		return nil, fmt.Errorf("%s: delegation depth exceeded (%d > %d) — likely a delegation cycle across workflows", a.Name, depth, maxDelegationDepth)
+	}
+
 	systemContent := a.systemPrompt() +
 		"\n\nThis task was delegated to you by another agent, not requested directly by a human. There is no user to message directly — answer only through end_loop's final_message; it is relayed back to the delegating agent automatically."
 

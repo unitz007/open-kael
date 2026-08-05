@@ -18,4 +18,13 @@ type Workflow struct {
 	SystemPrompt string                     `json:"system_prompt"`
 	Trigger      triggers.Trigger           `json:"trigger"`
 	Tools        map[string]*tools.ToolSpec `json:"tools"`
+	// AllowDelegation opts this specific workflow into having
+	// delegate_to_<sibling> tools in its nested toolset — off by default.
+	// A workflow is meant to be a bounded, single-purpose loop; turn this
+	// on only for one whose entire job is deciding what to hand off to
+	// which agent (e.g. an issue-triage workflow). Agent.runWorkflow
+	// enforces a hard depth cap regardless, so a misconfigured delegation
+	// cycle across multiple agents' workflows fails loudly rather than
+	// recursing forever.
+	AllowDelegation bool `json:"allow_delegation"`
 }
