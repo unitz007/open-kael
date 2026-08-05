@@ -1,0 +1,32 @@
+# Binaries
+*.exe
+*.dll
+*.so
+*.dylib
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Go specific
+bin/
+pkg/
+cover.out
+
+# Build outputs
+*.out
+
+# Environment files
+.env
+
+# Log files
+*.log
+
+# Local test-generated agent memory artifacts
+agent/data/
