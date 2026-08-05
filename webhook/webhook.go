@@ -25,11 +25,14 @@ type Source interface {
 	// isn't hardcoded to one convention.
 	Verify(body []byte, header http.Header) bool
 	// Decode turns an already-verified body into the trigger text handed
-	// to the matched workflow. ok=false means "verified, but nothing to do
-	// here" — a bot-loop guard, a trust filter, an event subtype this
-	// source doesn't react to — and the caller acks 200 without running
-	// anything. err != nil means the body genuinely couldn't be parsed.
-	Decode(body []byte) (userTrigger string, ok bool, err error)
+	// to the matched workflow. header is the original request's headers —
+	// some senders (GitHub's X-GitHub-Event) distinguish event types by
+	// header, not just body content, so Decode needs both. ok=false means
+	// "verified, but nothing to do here" — a bot-loop guard, a trust
+	// filter, an event subtype this source doesn't react to — and the
+	// caller acks 200 without running anything. err != nil means the body
+	// genuinely couldn't be parsed.
+	Decode(body []byte, header http.Header) (userTrigger string, ok bool, err error)
 }
 
 // VerifyHMACSHA256 is the shared building block most Source implementations

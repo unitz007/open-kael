@@ -656,7 +656,7 @@ func (a *Agent) registerWebhook(wf *workflow.Workflow, src webhook.Source) {
 			return
 		}
 
-		userTrigger, ok, err := src.Decode(body)
+		userTrigger, ok, err := src.Decode(body, r.Header)
 		if err != nil {
 			http.Error(w, "bad payload", http.StatusBadRequest)
 			return
