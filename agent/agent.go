@@ -431,23 +431,50 @@ func newAgentMemory(id string) Memory {
 	return fh
 }
 
-// baseTools returns this agent's own tools, plus send_message — but only
-// once a messenger is actually registered (AddMessenger). An agent with no
-// messenger at all (e.g. ResearchSpecialistAgent) has nowhere for
-// send_message to route to, so offering it just invites a
+// baseTools returns this agent's own tools, plus send_message and whatever
+// extra tools each registered messenger contributes via messengerTools —
+// but only once a messenger is actually registered (AddMessenger). An
+// agent with no messenger at all (e.g. ResearchSpecialistAgent) has nowhere
+// for send_message to route to, so offering it just invites a
 // guaranteed-to-fail call ("no messenger registered for platform ...").
 // Computed fresh each call (like workflowToolSpecs/delegateToolSpecs) since
 // AddMessenger can be called any time after NewAgent.
 //
-// Only ever used by RunLoop's real-conversation path (and a workflow
-// running as part of one) — runDelegatedTask deliberately never calls this,
-// so a delegated call's toolset structurally never includes send_message at
-// all, rather than including it and then withholding it via a flag.
+// Used by both RunLoop's real-conversation path (and a workflow running as
+// part of one) and runDelegatedTask — a delegated call routes send_message
+// and any messenger tools through whatever ConversationRef it inherited via
+// ctx from the delegating call, using its own (the delegate's) registered
+// messenger. See messengerTools for the caveat that implies.
 func (a *Agent) baseTools() []*tools.ToolSpec {
 	if len(a.messengers) == 0 {
 		return a.Tools
 	}
-	return append(append([]*tools.ToolSpec{}, a.Tools...), a.sendMessageTool())
+	out := append(append([]*tools.ToolSpec{}, a.Tools...), a.sendMessageTool())
+	return append(out, a.messengerTools()...)
+}
+
+// messengerTools collects whatever extra tools each registered messenger
+// contributes via messaging.ToolProvider (e.g. Slack's
+// add_reaction/search_emoji) — folded into baseTools, and inherited
+// automatically here rather than needing each agent's constructor to
+// AddTool them by hand, the same reasoning send_message itself already
+// follows, just generalized to any Messenger implementation that has more
+// to offer than Send/Listen.
+//
+// Note: a delegated agent's own registered messenger is what actually
+// performs the reaction or send (e.g. its own Slack bot identity), even
+// though the ConversationRef/MessageID came from the delegating agent's
+// inbound message (inherited via ctx) — if that bot isn't a member of the
+// channel the message lives in, the call just fails with a normal tool
+// error, same as any other platform-side rejection.
+func (a *Agent) messengerTools() []*tools.ToolSpec {
+	var out []*tools.ToolSpec
+	for _, m := range a.messengers {
+		if tp, ok := m.(messaging.ToolProvider); ok {
+			out = append(out, tp.Tools()...)
+		}
+	}
+	return out
 }
 
 // sendMessageTool is built into every agent, same as end_loop — always
@@ -1076,10 +1103,11 @@ func (a *Agent) delegateToolSpec(target *Agent) *tools.ToolSpec {
 //   - No memory: a delegated call is a stateless subroutine invocation —
 //     each one starts fresh, with no continuity across separate delegated
 //     calls even within the same outer conversation.
-//   - Its toolset is a.Tools + workflowToolSpecs(false) — never
-//     baseTools() (so never send_message) and never delegateToolSpecs() (so
-//     no further delegation, preventing a cycle) — because this method
-//     simply never calls the functions that would add them.
+//   - Its toolset is baseTools() + workflowToolSpecs(false) — everything a
+//     normal conversational run gets, including send_message and any
+//     messenger tools (add_reaction, ...), routed through whatever
+//     ConversationRef the delegating call inherited via ctx — minus
+//     delegateToolSpecs(), so no further delegation, preventing a cycle.
 func (a *Agent) runDelegatedTask(ctx context.Context, task string) (*LoopResult, error) {
 	var depth int
 	var withinLimit bool
@@ -1089,13 +1117,13 @@ func (a *Agent) runDelegatedTask(ctx context.Context, task string) (*LoopResult,
 	}
 
 	systemContent := a.systemPrompt() +
-		"\n\nThis task was delegated to you by another agent, not requested directly by a human. There is no user to message directly — answer only through end_loop's final_message; it is relayed back to the delegating agent automatically."
+		"\n\nThis task was delegated to you by another agent, not requested directly by a human. Always call end_loop with your final_message when done — it is relayed back to the delegating agent automatically, and is the one guaranteed way your answer gets through. If send_message and/or a reaction tool (e.g. add_reaction) are available, you may also use them on the conversation/message that triggered this delegation, as a direct note to the user alongside your final_message — not a replacement for it."
 
 	messages := []llm.Message{
 		{Role: "system", Content: systemContent},
 		{Role: "user", Content: task},
 	}
-	toolset := mergeTools(a.Tools, a.workflowToolSpecs(false))
+	toolset := mergeTools(a.baseTools(), a.workflowToolSpecs(false))
 	toolset = filterToolsForPlatform(toolset, a.resolvePlatform(ctx))
 
 	result, _, err := a.runLoopFrom(ctx, messages, toolset, a.MaxIterations)

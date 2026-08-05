@@ -1,6 +1,10 @@
 package messaging
 
-import "context"
+import (
+	"context"
+
+	"github.com/unitz007/kael/tools"
+)
 
 // ConversationRef addresses a specific chat/channel/DM on a specific
 // platform — everything Send needs to route a reply to the right place.
@@ -47,6 +51,21 @@ type Messenger interface {
 	// cron-triggered workflow, or anything else with no active conversation
 	// to reply within.
 	DefaultConversation() ConversationRef
+}
+
+// ToolProvider is implemented by a Messenger that offers extra tools beyond
+// the built-in send_message — e.g. Slack's add_reaction/search_emoji, which
+// have no cross-platform equivalent and so don't belong on the Messenger
+// interface itself. Optional: a Messenger that doesn't implement this just
+// contributes send_message, same as before this existed.
+//
+// Agent.baseTools() checks every registered messenger for this and merges
+// in whatever it returns, so any agent with a matching messenger inherits
+// its tools automatically — the same inheritance send_message already gets
+// — rather than each agent's constructor needing to remember to AddTool
+// them by hand.
+type ToolProvider interface {
+	Tools() []*tools.ToolSpec
 }
 
 type conversationCtxKey struct{}
