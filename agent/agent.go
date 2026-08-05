@@ -9,11 +9,14 @@ import (
 	"github.com/unitz007/kael/rag"
 	"github.com/unitz007/kael/tools"
 	"github.com/unitz007/kael/triggers"
+	"github.com/unitz007/kael/webhook"
 	"github.com/unitz007/kael/workflow"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -46,6 +49,7 @@ type Agent struct {
 	human          *human.Human
 	messengers     map[string]messaging.Messenger
 	directory      AgentDirectory
+	webhookMux     *http.ServeMux
 	identities     map[string]identity.Identity
 	retrievers     map[string]rag.Retriever
 	// MaxIterations caps RunLoop and runDelegatedTask's own loops — a
@@ -282,6 +286,12 @@ func (a *Agent) SetEventBus(eventBus EventPublisher) {
 // show up, same as an agent with no workflows gets no workflow tools.
 func (a *Agent) SetDirectory(d AgentDirectory) {
 	a.directory = d
+}
+
+// SetWebhookMux wires the shared HTTP mux (e.g. a Runtime's) that Start
+// registers this agent's webhook-triggered workflows onto.
+func (a *Agent) SetWebhookMux(mux *http.ServeMux) {
+	a.webhookMux = mux
 }
 
 // AddMessenger registers a platform adapter (Telegram, Slack, ...) this
@@ -558,8 +568,13 @@ func (a *Agent) Start(ctx context.Context) error {
 	for _, wf := range workflows {
 		switch wf.Trigger.Type {
 		case triggers.CronTriggerType:
+			cronExpr, ok := wf.Trigger.Value.(string)
+			if !ok {
+				log.Printf("⚠️%s: workflow %q has CronTriggerType but Value isn't a string (got %T) — skipping", a.Name, wf.Name, wf.Trigger.Value)
+				continue
+			}
 			s, _ := gocron.NewScheduler()
-			cronJob := gocron.CronJob(wf.Trigger.Value, false)
+			cronJob := gocron.CronJob(cronExpr, false)
 			task := gocron.NewTask(func() {
 				log.Printf("🧨%s for %s Triggered", wf.Name, a.Name)
 
@@ -593,6 +608,14 @@ func (a *Agent) Start(ctx context.Context) error {
 			}
 
 			s.Start()
+
+		case triggers.WebhookTriggerType:
+			src, ok := wf.Trigger.Value.(webhook.Source)
+			if !ok {
+				log.Printf("⚠️%s: workflow %q has WebhookTriggerType but Value isn't a webhook.Source (got %T) — skipping", a.Name, wf.Name, wf.Trigger.Value)
+				continue
+			}
+			a.registerWebhook(wf, src)
 		}
 	}
 
@@ -603,6 +626,74 @@ func (a *Agent) Start(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// registerWebhook wires a single workflow onto the shared webhook mux at
+// src.Path() — the WebhookTriggerType counterpart to the cron case just
+// above it, same shape: log, publish workflow.triggered, run the workflow,
+// log + publish workflow.completed/workflow.failed. The one real difference
+// is when it fires: cron's task runs on a timer; this runs whenever a
+// verified, decoded HTTP request arrives at src.Path(). a.webhookMux must
+// already be set (via SetWebhookMux, wired by Runtime.RegisterAgent) or this
+// is a no-op — same fail-quiet-and-log stance the cron case takes when
+// gocron isn't available.
+func (a *Agent) registerWebhook(wf *workflow.Workflow, src webhook.Source) {
+	if a.webhookMux == nil {
+		log.Printf("⚠️%s: workflow %q has a webhook trigger but no mux configured — skipping", a.Name, wf.Name)
+		return
+	}
+
+	a.webhookMux.HandleFunc(src.Path(), func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+
+		if !src.Verify(body, r.Header) {
+			log.Printf("webhook %s: signature verification failed", src.Path())
+			http.Error(w, "invalid signature", http.StatusUnauthorized)
+			return
+		}
+
+		userTrigger, ok, err := src.Decode(body)
+		if err != nil {
+			http.Error(w, "bad payload", http.StatusBadRequest)
+			return
+		}
+		if !ok {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		// Async: a webhook delivery typically has its own short timeout,
+		// while a workflow's own loop can run far longer — same reasoning
+		// as every hand-rolled webhook handler this replaces.
+		go func() {
+			log.Printf("🧨%s for %s Triggered", wf.Name, a.Name)
+			if a.eventBus != nil {
+				a.eventBus.PublishEvent("workflow.triggered", a.Name, wf.Name, "Workflow triggered", nil, nil)
+			}
+
+			result, err := a.runWorkflow(context.Background(), wf, true, userTrigger)
+			if err != nil {
+				log.Printf("⚠️%s: webhook-triggered workflow %q failed: %v", a.Name, wf.Name, err)
+				if a.eventBus != nil {
+					a.eventBus.PublishEvent("workflow.failed", a.Name, wf.Name, "Workflow failed", err, nil)
+				}
+				return
+			}
+
+			log.Printf("🧨%s: webhook-triggered workflow %q finished (%s): %s", a.Name, wf.Name, result.Status, result.Content)
+			if a.eventBus != nil {
+				a.eventBus.PublishEvent("workflow.completed", a.Name, wf.Name, fmt.Sprintf("status=%s", result.Status), nil, nil)
+			}
+		}()
+
+		w.WriteHeader(http.StatusOK)
+	})
+
+	log.Printf("%s: webhook workflow %q registered at %s", a.Name, wf.Name, src.Path())
 }
 
 // capabilitiesSummary lists this agent's tools and workflows, one per line,
@@ -844,29 +935,6 @@ func (a *Agent) runWorkflow(ctx context.Context, wf *workflow.Workflow, includeU
 	}
 	result, _, err := a.runLoopFrom(ctx, messages, toolset, maxIter)
 	return result, err
-}
-
-// HandleWebhookEvent is the entry point for a webhook-triggered workflow —
-// the WebhookTriggerType counterpart to Start's cron dispatch. Unlike cron,
-// there's nothing to schedule at Start() time: a webhook-typed workflow is
-// purely reactive, so whatever's receiving the actual HTTP webhook (main.go,
-// typically) calls this directly once it's verified and parsed the event.
-// Runs every matching workflow (by Trigger.Value == eventKey) through the
-// same runWorkflow engine cron uses — same system prompt assembly, same
-// toolset rules, same iteration cap resolution. Synchronous: a caller
-// wrapping this in "go" to avoid blocking an HTTP response (a webhook
-// delivery has to ack fast) is the caller's responsibility, not this
-// method's — it has no opinion on how it's invoked.
-func (a *Agent) HandleWebhookEvent(ctx context.Context, eventKey string, userTrigger string) error {
-	for _, wf := range a.Workflows {
-		if wf.Trigger.Type != triggers.WebhookTriggerType || wf.Trigger.Value != eventKey {
-			continue
-		}
-		if _, err := a.runWorkflow(ctx, wf, true, userTrigger); err != nil {
-			return fmt.Errorf("webhook-triggered workflow %q failed: %w", wf.Name, err)
-		}
-	}
-	return nil
 }
 
 // workflowToolSpec wraps a single workflow as a tool. Invoking it runs a

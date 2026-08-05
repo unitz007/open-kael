@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/http"
 )
 
 // Runtime hosts a set of agents that share a single event bus, and launches
@@ -13,17 +14,29 @@ import (
 type Runtime struct {
 	agentRegistry []*agent.Agent
 	EventBus      *events.EventBus
+	webhookMux    *http.ServeMux
 }
 
 func NewRuntime() *Runtime {
 	return &Runtime{
 		agentRegistry: make([]*agent.Agent, 0),
 		EventBus:      events.NewEventBus(),
+		webhookMux:    http.NewServeMux(),
 	}
 }
 
+// WebhookHandler returns the shared mux every agent's webhook-triggered
+// workflows register onto during Start. Mount this into your own HTTP
+// server (alongside /health or whatever else you need) — Runtime still
+// doesn't own the port, TLS, or any other route, only the routes its
+// agents' workflows actually declare.
+func (r *Runtime) WebhookHandler() http.Handler {
+	return r.webhookMux
+}
+
 // RegisterAgent adds an agent to the runtime and wires it to the shared
-// event bus. No-op if an agent with the same Id is already registered.
+// event bus and webhook mux. No-op if an agent with the same Id is already
+// registered.
 func (r *Runtime) RegisterAgent(a *agent.Agent) {
 	for _, existing := range r.agentRegistry {
 		if existing.Id == a.Id {
@@ -34,6 +47,7 @@ func (r *Runtime) RegisterAgent(a *agent.Agent) {
 
 	a.SetEventBus(r.EventBus)
 	a.SetDirectory(r)
+	a.SetWebhookMux(r.webhookMux)
 	r.agentRegistry = append(r.agentRegistry, a)
 
 	r.EventBus.PublishEvent(string(events.EventAgentRegistered), a.Name, "", fmt.Sprintf("Agent %s registered", a.Name), nil, nil)
