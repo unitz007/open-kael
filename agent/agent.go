@@ -1266,7 +1266,7 @@ func (a *Agent) announceDelegation(ctx context.Context, target *Agent, task stri
 	if err != nil {
 		return
 	}
-	note := fmt.Sprintf("🤝 delegating to %s: %s", target.Name, truncateRunes(task, 100))
+	note := fmt.Sprintf("🤝 Handing this off to %s: %s", target.Name, truncateRunes(task, 100))
 	if err := messenger.Send(ctx, conv, note); err != nil {
 		log.Printf("%s: could not announce delegation to %s: %v", a.Name, target.Name, err)
 	}
