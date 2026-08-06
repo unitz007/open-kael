@@ -1004,6 +1004,23 @@ func mergeTools(sets ...[]*tools.ToolSpec) []*tools.ToolSpec {
 	return result
 }
 
+// excludeTool drops any tool with the given name from toolset. Used to
+// structurally remove a tool rather than just instructing the model not to
+// use it — prompt-only restrictions have already proven unreliable this
+// codebase's own testing (see resetDelegationNotes/announceDelegation):
+// runDelegatedTask uses this to take send_message off a delegate's own
+// toolset entirely, since its only guaranteed reply path is now
+// end_loop's final_message relayed back to the delegating agent.
+func excludeTool(toolset []*tools.ToolSpec, name string) []*tools.ToolSpec {
+	filtered := make([]*tools.ToolSpec, 0, len(toolset))
+	for _, t := range toolset {
+		if t.Name != name {
+			filtered = append(filtered, t)
+		}
+	}
+	return filtered
+}
+
 // resolvePlatform determines which platform the current run is actually on,
 // so platform-scoped tools (ToolSpec.Platform) can be filtered before they
 // ever reach the LLM — a Slack-only tool offered during a Telegram
@@ -1350,13 +1367,14 @@ func (a *Agent) runDelegatedTask(ctx context.Context, task string) (*LoopResult,
 	ctx = resetDelegationNotes(ctx)
 
 	systemContent := a.systemPrompt() +
-		"\n\nThis task was delegated to you by another agent, not requested directly by a human. Always call end_loop with your final_message when done — it is relayed back to the delegating agent automatically, and is the one guaranteed way your answer gets through. If send_message and/or a reaction tool (e.g. add_reaction) are available, you may also use them on the conversation/message that triggered this delegation, as a direct note to the user alongside your final_message — not a replacement for it."
+		"\n\nThis task was delegated to you by another agent, not requested directly by a human. Always call end_loop with your final_message when done — it is relayed back to the delegating agent automatically, and is the one guaranteed way your answer gets through, so the delegating agent can pass it on itself. If a reaction tool (e.g. add_reaction) is available, you may use it on the conversation/message that triggered this delegation as a lightweight status signal — not a replacement for final_message."
 
 	messages := []llm.Message{
 		{Role: "system", Content: systemContent},
 		{Role: "user", Content: task},
 	}
 	toolset := mergeTools(a.baseTools(), a.workflowToolSpecs(false))
+	toolset = excludeTool(toolset, "send_message")
 	toolset = filterToolsForPlatform(toolset, a.resolvePlatform(ctx))
 
 	result, _, err := a.runLoopFrom(ctx, messages, toolset, a.MaxIterations, a.MaxDuplicateToolCallsPerResponse, a.MaxToolCallsPerResponse)
