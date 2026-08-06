@@ -582,6 +582,7 @@ func (a *Agent) sendMessageTool() *tools.ToolSpec {
 			}
 			log.Printf("📤%s: routing send_message to %s/%s", a.Name, target.Platform, target.ChatID)
 
+			input.Message = consumeDelegationNotes(ctx) + input.Message
 			if err := messenger.Send(ctx, target, input.Message); err != nil {
 				log.Println("Error sending message:", err)
 				return nil, err
@@ -908,6 +909,8 @@ func (a *Agent) delegationBlock() string {
 // agent-to-agent counterpart is runDelegatedTask, a genuinely separate
 // method rather than a flagged variant of this one.
 func (a *Agent) RunLoop(ctx context.Context, conv messaging.ConversationRef, userPrompt string) (*LoopResult, error) {
+	ctx = ensureDelegationNotes(ctx)
+
 	var prior []llm.Message
 	if a.memory != nil {
 		prior = a.memory.History(ownerMemoryKey)
@@ -938,7 +941,8 @@ func (a *Agent) RunLoop(ctx context.Context, conv messaging.ConversationRef, use
 		// always hear something back" reasoning as the guaranteed-delivery
 		// block below, just for the failure case it doesn't cover.
 		if m, ok := a.messengers[conv.Platform]; ok {
-			if sendErr := m.Send(ctx, conv, "Sorry, I ran into an error and couldn't finish handling that. Please try again."); sendErr != nil {
+			errNotice := consumeDelegationNotes(ctx) + "Sorry, I ran into an error and couldn't finish handling that. Please try again."
+			if sendErr := m.Send(ctx, conv, errNotice); sendErr != nil {
 				log.Println("failed to deliver error notice:", sendErr)
 			}
 		}
@@ -962,7 +966,8 @@ func (a *Agent) RunLoop(ctx context.Context, conv messaging.ConversationRef, use
 		}
 		if !alreadyReplied {
 			if m, ok := a.messengers[conv.Platform]; ok {
-				if sendErr := m.Send(ctx, conv, result.Content); sendErr != nil {
+				finalContent := consumeDelegationNotes(ctx) + result.Content
+				if sendErr := m.Send(ctx, conv, finalContent); sendErr != nil {
 					log.Println("failed to deliver final answer:", sendErr)
 				}
 			}
@@ -1104,6 +1109,7 @@ func (a *Agent) runWorkflow(ctx context.Context, wf *workflow.Workflow, includeU
 	// fan out over" before the run even starts.
 	ctx = identity.WithIdentities(ctx, a.identities)
 	ctx = rag.WithRetrievers(ctx, a.retrievers)
+	ctx = ensureDelegationNotes(ctx)
 
 	messages := []llm.Message{
 		{Role: "system", Content: wf.SystemPrompt + " " + loopProtocolInstructions},
@@ -1234,7 +1240,7 @@ func (a *Agent) delegateToolSpec(target *Agent) *tools.ToolSpec {
 			}
 
 			log.Printf("🤝%s: delegating to %s: %q", a.Name, target.Name, input.Task)
-			a.announceDelegation(ctx, target, input.Task)
+			recordDelegation(ctx, target)
 			result, err := target.runDelegatedTask(ctx, input.Task)
 			if err != nil {
 				return nil, err
@@ -1244,43 +1250,61 @@ func (a *Agent) delegateToolSpec(target *Agent) *tools.ToolSpec {
 		}).Build()
 }
 
-// announceDelegation posts a short, deterministic note to whatever
-// conversation triggered this delegation, naming the target — deliberately
-// not left to the delegating agent's own judgment on whether to mention it
-// when it eventually relays an answer. Models have already been observed,
-// twice, not reliably using an *optional* tool (a reaction, a direct
-// send_message) even when explicitly told they're allowed to — so
-// transparency about "this was actually handled by someone else" can't
-// depend on the same kind of soft instruction. This bypasses the LLM
-// entirely: it's a plain Send call, not a tool the model chooses to use.
-//
-// Uses the same resolveSendTarget fallback send_message itself relies on,
-// so this also fires for a workflow's own delegation (e.g. manage_issues_wf
-// handing an issue to Developer Agent) via its proactive default
-// conversation, not just from a live human conversation. Best-effort: no
-// active/default conversation, or the send itself failing, just means no
-// note goes out — this is a transparency nicety, not the actual job, so it
-// never blocks or fails the delegation over it.
-func (a *Agent) announceDelegation(ctx context.Context, target *Agent, task string) {
-	conv, messenger, err := a.resolveSendTarget(ctx)
-	if err != nil {
-		return
+// delegationNotesCtxKey is the context key for the mutable notes collector
+// ensureDelegationNotes/recordDelegation/consumeDelegationNotes share.
+type delegationNotesCtxKey struct{}
+
+// ensureDelegationNotes attaches a mutable delegation-notes collector to
+// ctx if one isn't already present, so delegateToolSpec's handler (deep
+// inside runLoopFrom, possibly several nested workflow-as-tool calls down)
+// has somewhere to record what it delegated. Idempotent by design: a
+// nested runWorkflow call (workflow-as-tool from within an outer RunLoop)
+// reuses the outer collector rather than shadowing it with its own, so a
+// delegation made deep inside a nested workflow still surfaces in the
+// outer conversation's one reply.
+func ensureDelegationNotes(ctx context.Context) context.Context {
+	if _, ok := ctx.Value(delegationNotesCtxKey{}).(*[]string); ok {
+		return ctx
 	}
-	note := fmt.Sprintf("🤝 Handing this off to %s: %s", target.Name, truncateRunes(task, 100))
-	if err := messenger.Send(ctx, conv, note); err != nil {
-		log.Printf("%s: could not announce delegation to %s: %v", a.Name, target.Name, err)
-	}
+	return context.WithValue(ctx, delegationNotesCtxKey{}, &[]string{})
 }
 
-// truncateRunes shortens s to at most max runes, appending "…" if it was
-// cut — rune-based (not byte slicing) so this can't split a multi-byte
-// character and produce invalid UTF-8 mid-string.
-func truncateRunes(s string, max int) string {
-	r := []rune(s)
-	if len(r) <= max {
-		return s
+// recordDelegation notes that this run handed a task to target, to be
+// folded into the single outgoing reply (see consumeDelegationNotes)
+// rather than sent as a message of its own — deliberately not left to the
+// delegating agent's own judgment on whether to mention it when it
+// eventually relays an answer. Models have already been observed, twice,
+// not reliably using an *optional* tool (a reaction, a direct
+// send_message) even when explicitly told they're allowed to — so this
+// bypasses the LLM entirely: it always fires from delegateToolSpec's
+// handler, not something the model chooses to do. No-op if ctx was never
+// wrapped by ensureDelegationNotes (shouldn't happen on any real call
+// path, but a missing note beats a panic). The task itself is deliberately
+// left out of the note — it's already in the log line right above this
+// call, and repeating it here would just restate what the reply right
+// after it already shows.
+func recordDelegation(ctx context.Context, target *Agent) {
+	ptr, ok := ctx.Value(delegationNotesCtxKey{}).(*[]string)
+	if !ok {
+		return
 	}
-	return string(r[:max]) + "…"
+	*ptr = append(*ptr, fmt.Sprintf("🤝 Handed this off to %s", target.Name))
+}
+
+// consumeDelegationNotes returns any recorded delegation notes formatted
+// as a prefix for the outgoing reply, and clears them. Called by every
+// path that can actually deliver a reply (send_message's handler and
+// RunLoop's guaranteed-delivery fallback) so the note appears exactly
+// once, attached to whichever message ends up being the real answer,
+// instead of as a separate message of its own.
+func consumeDelegationNotes(ctx context.Context) string {
+	ptr, ok := ctx.Value(delegationNotesCtxKey{}).(*[]string)
+	if !ok || len(*ptr) == 0 {
+		return ""
+	}
+	prefix := strings.Join(*ptr, "\n") + "\n\n"
+	*ptr = (*ptr)[:0]
+	return prefix
 }
 
 // runDelegatedTask is the agent-to-agent counterpart to RunLoop's
