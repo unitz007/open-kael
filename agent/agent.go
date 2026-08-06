@@ -737,12 +737,23 @@ func (a *Agent) Start(ctx context.Context) error {
 					a.eventBus.PublishEvent("workflow.completed", a.Name, wf.Name, fmt.Sprintf("status=%s", result.Status), nil, nil)
 				}
 			})
-			_, err := s.NewJob(cronJob, task)
+			job, err := s.NewJob(cronJob, task)
 			if err != nil {
 				return err
 			}
 
 			s.Start()
+
+			// Logged so a missed run is diagnosable from the deploy that
+			// registered it, not just discoverable after the fact by its
+			// absence — this is what a job actually believes its next fire
+			// time is, right after Start(), not a re-derivation of the cron
+			// expression like warnIfCronRunLikelyMissed above.
+			if next, err := job.NextRun(); err != nil {
+				log.Printf("⚠️%s: workflow %q's cron job has no computable next run: %v", a.Name, wf.Name, err)
+			} else {
+				log.Printf("🗓️%s: workflow %q next scheduled for %s", a.Name, wf.Name, next.Format(time.RFC3339))
+			}
 
 		case triggers.WebhookTriggerType:
 			src, ok := wf.Trigger.Value.(webhook.Source)
@@ -1223,6 +1234,7 @@ func (a *Agent) delegateToolSpec(target *Agent) *tools.ToolSpec {
 			}
 
 			log.Printf("🤝%s: delegating to %s: %q", a.Name, target.Name, input.Task)
+			a.announceDelegation(ctx, target, input.Task)
 			result, err := target.runDelegatedTask(ctx, input.Task)
 			if err != nil {
 				return nil, err
@@ -1230,6 +1242,45 @@ func (a *Agent) delegateToolSpec(target *Agent) *tools.ToolSpec {
 			log.Printf("🤝%s: %s finished (%s): %s", a.Name, target.Name, result.Status, result.Content)
 			return fmt.Sprintf("%s finished (%s): %s", target.Name, result.Status, result.Content), nil
 		}).Build()
+}
+
+// announceDelegation posts a short, deterministic note to whatever
+// conversation triggered this delegation, naming the target — deliberately
+// not left to the delegating agent's own judgment on whether to mention it
+// when it eventually relays an answer. Models have already been observed,
+// twice, not reliably using an *optional* tool (a reaction, a direct
+// send_message) even when explicitly told they're allowed to — so
+// transparency about "this was actually handled by someone else" can't
+// depend on the same kind of soft instruction. This bypasses the LLM
+// entirely: it's a plain Send call, not a tool the model chooses to use.
+//
+// Uses the same resolveSendTarget fallback send_message itself relies on,
+// so this also fires for a workflow's own delegation (e.g. manage_issues_wf
+// handing an issue to Developer Agent) via its proactive default
+// conversation, not just from a live human conversation. Best-effort: no
+// active/default conversation, or the send itself failing, just means no
+// note goes out — this is a transparency nicety, not the actual job, so it
+// never blocks or fails the delegation over it.
+func (a *Agent) announceDelegation(ctx context.Context, target *Agent, task string) {
+	conv, messenger, err := a.resolveSendTarget(ctx)
+	if err != nil {
+		return
+	}
+	note := fmt.Sprintf("🤝 delegating to %s: %s", target.Name, truncateRunes(task, 100))
+	if err := messenger.Send(ctx, conv, note); err != nil {
+		log.Printf("%s: could not announce delegation to %s: %v", a.Name, target.Name, err)
+	}
+}
+
+// truncateRunes shortens s to at most max runes, appending "…" if it was
+// cut — rune-based (not byte slicing) so this can't split a multi-byte
+// character and produce invalid UTF-8 mid-string.
+func truncateRunes(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max]) + "…"
 }
 
 // runDelegatedTask is the agent-to-agent counterpart to RunLoop's
