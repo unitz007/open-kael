@@ -1261,11 +1261,29 @@ type delegationNotesCtxKey struct{}
 // nested runWorkflow call (workflow-as-tool from within an outer RunLoop)
 // reuses the outer collector rather than shadowing it with its own, so a
 // delegation made deep inside a nested workflow still surfaces in the
-// outer conversation's one reply.
+// outer conversation's one reply. Only for same-agent nesting — see
+// resetDelegationNotes for the agent-to-agent boundary, which must NOT
+// reuse the caller's collector.
 func ensureDelegationNotes(ctx context.Context) context.Context {
 	if _, ok := ctx.Value(delegationNotesCtxKey{}).(*[]string); ok {
 		return ctx
 	}
+	return context.WithValue(ctx, delegationNotesCtxKey{}, &[]string{})
+}
+
+// resetDelegationNotes always attaches a brand-new, empty notes collector
+// to ctx, discarding any inherited one. Used at the agent-to-agent boundary
+// (runDelegatedTask), unlike ensureDelegationNotes's reuse-if-present
+// behavior: a delegate's own reply is a separate message from whatever the
+// delegating agent eventually sends, so a note recorded for the
+// delegator's own pending reply must never leak into — or be silently
+// consumed by — the delegate's own optional send_message call. Without
+// this, ctx (and the collector it carries) flows straight from
+// delegateToolSpec's handler into the delegate's own runLoopFrom, and the
+// delegate's optional direct send_message ends up eating the note meant
+// for the delegator's final relay, leaving the delegator's own message
+// with no note at all.
+func resetDelegationNotes(ctx context.Context) context.Context {
 	return context.WithValue(ctx, delegationNotesCtxKey{}, &[]string{})
 }
 
@@ -1329,6 +1347,7 @@ func (a *Agent) runDelegatedTask(ctx context.Context, task string) (*LoopResult,
 	if !withinLimit {
 		return nil, fmt.Errorf("%s: delegation depth exceeded (%d > %d) — likely a delegation cycle across workflows", a.Name, depth, maxDelegationDepth)
 	}
+	ctx = resetDelegationNotes(ctx)
 
 	systemContent := a.systemPrompt() +
 		"\n\nThis task was delegated to you by another agent, not requested directly by a human. Always call end_loop with your final_message when done — it is relayed back to the delegating agent automatically, and is the one guaranteed way your answer gets through. If send_message and/or a reaction tool (e.g. add_reaction) are available, you may also use them on the conversation/message that triggered this delegation, as a direct note to the user alongside your final_message — not a replacement for it."
