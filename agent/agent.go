@@ -1,6 +1,9 @@
 package agent
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
 	"github.com/unitz007/kael/human"
 	"github.com/unitz007/kael/identity"
 	"github.com/unitz007/kael/llm"
@@ -11,9 +14,6 @@ import (
 	"github.com/unitz007/kael/triggers"
 	"github.com/unitz007/kael/webhook"
 	"github.com/unitz007/kael/workflow"
-	"context"
-	"encoding/json"
-	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -66,6 +66,31 @@ type Agent struct {
 	// stuck or looping model to stop. Only worth doing for an agent you
 	// trust to actually call end_loop reliably.
 	MaxIterations int
+
+	// MaxDuplicateToolCallsPerResponse is the threshold at which a response
+	// containing repeated (identical name+arguments) tool calls gets
+	// treated as a decoding glitch — some models get stuck repeating the
+	// exact same output, producing dozens to hundreds of identical calls in
+	// one shot. A response this size where every call is actually distinct
+	// isn't this pattern at all and is let through instead — see
+	// MaxToolCallsPerResponse. Defaults to
+	// defaultMaxDuplicateToolCallsPerResponse in NewAgent; set directly to
+	// change it.
+	MaxDuplicateToolCallsPerResponse int
+
+	// MaxToolCallsPerResponse is the hard ceiling on tool calls per
+	// response, regardless of whether they're distinct — a circuit breaker
+	// against a truly pathological response, not a realistic turn size. A
+	// large batch of genuinely distinct calls (e.g. one list_issues call
+	// per repo in a repo-by-repo triage workflow) is legitimate multi-tool
+	// intent and is let through up to this point, unlike
+	// MaxDuplicateToolCallsPerResponse's much lower bar for a response
+	// dominated by repeats. Raise this if your own tools/workflows
+	// legitimately need bigger batches (more repos, more items, whatever
+	// your domain's fan-out looks like); lower it for a stricter safety
+	// margin. Defaults to defaultMaxToolCallsPerResponse in NewAgent; set
+	// directly to change it.
+	MaxToolCallsPerResponse int
 }
 
 // AgentDirectory lets an agent see its siblings under a shared host, so it
@@ -80,11 +105,27 @@ type AgentDirectory interface {
 // defaultMaxIterations seeds Agent.MaxIterations in NewAgent.
 const defaultMaxIterations = 10
 
-// maxToolCallsPerResponse bounds how many tool calls a single LLM response
-// is allowed to contain. A legitimate turn needs at most a handful; far
-// more than that is a model decoding glitch (stuck repeating the same
-// output), not real multi-tool intent — see the check in runLoopFrom.
-const maxToolCallsPerResponse = 10
+// defaultMaxDuplicateToolCallsPerResponse seeds Agent.MaxDuplicateToolCallsPerResponse in NewAgent.
+const defaultMaxDuplicateToolCallsPerResponse = 10
+
+// defaultMaxToolCallsPerResponse seeds Agent.MaxToolCallsPerResponse in NewAgent.
+const defaultMaxToolCallsPerResponse = 50
+
+// hasDuplicateToolCalls reports whether any two calls in calls share the
+// same name and arguments — the signature of a model stuck repeating
+// itself, as opposed to a large-but-legitimate batch of genuinely distinct
+// calls.
+func hasDuplicateToolCalls(calls []tools.ToolCall) bool {
+	seen := make(map[string]bool, len(calls))
+	for _, c := range calls {
+		key := c.Name + "\x00" + string(c.Arguments)
+		if seen[key] {
+			return true
+		}
+		seen[key] = true
+	}
+	return false
+}
 
 // runLoopFrom is the shared tool-calling engine behind every entry point
 // (RunLoop, a workflow's own nested run, and a delegated call) — same
@@ -95,7 +136,7 @@ const maxToolCallsPerResponse = 10
 // conversation history (RunLoop) can see exactly what turns were added. ctx
 // flows to every tool call unchanged — this is how a conversation attached
 // via messaging.WithConversation reaches send_message's handler.
-func (a *Agent) runLoopFrom(ctx context.Context, messages []llm.Message, toolset []*tools.ToolSpec, maxIter int) (*LoopResult, []llm.Message, error) {
+func (a *Agent) runLoopFrom(ctx context.Context, messages []llm.Message, toolset []*tools.ToolSpec, maxIter, maxDuplicateToolCalls, maxToolCalls int) (*LoopResult, []llm.Message, error) {
 	// Every tool call in this run — agent-level or nested inside a workflow
 	// (workflows route through this same function) — can reach whichever of
 	// this agent's identities it needs via identity.FromContext, regardless
@@ -151,21 +192,35 @@ func (a *Agent) runLoopFrom(ctx context.Context, messages []llm.Message, toolset
 			continue
 		}
 
-		if len(response.ToolCalls) > maxToolCallsPerResponse {
-			// A real turn needs at most a handful of tool calls. A response
-			// with dozens or hundreds — all identical, in one shot — isn't
-			// legitimate multi-tool use, it's a decoding glitch (some models
-			// get stuck repeating the same output token sequence). Left
-			// unchecked, processing all of them floods the log with
-			// "blocked" repeats (only the first of any given call actually
-			// runs) and bloats the transcript pointlessly. Discard the whole
-			// batch without executing or recording any of it, and nudge for
-			// a single deliberate call instead — same "consume an iteration,
-			// try again" shape as the tool-less-response case above.
-			log.Printf("⚠️%s's response contained %d tool calls in one turn (cap %d) — discarding as a decoding glitch rather than executing any of them", a.Name, len(response.ToolCalls), maxToolCallsPerResponse)
+		if len(response.ToolCalls) > maxDuplicateToolCalls && hasDuplicateToolCalls(response.ToolCalls) {
+			// A response this size dominated by repeated calls — some models
+			// get stuck repeating the exact same output — isn't legitimate
+			// multi-tool use. Left unchecked, processing all of them floods
+			// the log with "blocked" repeats (only the first of any given
+			// call actually runs) and bloats the transcript pointlessly.
+			// Discard the whole batch without executing or recording any of
+			// it, and nudge for a single deliberate call instead — same
+			// "consume an iteration, try again" shape as the tool-less-
+			// response case above. A same-size response where every call is
+			// actually distinct (e.g. one list_issues call per installed
+			// repo) skips this entirely — see MaxToolCallsPerResponse below.
+			log.Printf("⚠️%s's response contained %d tool calls in one turn with repeats (cap %d) — discarding as a decoding glitch rather than executing any of them", a.Name, len(response.ToolCalls), maxDuplicateToolCalls)
 			messages = append(messages,
 				llm.Message{Role: "assistant", Content: response.Content},
 				llm.Message{Role: "user", Content: "That response repeated tool calls an unreasonable number of times in one turn, so none of them were executed. Try again with one single, deliberate tool call."},
+			)
+			continue
+		}
+
+		if len(response.ToolCalls) > maxToolCalls {
+			// Every call here is distinct (the repeat case above already
+			// returned), so this is a genuinely large batch, not a glitch —
+			// still capped as a last-resort circuit breaker against a truly
+			// pathological response.
+			log.Printf("⚠️%s's response contained %d distinct tool calls in one turn (cap %d) — discarding rather than executing all of them", a.Name, len(response.ToolCalls), maxToolCalls)
+			messages = append(messages,
+				llm.Message{Role: "assistant", Content: response.Content},
+				llm.Message{Role: "user", Content: "That response tried to call an unreasonable number of distinct tools in one turn, so none of them were executed. Split this into smaller batches across multiple turns."},
 			)
 			continue
 		}
@@ -400,10 +455,12 @@ func NewAgent(id, name, description, identityPrompt string, llm llm.LLM) *Agent 
 					return endLoopResult{Reason: input.Reason, FinalMessage: input.FinalMessage}, nil
 				}).Build(),
 		},
-		eventBus:      nil,
-		memory:        newBareMemory(),
-		inBox:         NewMessageQueue(32),
-		MaxIterations: defaultMaxIterations,
+		eventBus:                         nil,
+		memory:                           newBareMemory(),
+		inBox:                            NewMessageQueue(32),
+		MaxIterations:                    defaultMaxIterations,
+		MaxDuplicateToolCallsPerResponse: defaultMaxDuplicateToolCallsPerResponse,
+		MaxToolCallsPerResponse:          defaultMaxToolCallsPerResponse,
 	}
 
 	return a
@@ -564,7 +621,6 @@ func (a *Agent) DefaultConversation() (conv messaging.ConversationRef, ok bool) 
 	}
 	return messaging.ConversationRef{}, false
 }
-
 
 // ownerMemoryKey is the single memory thread every RunLoop call reads from
 // and writes to, regardless of which platform or which conversation ID the
@@ -853,7 +909,7 @@ func (a *Agent) RunLoop(ctx context.Context, conv messaging.ConversationRef, use
 
 	toolset := mergeTools(a.baseTools(), a.workflowToolSpecs(true), a.delegateToolSpecs())
 	toolset = filterToolsForPlatform(toolset, conv.Platform)
-	result, final, err := a.runLoopFrom(ctx, messages, toolset, a.MaxIterations)
+	result, final, err := a.runLoopFrom(ctx, messages, toolset, a.MaxIterations, a.MaxDuplicateToolCallsPerResponse, a.MaxToolCallsPerResponse)
 
 	if a.memory != nil {
 		// Persist only what this call actually added — everything after the
@@ -1029,6 +1085,15 @@ func (a *Agent) runWorkflow(ctx context.Context, wf *workflow.Workflow, includeU
 		return nil, fmt.Errorf("workflow %q: delegation depth exceeded (%d > %d) — likely a delegation cycle across workflows", wf.Name, depth, maxDelegationDepth)
 	}
 
+	// Threaded here (not left to runLoopFrom, which does this too but only
+	// once it's already running) so wf.MaxToolCallsPerResponseFunc and
+	// wf.MaxDuplicateToolCallsPerResponseFunc below can resolve identities
+	// and retrievers via ctx exactly the way a real tool handler does —
+	// e.g. minting a fresh API token to ask "how many items am I about to
+	// fan out over" before the run even starts.
+	ctx = identity.WithIdentities(ctx, a.identities)
+	ctx = rag.WithRetrievers(ctx, a.retrievers)
+
 	messages := []llm.Message{
 		{Role: "system", Content: wf.SystemPrompt + " " + loopProtocolInstructions},
 		{Role: "user", Content: userTrigger},
@@ -1047,7 +1112,29 @@ func (a *Agent) runWorkflow(ctx context.Context, wf *workflow.Workflow, includeU
 	if maxIter <= 0 {
 		maxIter = a.MaxIterations
 	}
-	result, _, err := a.runLoopFrom(ctx, messages, toolset, maxIter)
+	maxDuplicateToolCalls := wf.MaxDuplicateToolCallsPerResponse
+	if wf.MaxDuplicateToolCallsPerResponseFunc != nil {
+		if v, err := wf.MaxDuplicateToolCallsPerResponseFunc(ctx); err != nil {
+			log.Printf("⚠️%s: workflow %q's MaxDuplicateToolCallsPerResponseFunc failed, falling back to its static value: %v", a.Name, wf.Name, err)
+		} else {
+			maxDuplicateToolCalls = v
+		}
+	}
+	if maxDuplicateToolCalls <= 0 {
+		maxDuplicateToolCalls = a.MaxDuplicateToolCallsPerResponse
+	}
+	maxToolCalls := wf.MaxToolCallsPerResponse
+	if wf.MaxToolCallsPerResponseFunc != nil {
+		if v, err := wf.MaxToolCallsPerResponseFunc(ctx); err != nil {
+			log.Printf("⚠️%s: workflow %q's MaxToolCallsPerResponseFunc failed, falling back to its static value: %v", a.Name, wf.Name, err)
+		} else {
+			maxToolCalls = v
+		}
+	}
+	if maxToolCalls <= 0 {
+		maxToolCalls = a.MaxToolCallsPerResponse
+	}
+	result, _, err := a.runLoopFrom(ctx, messages, toolset, maxIter, maxDuplicateToolCalls, maxToolCalls)
 	return result, err
 }
 
@@ -1178,7 +1265,7 @@ func (a *Agent) runDelegatedTask(ctx context.Context, task string) (*LoopResult,
 	toolset := mergeTools(a.baseTools(), a.workflowToolSpecs(false))
 	toolset = filterToolsForPlatform(toolset, a.resolvePlatform(ctx))
 
-	result, _, err := a.runLoopFrom(ctx, messages, toolset, a.MaxIterations)
+	result, _, err := a.runLoopFrom(ctx, messages, toolset, a.MaxIterations, a.MaxDuplicateToolCallsPerResponse, a.MaxToolCallsPerResponse)
 	return result, err
 }
 

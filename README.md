@@ -44,7 +44,7 @@ Registration on a `Runtime` is what makes agents visible to each other — an ag
 At the center of an agent is `runLoopFrom`: given a transcript and a toolset, it calls the LLM with `tool_choice: "required"` (every response must call something — no plain-content replies), executes whatever tool comes back, and repeats, up to a fixed iteration cap, until something calls `end_loop`. A few things about that loop are true regardless of who's calling it:
 
 - A tool-less response doesn't get accepted as an answer. It gets nudged — "that had no tool call, try again" — because silently accepting freeform text is exactly how an *unverified* answer (a fact the model invented instead of actually looking up) would sail straight through.
-- A response with an unreasonable number of tool calls (a decoding glitch some models fall into — dozens of copies of the same call in one shot) gets discarded wholesale rather than executed.
+- A response full of *repeated* (identical name+arguments) tool calls gets discarded wholesale as a decoding glitch some models fall into — dozens of copies of the same call in one shot — rather than executed. A same-size response where every call is actually distinct (e.g. one call per item in a list your tools are iterating over) isn't this pattern and goes through normally, up to a much higher hard ceiling. Both thresholds (`Agent.MaxDuplicateToolCallsPerResponse`, default 10; `Agent.MaxToolCallsPerResponse`, default 50) are yours to raise or lower — set them directly if your own tools/workflows have a different natural batch size. A specific workflow can override either one for just its own nested run (`Workflow.MaxDuplicateToolCallsPerResponse`/`Workflow.MaxToolCallsPerResponse`, 0 = falls back to the agent's value) — same reasoning `Workflow.Iteration` already overrides `Agent.MaxIterations`. For a cap that depends on live data (e.g. the workflow fans out one call per item from a list whose size isn't known ahead of time — installed repos, open tickets, whatever), `Workflow.MaxToolCallsPerResponseFunc`/`Workflow.MaxDuplicateToolCallsPerResponseFunc` (`func(ctx context.Context) (int, error)`) take priority over the plain int fields and are called once at the start of each run — `ctx` carries this agent's identities/retrievers exactly like a tool handler's does, so the func can call `identity.FromContext`/`rag.FromContext` to look the real number up. An error just logs and falls back to the plain field (then the agent's default) rather than failing the whole run over a safety-margin lookup.
 - A tool already called once with the same arguments can't be called again — stops a model from re-sending, re-triggering, or re-delegating something that already succeeded.
 
 None of that logic knows or cares whether it's running a real conversation, a workflow, or a delegated task. What *does* differ by caller is the transcript and toolset handed in — and that's decided by which of two entry points is used.
@@ -128,10 +128,15 @@ No implementations ship here — same reasoning as `identity`/`webhook`/`rag`. `
 ```go
 type Workflow struct {
     ID, Name, Description, SystemPrompt string
-    Iteration       int                        // loop cap for this workflow's own nested run; 0 = agent's default
-    Trigger         triggers.Trigger           // cron, webhook, or event — see Triggers above
-    Tools           map[string]*tools.ToolSpec
-    AllowDelegation bool                       // opt in to delegate_to_<sibling> tools — see Delegation above
+    Iteration                            int              // loop cap for this workflow's own nested run; 0 = agent's default
+    Trigger                              triggers.Trigger // cron, webhook, or event — see Triggers above
+    Tools                                map[string]*tools.ToolSpec
+    AllowDelegation                      bool // opt in to delegate_to_<sibling> tools — see Delegation above
+    MaxDuplicateToolCallsPerResponse      int  // 0 = agent's default — see the loop guardrails above
+    MaxToolCallsPerResponse              int  // 0 = agent's default — see the loop guardrails above
+    // dynamic alternatives to the two fields above — see the loop guardrails section
+    MaxDuplicateToolCallsPerResponseFunc func(ctx context.Context) (int, error)
+    MaxToolCallsPerResponseFunc          func(ctx context.Context) (int, error)
 }
 ```
 
