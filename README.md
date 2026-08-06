@@ -2,7 +2,7 @@
 
 Kael is a Go library for building LLM agents. Give an agent a system prompt, some tools, and optionally a messenger to talk over, a memory store, and identities to act as on external systems, and Kael handles the rest: the tool-calling loop, running scheduled workflows, and delegating tasks between agents.
 
-This repo is just the platform: the agent loop, the messaging/memory/identity interfaces, Slack and Telegram messenger implementations, and an OpenAI-compatible LLM client. It ships no `Identity` implementations and no example business logic beyond `examples/` — you bring your own agents, tools, and identities by importing this module.
+This repo is just the platform: the agent loop, the messaging/memory/identity/webhook/rag interfaces, and an OpenAI-compatible LLM client. It ships no `Identity`, `Memory`, `Messenger`, or `webhook.Source` implementations — those live as copyable references under `examples/` (see [`examples/starter`](examples/starter) for all four together) — you bring your own agents, tools, and identities by importing this module.
 
 ## Install
 
@@ -20,6 +20,8 @@ go run .
 ```
 
 This registers two agents on a `Runtime` and launches it: an assistant and a research specialist reachable only via delegation. See [examples/basic/main.go](examples/basic/main.go) and [examples/researchspecialist/agent.go](examples/researchspecialist/agent.go).
+
+For a single agent showing every piece together — a custom `Identity`, a cron-triggered workflow, a webhook-triggered workflow, and a `Messenger` — see [`examples/starter`](examples/starter) instead. It's meant to be copied wholesale as the starting point for a real project.
 
 ## Building an agent
 
@@ -57,7 +59,7 @@ A workflow, wherever it's triggered from, runs the same way: a *fresh* transcrip
 
 ## Talking to the outside world
 
-`messaging.Messenger` is the interface a platform adapter implements — `Send`, `Listen`, `Platform`, `DefaultConversation`. This module ships Slack and Telegram implementations (`messaging/slack.go`, `messaging/telegram.go`); wire up additional ones (a CLI, Discord, whatever) against the same interface and pass them to `AddMessenger`. An agent only gets `send_message` in its toolset once something's actually been registered — no messenger, no tool, rather than a tool that's guaranteed to fail the moment it's called.
+`messaging.Messenger` is the interface a platform adapter implements — `Send`, `Listen`, `Platform`, `DefaultConversation`. This module ships no implementations — [`examples/messenger`](examples/messenger) is a working Slack/Telegram reference to copy into your own project and edit; wire up additional ones (a CLI, Discord, whatever) against the same interface and pass them to `AddMessenger`. An agent only gets `send_message` in its toolset once something's actually been registered — no messenger, no tool, rather than a tool that's guaranteed to fail the moment it's called.
 
 A `Messenger` can optionally also implement `messaging.ToolProvider` (one method: `Tools() []*tools.ToolSpec`) to contribute platform-specific tools beyond `send_message` — `SlackBot` does this for `add_reaction`/`search_emoji`, since reactions have no cross-platform equivalent and don't belong on the `Messenger` interface itself. `Agent.baseTools()` checks every registered messenger for this and merges in whatever it returns, so any agent that registers a `SlackBot` inherits those tools automatically, with no per-agent wiring.
 
@@ -112,13 +114,14 @@ Retriever and Indexer are kept separate (unlike `Memory`, which combines read/wr
 ## Memory
 
 ```go
+// package memory
 type Memory interface {
     History(id string) []llm.Message
     Append(id string, messages ...llm.Message)
 }
 ```
 
-Two implementations ship: `memory.NewInMemoryHistory()` (per-process, lost on restart) and `memory.NewFileHistory(path)` (JSON-file-backed, atomic write-then-rename, survives a restart). Both trim history to a fixed cap per id. What `id` means is entirely up to the caller — nothing in this package assumes it's a conversation, a user, or anything else.
+No implementations ship here — same reasoning as `identity`/`webhook`/`rag`. `NewAgent`'s own zero-config default is a bare, unexported, process-local implementation (just enough to make an agent usable without calling `SetMemory` first); for anything that needs to survive a restart, see `examples/starter`'s `InMemoryHistory` (process-local, explicit) and `FileHistory` (JSON-file-backed, atomic write-then-rename) as copyable references, or bring your own database-backed one. What `id` means is entirely up to the caller — nothing here assumes it's a conversation, a user, or anything else.
 
 ## Workflows
 
@@ -162,18 +165,19 @@ openai.NewClient(model string, enableReasoning bool) llm.LLM
 ```text
 agent/       the loop, RunLoop, runDelegatedTask, workflows-as-tools, delegation + depth guard, built-in send_message/end_loop
 runtime/     agent registry, shared event bus, shared webhook mux + WebhookHandler(), Launch
-messaging/   Messenger and ToolProvider interfaces, ConversationRef, ctx helpers, Slack and Telegram implementations
+messaging/   Messenger and ToolProvider interfaces, ConversationRef, ctx helpers — no implementations
 webhook/     Source interface (the webhook counterpart to Messenger), VerifyHMACSHA256 — no implementations
 identity/    Identity interface, ctx helpers — no implementations
 rag/         Retriever/Indexer interfaces, ctx helpers — no implementations
-memory/      Memory interface, InMemoryHistory, FileHistory
+memory/      Memory interface — no implementations
 workflow/    Workflow struct (Trigger, AllowDelegation, Iteration, Tools)
 triggers/    TriggerType, Trigger
 tools/       ToolSpec and its builder
 llm/, llm/openai/  provider-agnostic types + an OpenAI-compatible client
 events/      a pub/sub event bus
 human/       a placeholder type, not yet used by anything in this module
-examples/    a runnable two-agent example (examples/basic) and a delegation-only demo agent (examples/researchspecialist)
+examples/    starter (identity + memory + cron + webhook + messenger, copyable), basic (two-agent delegation demo),
+             researchspecialist (delegation-only demo agent), messenger (Slack/Telegram Messenger reference)
 ```
 
 ## What isn't finished

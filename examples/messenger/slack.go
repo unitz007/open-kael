@@ -1,4 +1,11 @@
-package messaging
+// Package messenger is a working, copyable reference implementation of
+// messaging.Messenger — SlackBot and TelegramBot. The core library ships no
+// messenger implementations of its own (same reasoning as identity/ and
+// webhook/: the interface is the contract, everything concrete is
+// yours to own). Copy this package into your own project, rename it, and
+// edit freely — it isn't meant to be depended on as a permanent import from
+// here.
+package messenger
 
 import (
 	"bytes"
@@ -15,6 +22,8 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/yuin/goldmark"
+
+	"github.com/unitz007/kael/messaging"
 )
 
 const slackPlatform = "slack"
@@ -93,8 +102,8 @@ func (b *SlackBot) Platform() string {
 	return slackPlatform
 }
 
-func (b *SlackBot) DefaultConversation() ConversationRef {
-	return ConversationRef{Platform: slackPlatform, ChatID: b.ChannelId}
+func (b *SlackBot) DefaultConversation() messaging.ConversationRef {
+	return messaging.ConversationRef{Platform: slackPlatform, ChatID: b.ChannelId}
 }
 
 type slackAPIResponse struct {
@@ -102,7 +111,7 @@ type slackAPIResponse struct {
 	Error string `json:"error"`
 }
 
-func (b *SlackBot) Send(ctx context.Context, conv ConversationRef, message string) error {
+func (b *SlackBot) Send(ctx context.Context, conv messaging.ConversationRef, message string) error {
 	payload := map[string]string{
 		"channel": conv.ChatID,
 		"text":    formatForSlack(message),
@@ -110,7 +119,7 @@ func (b *SlackBot) Send(ctx context.Context, conv ConversationRef, message strin
 	// Reply into the same thread the triggering message came from, if any —
 	// a proactive/cron-triggered send has no thread in ctx and just posts a
 	// new top-level message, same as before this existed.
-	if threadID, ok := ThreadIDFromContext(ctx); ok {
+	if threadID, ok := messaging.ThreadIDFromContext(ctx); ok {
 		payload["thread_ts"] = threadID
 	}
 	body, err := json.Marshal(payload)
@@ -145,7 +154,7 @@ func (b *SlackBot) Send(ctx context.Context, conv ConversationRef, message strin
 
 // AddReaction adds an emoji reaction (name without colons, e.g.
 // "thumbsup") to a specific message — channel + that message's own ts, not
-// a ConversationRef, since a conversation has no single timestamp of its
+// a messaging.ConversationRef, since a conversation has no single timestamp of its
 // own.
 func (b *SlackBot) AddReaction(ctx context.Context, channel, timestamp, emoji string) error {
 	body, err := json.Marshal(map[string]string{
@@ -307,7 +316,7 @@ type slackEventPayload struct {
 // sends a "disconnect" envelope on its own for cluster maintenance and
 // expects the client to open a fresh connection in response, same as a
 // dropped connection.
-func (b *SlackBot) Listen(ctx context.Context, onMessage func(InboundMessage)) error {
+func (b *SlackBot) Listen(ctx context.Context, onMessage func(messaging.InboundMessage)) error {
 	if b.botUserID == "" {
 		userID, err := b.authTest(ctx)
 		if err != nil {
@@ -336,7 +345,7 @@ func (b *SlackBot) Listen(ctx context.Context, onMessage func(InboundMessage)) e
 
 // listenOnce runs a single Socket Mode connection until it's told to
 // reconnect, drops, or ctx is cancelled.
-func (b *SlackBot) listenOnce(ctx context.Context, onMessage func(InboundMessage)) error {
+func (b *SlackBot) listenOnce(ctx context.Context, onMessage func(messaging.InboundMessage)) error {
 	wsUrl, err := b.openSocketModeURL(ctx)
 	if err != nil {
 		return err
@@ -447,8 +456,8 @@ func (b *SlackBot) listenOnce(ctx context.Context, onMessage func(InboundMessage
 				threadID = event.Ts
 			}
 
-			onMessage(InboundMessage{
-				Conversation: ConversationRef{Platform: slackPlatform, ChatID: event.Channel},
+			onMessage(messaging.InboundMessage{
+				Conversation: messaging.ConversationRef{Platform: slackPlatform, ChatID: event.Channel},
 				Text:         text,
 				MessageID:    event.Ts,
 				ThreadID:     threadID,

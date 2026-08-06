@@ -8,7 +8,7 @@ import (
 
 // ConversationRef addresses a specific chat/channel/DM on a specific
 // platform — everything Send needs to route a reply to the right place.
-// It is not used as a memory/threading key (see agent.Memory) — only
+// It is not used as a memory/threading key (see memory.Memory) — only
 // ChatID is, deliberately excluding Platform from that concern.
 type ConversationRef struct {
 	Platform string // "telegram", "slack", ...
@@ -37,8 +37,10 @@ type InboundMessage struct {
 }
 
 // Messenger is a full bidirectional platform adapter: send to a specific
-// conversation, and listen for new inbound ones. Telegram implements this
-// today; Slack or anything else plugs in later against the same interface.
+// conversation, and listen for new inbound ones. This package ships no
+// implementations — see examples/messenger for a working Slack/Telegram
+// reference to copy, same reasoning identity.Identity and webhook.Source
+// ship no implementations either.
 type Messenger interface {
 	// Platform identifies this adapter for routing — matches ConversationRef.Platform.
 	Platform() string
@@ -54,10 +56,11 @@ type Messenger interface {
 }
 
 // ToolProvider is implemented by a Messenger that offers extra tools beyond
-// the built-in send_message — e.g. Slack's add_reaction/search_emoji, which
-// have no cross-platform equivalent and so don't belong on the Messenger
-// interface itself. Optional: a Messenger that doesn't implement this just
-// contributes send_message, same as before this existed.
+// the built-in send_message — e.g. examples/messenger's SlackBot implements
+// it for add_reaction/search_emoji, since reactions have no cross-platform
+// equivalent and so don't belong on the Messenger interface itself.
+// Optional: a Messenger that doesn't implement this just contributes
+// send_message, same as before this existed.
 //
 // Agent.baseTools() checks every registered messenger for this and merges
 // in whatever it returns, so any agent with a matching messenger inherits

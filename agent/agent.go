@@ -17,9 +17,8 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-co-op/gocron/v2"
@@ -46,7 +45,7 @@ type Agent struct {
 	LLM            llm.LLM
 	Tools          []*tools.ToolSpec `json:"tools"`
 	eventBus       EventPublisher
-	memory         Memory
+	memory         memory.Memory
 	inBox          *MessageQueue
 	human          *human.Human
 	messengers     map[string]messaging.Messenger
@@ -264,14 +263,14 @@ func (a *Agent) AddTool(tool *tools.ToolSpec) {
 	a.Tools = append(a.Tools, tool)
 }
 
-// SetMemory overrides this agent's conversation memory — NewAgent already
-// sets up a working default (file-backed, falling back to in-memory-only
-// on any filesystem error), so this exists purely for swapping in a
-// different backing store, e.g. one backed by a database instead of local
-// disk. Call before Start (or before the first RunLoop) — a change mid
+// SetMemory sets this agent's conversation memory. NewAgent's own default
+// is a bare, process-local, in-memory implementation (this library ships no
+// persistent Memory implementation — see examples/starter for a
+// file-backed reference to copy, or bring a database-backed one of your
+// own). Call before Start (or before the first RunLoop) — a change mid
 // conversation would silently orphan whatever was already recorded in the
 // old store.
-func (a *Agent) SetMemory(m Memory) {
+func (a *Agent) SetMemory(m memory.Memory) {
 	a.memory = m
 }
 
@@ -402,7 +401,7 @@ func NewAgent(id, name, description, identityPrompt string, llm llm.LLM) *Agent 
 				}).Build(),
 		},
 		eventBus:      nil,
-		memory:        newAgentMemory(id),
+		memory:        newBareMemory(),
 		inBox:         NewMessageQueue(32),
 		MaxIterations: defaultMaxIterations,
 	}
@@ -410,28 +409,44 @@ func NewAgent(id, name, description, identityPrompt string, llm llm.LLM) *Agent 
 	return a
 }
 
-// newAgentMemory builds this agent's persistent conversation memory — a
-// JSON file under data/memory/<id>.json, so history survives a process
-// restart instead of vanishing every time, which across this project's own
-// development has been almost every code change. Falls back to
-// in-memory-only (the old behavior) if the file can't be set up, so a
-// filesystem problem degrades this one agent's memory rather than crashing
-// the whole runtime.
-func newAgentMemory(id string) Memory {
-	path := filepath.Join("data", "memory", id+".json")
-
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		log.Printf("agent %s: could not create memory directory, falling back to in-memory-only history: %v", id, err)
-		return memory.NewInMemoryHistory()
-	}
-
-	fh, err := memory.NewFileHistory(path)
-	if err != nil {
-		log.Printf("agent %s: could not load persistent memory from %s, falling back to in-memory-only history: %v", id, path, err)
-		return memory.NewInMemoryHistory()
-	}
-	return fh
+// bareMemory is NewAgent's zero-config memory.Memory default — process-local,
+// lost on restart. This library ships no persistent implementation (same
+// reasoning as identity/webhook/rag/messaging — see examples/starter for a
+// file-backed reference to copy, or bring your own database-backed one via
+// SetMemory).
+type bareMemory struct {
+	mu   sync.Mutex
+	byID map[string][]llm.Message
 }
+
+func newBareMemory() *bareMemory {
+	return &bareMemory{byID: make(map[string][]llm.Message)}
+}
+
+func (m *bareMemory) History(id string) []llm.Message {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	existing := m.byID[id]
+	out := make([]llm.Message, len(existing))
+	copy(out, existing)
+	return out
+}
+
+func (m *bareMemory) Append(id string, messages ...llm.Message) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	updated := append(m.byID[id], messages...)
+	if len(updated) > maxBareMemoryMessages {
+		updated = updated[len(updated)-maxBareMemoryMessages:]
+	}
+	m.byID[id] = updated
+}
+
+// maxBareMemoryMessages bounds how many turns bareMemory keeps per id — a
+// plain trim-the-oldest window, not summarization.
+const maxBareMemoryMessages = 20
 
 // baseTools returns this agent's own tools, plus send_message and whatever
 // extra tools each registered messenger contributes via messengerTools —
@@ -550,12 +565,6 @@ func (a *Agent) DefaultConversation() (conv messaging.ConversationRef, ok bool) 
 	return messaging.ConversationRef{}, false
 }
 
-// Memory holds an agent's conversation turns across separate inbound
-// messages, keyed by an arbitrary string id.
-type Memory interface {
-	History(id string) []llm.Message
-	Append(id string, messages ...llm.Message)
-}
 
 // ownerMemoryKey is the single memory thread every RunLoop call reads from
 // and writes to, regardless of which platform or which conversation ID the

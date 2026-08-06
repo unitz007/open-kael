@@ -1,4 +1,4 @@
-package memory
+package main
 
 import (
 	"encoding/json"
@@ -10,11 +10,13 @@ import (
 	"github.com/unitz007/kael/llm"
 )
 
-// FileHistory is InMemoryHistory's durable counterpart — same per-id,
-// trimmed-to-maxHistoryMessages semantics, but backed by a JSON file on
-// disk instead of a map that only lives as long as the process does. Every
+// FileHistory is a memory.Memory implementation backed by a JSON file on
+// disk instead of a map that only lives as long as the process does — see
+// memory.go's InMemoryHistory for the process-local counterpart. Every
 // Append persists the full updated store, so conversation history survives
-// a restart instead of starting over from nothing every time.
+// a restart instead of starting over from nothing every time. Copy this
+// file as the starting point for your own persistent Memory (swap the JSON
+// file for a database, an object store, whatever fits).
 type FileHistory struct {
 	mu   sync.Mutex
 	path string

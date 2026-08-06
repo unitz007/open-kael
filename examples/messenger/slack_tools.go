@@ -1,4 +1,4 @@
-package messaging
+package messenger
 
 import (
 	"context"
@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/unitz007/kael/messaging"
 	"github.com/unitz007/kael/tools"
 )
 
@@ -38,11 +39,11 @@ func (b *SlackBot) addReactionTool() *tools.ToolSpec {
 				return nil, err
 			}
 
-			conv, ok := ConversationFromContext(ctx)
+			conv, ok := messaging.ConversationFromContext(ctx)
 			if !ok {
 				return nil, fmt.Errorf("add_reaction: no active conversation to react in")
 			}
-			messageID, ok := MessageIDFromContext(ctx)
+			messageID, ok := messaging.MessageIDFromContext(ctx)
 			if !ok {
 				return nil, fmt.Errorf("add_reaction: no specific message to react to (only works when replying to an inbound Slack message)")
 			}

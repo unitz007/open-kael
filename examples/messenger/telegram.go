@@ -1,4 +1,4 @@
-package messaging
+package messenger
 
 import (
 	"bytes"
@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/yuin/goldmark"
+
+	"github.com/unitz007/kael/messaging"
 )
 
 const telegramPlatform = "telegram"
@@ -54,11 +56,11 @@ func (b *TelegramBot) Platform() string {
 	return telegramPlatform
 }
 
-func (b *TelegramBot) DefaultConversation() ConversationRef {
-	return ConversationRef{Platform: telegramPlatform, ChatID: b.ChatId}
+func (b *TelegramBot) DefaultConversation() messaging.ConversationRef {
+	return messaging.ConversationRef{Platform: telegramPlatform, ChatID: b.ChatId}
 }
 
-func (b *TelegramBot) Send(ctx context.Context, conv ConversationRef, message string) error {
+func (b *TelegramBot) Send(ctx context.Context, conv messaging.ConversationRef, message string) error {
 
 	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", b.Token)
 
@@ -119,7 +121,7 @@ type telegramUpdatesResponse struct {
 // needed, just an outbound connection, which fits this project's existing
 // "no infra beyond outbound HTTP" style. Stops cleanly when ctx is
 // cancelled.
-func (b *TelegramBot) Listen(ctx context.Context, onMessage func(InboundMessage)) error {
+func (b *TelegramBot) Listen(ctx context.Context, onMessage func(messaging.InboundMessage)) error {
 	offset := 0
 	client := &http.Client{Timeout: 40 * time.Second}
 
@@ -173,8 +175,8 @@ func (b *TelegramBot) Listen(ctx context.Context, onMessage func(InboundMessage)
 			}
 			chatID := strconv.FormatInt(update.Message.Chat.ID, 10)
 			log.Printf("📥telegram: received message from chat %s: %q", chatID, update.Message.Text)
-			onMessage(InboundMessage{
-				Conversation: ConversationRef{
+			onMessage(messaging.InboundMessage{
+				Conversation: messaging.ConversationRef{
 					Platform: telegramPlatform,
 					ChatID:   chatID,
 				},
