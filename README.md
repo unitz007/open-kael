@@ -180,7 +180,8 @@ triggers/    TriggerType, Trigger
 tools/       ToolSpec and its builder
 llm/         provider-agnostic types (Message, Response, the LLM interface) — no implementations
 events/      a pub/sub event bus
-human/       a placeholder type, not yet used by anything in this module
+human/       Human{Name,Location,Timezone,Notes} + FromEnv() — read once inside agent.NewAgent
+             (HUMAN_NAME/HUMAN_LOCATION/HUMAN_TIMEZONE/HUMAN_NOTES), nil if HUMAN_NAME is unset
 examples/    starter (identity + memory + cron + webhook + messenger, copyable), basic (two-agent delegation demo),
              researchspecialist (delegation-only demo agent), messenger (Slack/Telegram Messenger reference),
              llm/openai (OpenAI-compatible chat-completions client reference)
