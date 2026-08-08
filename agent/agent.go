@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-co-op/gocron/v2"
@@ -790,6 +791,18 @@ func (a *Agent) registerWebhook(wf *workflow.Workflow, src webhook.Source) {
 		return
 	}
 
+	// running guards against a burst of webhook deliveries (e.g. Gmail's
+	// push notifications aren't scoped to exactly one change, and can
+	// arrive several at once) spawning overlapping concurrent runs of the
+	// same workflow. Every one of these workflows re-derives its own
+	// current state from scratch on each run (list_todays_unread_email,
+	// get_open_trades, etc.), so a delivery that arrives while a run is
+	// already in flight is safe to just drop — the in-flight run (or the
+	// next delivery after it finishes) will see whatever that dropped
+	// delivery would have. One flag per (workflow, source) registration,
+	// not per-agent, since registerWebhook is called once per such pair.
+	var running atomic.Bool
+
 	a.webhookMux.HandleFunc(src.Path(), func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -813,10 +826,18 @@ func (a *Agent) registerWebhook(wf *workflow.Workflow, src webhook.Source) {
 			return
 		}
 
+		if !running.CompareAndSwap(false, true) {
+			log.Printf("%s: workflow %q already running from an earlier webhook delivery — skipping this one", a.Name, wf.Name)
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
 		// Async: a webhook delivery typically has its own short timeout,
 		// while a workflow's own loop can run far longer — same reasoning
 		// as every hand-rolled webhook handler this replaces.
 		go func() {
+			defer running.Store(false)
+
 			log.Printf("🧨%s for %s Triggered", wf.Name, a.Name)
 			if a.eventBus != nil {
 				a.eventBus.PublishEvent("workflow.triggered", a.Name, wf.Name, "Workflow triggered", nil, nil)
