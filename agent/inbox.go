@@ -1,8 +1,8 @@
 package agent
 
 import (
-	"github.com/unitz007/kael/messaging"
 	"context"
+	"github.com/unitz007/kael/messaging"
 	"sync"
 )
 
@@ -13,6 +13,7 @@ type InBox struct {
 	Payload      string
 	MessageID    string // the platform's own id for this message, if any — see messaging.InboundMessage.MessageID
 	ThreadID     string // the thread this message belongs to, if any — see messaging.InboundMessage.ThreadID
+	WorkflowID   string // the workflow this message traces back to, if any — see messaging.InboundMessage.WorkflowID
 }
 
 // MessageQueue is a simple in-memory message queue backed by a buffered channel.

@@ -54,6 +54,7 @@ type Agent struct {
 	webhookMux     *http.ServeMux
 	identities     map[string]identity.Identity
 	retrievers     map[string]rag.Retriever
+	memoryKeyFunc  messaging.MemoryKeyFunc
 	// MaxIterations caps RunLoop and runDelegatedTask's own loops — a
 	// workflow's nested run can still go further via its own Iteration
 	// field (falling back to this value when unset), but a plain
@@ -397,8 +398,8 @@ func (a *Agent) AddRetriever(name string, r rag.Retriever) {
 // before Start(): Enqueue just buffers on the channel regardless of whether
 // a listener is attached yet. InBox/MessageQueue stay internal; callers
 // never need to touch them directly.
-func (a *Agent) EnqueueMessage(conv messaging.ConversationRef, text, messageID, threadID string) {
-	a.inBox.Enqueue(InBox{Conversation: conv, Payload: text, MessageID: messageID, ThreadID: threadID})
+func (a *Agent) EnqueueMessage(conv messaging.ConversationRef, text, messageID, threadID, workflowID string) {
+	a.inBox.Enqueue(InBox{Conversation: conv, Payload: text, MessageID: messageID, ThreadID: threadID, WorkflowID: workflowID})
 }
 
 // endLoopResult carries the two things end_loop captures: a bookkeeping
@@ -624,17 +625,29 @@ func (a *Agent) DefaultConversation() (conv messaging.ConversationRef, ok bool) 
 	return messaging.ConversationRef{}, false
 }
 
-// ownerMemoryKey is the single memory thread every RunLoop call reads from
-// and writes to, regardless of which platform or which conversation ID the
-// message actually arrived on. Deliberate: this agent is single-owner (one
-// person, potentially reachable through several Messengers — e.g. both
-// Telegram and Slack), and per-platform IDs never line up across
-// platforms, so keying by conv.ChatID would silently start a fresh,
-// disconnected thread every time the owner switched platforms. The
-// tradeoff, worth remembering if this ever stops being true: nothing
-// distinguishes *who* is messaging — anyone able to reach any registered
-// Messenger shares this same thread and sees the same history.
-const ownerMemoryKey = "owner"
+// SetMemoryKeyFunc overrides how this agent partitions memory across
+// RunLoop/runWorkflow/runDelegatedTask — see messaging.MemoryKeyFunc and
+// its presets (KeyByAgent, KeyByConversation, KeyByThread, KeyByWorkflow).
+// Defaults to messaging.KeyByAgent() (one shared thread for the entire
+// agent, regardless of platform/conversation/thread) if never called —
+// this agent's original behavior, unchanged for anyone not opting in. That
+// default exists for the same reason a single-owner agent (one person,
+// reachable through several Messengers — e.g. both Telegram and Slack)
+// might want one continuous thread of context no matter which platform
+// they use, rather than a fresh, disconnected one every time they switch —
+// still available via KeyByAgent, just no longer the only option.
+func (a *Agent) SetMemoryKeyFunc(fn messaging.MemoryKeyFunc) {
+	a.memoryKeyFunc = fn
+}
+
+// memoryKey resolves the configured (or default) MemoryKeyFunc for the
+// current run.
+func (a *Agent) memoryKey(ctx context.Context, conv messaging.ConversationRef) string {
+	if a.memoryKeyFunc == nil {
+		return messaging.KeyByAgent()(ctx, conv)
+	}
+	return a.memoryKeyFunc(ctx, conv)
+}
 
 type EventPublisher interface {
 	PublishEvent(eventType, agentName, workflow, message string, err error, data map[string]interface{})
@@ -693,7 +706,7 @@ func (a *Agent) Start(ctx context.Context) error {
 	for _, m := range a.messengers {
 		go func(m messaging.Messenger) {
 			if err := m.Listen(ctx, func(msg messaging.InboundMessage) {
-				a.EnqueueMessage(msg.Conversation, msg.Text, msg.MessageID, msg.ThreadID)
+				a.EnqueueMessage(msg.Conversation, msg.Text, msg.MessageID, msg.ThreadID, msg.WorkflowID)
 			}); err != nil {
 				log.Printf("messenger %s listen error: %v", m.Platform(), err)
 			}
@@ -921,20 +934,22 @@ func (a *Agent) delegationBlock() string {
 // RunLoop is the agent-to-user entry point: the only way a real
 // conversation (a Telegram message, or anything else that carries a
 // ConversationRef) runs an agent's loop. It seeds the loop with this
-// conversation's prior turns (if a.memory is set, keyed by conv.ChatID) and
-// persists the new turns back afterward, so the agent remembers earlier
-// messages in the same conversation. Its toolset always includes
-// send_message (if a messenger's registered), every workflow as a tool, and
-// every sibling agent as a delegate_to_<id> tool — unconditionally, since
-// this method is never used for anything but a real conversation. The
-// agent-to-agent counterpart is runDelegatedTask, a genuinely separate
-// method rather than a flagged variant of this one.
+// conversation's prior turns (if a.memory is set, keyed by the agent's
+// configured MemoryKeyFunc — see SetMemoryKeyFunc) and persists the new
+// turns back afterward, so the agent remembers earlier messages under that
+// same key. Its toolset always includes send_message (if a messenger's
+// registered), every workflow as a tool, and every sibling agent as a
+// delegate_to_<id> tool — unconditionally, since this method is never used
+// for anything but a real conversation. The agent-to-agent counterpart is
+// runDelegatedTask, a genuinely separate method rather than a flagged
+// variant of this one.
 func (a *Agent) RunLoop(ctx context.Context, conv messaging.ConversationRef, userPrompt string) (*LoopResult, error) {
 	ctx = ensureDelegationNotes(ctx)
+	memKey := a.memoryKey(ctx, conv)
 
 	var prior []llm.Message
 	if a.memory != nil {
-		prior = a.memory.History(ownerMemoryKey)
+		prior = a.memory.History(memKey)
 	}
 
 	messages := make([]llm.Message, 0, len(prior)+2)
@@ -950,7 +965,7 @@ func (a *Agent) RunLoop(ctx context.Context, conv messaging.ConversationRef, use
 		// Persist only what this call actually added — everything after the
 		// fresh system message and the prior turns we already had stored.
 		newTurns := final[1+len(prior):]
-		a.memory.Append(ownerMemoryKey, newTurns...)
+		a.memory.Append(memKey, newTurns...)
 	}
 
 	if err != nil {
@@ -1004,6 +1019,7 @@ func (a *Agent) handleMessage(msg InBox) error {
 	ctx := messaging.WithConversation(context.Background(), msg.Conversation)
 	ctx = messaging.WithMessageID(ctx, msg.MessageID)
 	ctx = messaging.WithThreadID(ctx, msg.ThreadID)
+	ctx = messaging.WithWorkflowID(ctx, msg.WorkflowID)
 	result, err := a.RunLoop(ctx, msg.Conversation, msg.Payload)
 	if err != nil {
 		return err
@@ -1148,11 +1164,30 @@ func (a *Agent) runWorkflow(ctx context.Context, wf *workflow.Workflow, includeU
 	ctx = identity.WithIdentities(ctx, a.identities)
 	ctx = rag.WithRetrievers(ctx, a.retrievers)
 	ctx = ensureDelegationNotes(ctx)
+	ctx = messaging.WithWorkflowID(ctx, wf.ID)
 
-	messages := []llm.Message{
-		{Role: "system", Content: wf.SystemPrompt + " " + loopProtocolInstructions},
-		{Role: "user", Content: userTrigger},
+	// conv: cron/webhook triggers pass context.Background(), so there's no
+	// conversation to inherit — fall back to DefaultConversation. Triggered
+	// mid-conversation as a tool call (workflowToolSpec's handler, calling
+	// this with the SAME ctx it received), ctx already carries the real
+	// conversation from RunLoop, so that's preferred instead. With
+	// KeyByWorkflow configured, WorkflowID above wins over either case
+	// anyway — this only matters for a MemoryKeyFunc that doesn't wrap it.
+	conv, ok := messaging.ConversationFromContext(ctx)
+	if !ok {
+		conv, _ = a.DefaultConversation()
 	}
+	memKey := a.memoryKey(ctx, conv)
+
+	var prior []llm.Message
+	if a.memory != nil {
+		prior = a.memory.History(memKey)
+	}
+
+	messages := make([]llm.Message, 0, len(prior)+2)
+	messages = append(messages, llm.Message{Role: "system", Content: wf.SystemPrompt + " " + loopProtocolInstructions})
+	messages = append(messages, prior...)
+	messages = append(messages, llm.Message{Role: "user", Content: userTrigger})
 	base := a.Tools
 	if includeUserReply {
 		base = a.baseTools()
@@ -1189,7 +1224,11 @@ func (a *Agent) runWorkflow(ctx context.Context, wf *workflow.Workflow, includeU
 	if maxToolCalls <= 0 {
 		maxToolCalls = a.MaxToolCallsPerResponse
 	}
-	result, _, err := a.runLoopFrom(ctx, messages, toolset, maxIter, maxDuplicateToolCalls, maxToolCalls)
+	result, final, err := a.runLoopFrom(ctx, messages, toolset, maxIter, maxDuplicateToolCalls, maxToolCalls)
+	if a.memory != nil {
+		newTurns := final[1+len(prior):]
+		a.memory.Append(memKey, newTurns...)
+	}
 	return result, err
 }
 
@@ -1369,10 +1408,13 @@ func consumeDelegationNotes(ctx context.Context) string {
 // signature instead of hidden in context. Differences from RunLoop, each
 // structural rather than a withheld/flagged behavior:
 //   - No ConversationRef parameter: delegation isn't a human conversation,
-//     so it doesn't borrow that type to pretend it is.
-//   - No memory: a delegated call is a stateless subroutine invocation —
-//     each one starts fresh, with no continuity across separate delegated
-//     calls even within the same outer conversation.
+//     so it doesn't borrow that type to pretend it is. Memory is still
+//     keyed via a.memoryKey(ctx, conv), using whatever ConversationRef (and
+//     WorkflowID, if any) the delegating call inherited via ctx — each
+//     delegate applies its own configured MemoryKeyFunc to that inherited
+//     context, in its own memory store, so e.g. a delegation traced back to
+//     a specific workflow gets its own accumulating history on the
+//     delegate's side too, distinct from a plain one-off delegated call.
 //   - Its toolset is baseTools() + workflowToolSpecs(false) — everything a
 //     normal conversational run gets, including send_message and any
 //     messenger tools (add_reaction, ...), routed through whatever
@@ -1387,18 +1429,34 @@ func (a *Agent) runDelegatedTask(ctx context.Context, task string) (*LoopResult,
 	}
 	ctx = resetDelegationNotes(ctx)
 
+	// conv: inherited from whoever delegated to us (the delegator's own
+	// ConversationRef, or nothing if the delegator itself had none — see
+	// runWorkflow's fallback to DefaultConversation, which this then
+	// inherits in turn).
+	conv, _ := messaging.ConversationFromContext(ctx)
+	memKey := a.memoryKey(ctx, conv)
+
+	var prior []llm.Message
+	if a.memory != nil {
+		prior = a.memory.History(memKey)
+	}
+
 	systemContent := a.systemPrompt() +
 		"\n\nThis task was delegated to you by another agent, not requested directly by a human. Always call end_loop with your final_message when done — it is relayed back to the delegating agent automatically, and is the one guaranteed way your answer gets through, so the delegating agent can pass it on itself. If a reaction tool (e.g. add_reaction) is available, you may use it on the conversation/message that triggered this delegation as a lightweight status signal — not a replacement for final_message."
 
-	messages := []llm.Message{
-		{Role: "system", Content: systemContent},
-		{Role: "user", Content: task},
-	}
+	messages := make([]llm.Message, 0, len(prior)+2)
+	messages = append(messages, llm.Message{Role: "system", Content: systemContent})
+	messages = append(messages, prior...)
+	messages = append(messages, llm.Message{Role: "user", Content: task})
 	toolset := mergeTools(a.baseTools(), a.workflowToolSpecs(false))
 	toolset = excludeTool(toolset, "send_message")
 	toolset = filterToolsForPlatform(toolset, a.resolvePlatform(ctx))
 
-	result, _, err := a.runLoopFrom(ctx, messages, toolset, a.MaxIterations, a.MaxDuplicateToolCallsPerResponse, a.MaxToolCallsPerResponse)
+	result, final, err := a.runLoopFrom(ctx, messages, toolset, a.MaxIterations, a.MaxDuplicateToolCallsPerResponse, a.MaxToolCallsPerResponse)
+	if a.memory != nil {
+		newTurns := final[1+len(prior):]
+		a.memory.Append(memKey, newTurns...)
+	}
 	return result, err
 }
 

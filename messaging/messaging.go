@@ -8,8 +8,8 @@ import (
 
 // ConversationRef addresses a specific chat/channel/DM on a specific
 // platform — everything Send needs to route a reply to the right place.
-// It is not used as a memory/threading key (see memory.Memory) — only
-// ChatID is, deliberately excluding Platform from that concern.
+// Also feeds into memory partitioning (see MemoryKeyFunc) alongside
+// whatever else a given strategy reads off ctx.
 type ConversationRef struct {
 	Platform string // "telegram", "slack", ...
 	ChatID   string // platform-specific chat/channel/DM id
@@ -34,6 +34,12 @@ type InboundMessage struct {
 	// reply can go back into the same thread rather than reacting to one
 	// specific message in it. Empty on platforms with no threading concept.
 	ThreadID string
+	// WorkflowID is set only when this message is a genuine reply within a
+	// thread whose root message was tagged as having come from a specific
+	// workflow (a Messenger-specific mechanism — e.g. Slack message
+	// metadata; see KeyByWorkflow). Empty for ordinary chat, and empty on
+	// platforms with no equivalent tagging mechanism.
+	WorkflowID string
 }
 
 // Messenger is a full bidirectional platform adapter: send to a specific
@@ -124,4 +130,81 @@ func WithThreadID(ctx context.Context, id string) context.Context {
 func ThreadIDFromContext(ctx context.Context) (string, bool) {
 	id, _ := ctx.Value(threadIDCtxKey{}).(string)
 	return id, id != ""
+}
+
+type workflowIDCtxKey struct{}
+
+// WithWorkflowID attaches the id of the workflow this run either IS (see
+// runWorkflow) or traces back to (a reply in a thread whose root message a
+// Messenger identified as workflow-tagged — e.g. Slack message metadata,
+// see InboundMessage.WorkflowID) — same reasoning as WithMessageID/
+// WithThreadID, so a Messenger's Send implementation and a MemoryKeyFunc
+// can both read it off ctx without a dedicated parameter everywhere.
+func WithWorkflowID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, workflowIDCtxKey{}, id)
+}
+
+// WorkflowIDFromContext returns the id WithWorkflowID attached, if any. ok
+// is false both when nothing was attached and when an empty id was.
+func WorkflowIDFromContext(ctx context.Context) (string, bool) {
+	id, _ := ctx.Value(workflowIDCtxKey{}).(string)
+	return id, id != ""
+}
+
+// MemoryKeyFunc derives the memory.Memory key for the current run — the
+// extension point Agent.RunLoop/runWorkflow/runDelegatedTask use instead of
+// a fixed key, so anyone building on this framework can choose (or write)
+// their own partitioning strategy: one shared thread for the whole agent,
+// one per conversation, one per thread, one per workflow, or any custom
+// combination. See Agent.SetMemoryKeyFunc.
+type MemoryKeyFunc func(ctx context.Context, conv ConversationRef) string
+
+// KeyByAgent always returns the same key — one shared memory thread for the
+// entire agent, regardless of platform/conversation/thread. The default
+// when no MemoryKeyFunc is configured.
+func KeyByAgent() MemoryKeyFunc {
+	return func(ctx context.Context, conv ConversationRef) string { return "owner" }
+}
+
+// KeyByConversation partitions by platform+chat — a DM and a channel each
+// get independent memory, but everything within one channel (its main
+// timeline and every thread in it) shares one bucket.
+func KeyByConversation() MemoryKeyFunc {
+	return func(ctx context.Context, conv ConversationRef) string {
+		return conv.Platform + ":" + conv.ChatID
+	}
+}
+
+// KeyByThread partitions by platform+chat+thread. A message that starts a
+// new thread has threadID == messageID (every Messenger's documented
+// ThreadID contract — see InboundMessage.ThreadID) — that case collapses to
+// the channel's shared non-threaded bucket; a genuine reply inside an
+// existing thread has threadID pointing at the thread's root instead,
+// producing its own separate key.
+func KeyByThread() MemoryKeyFunc {
+	return func(ctx context.Context, conv ConversationRef) string {
+		messageID, _ := MessageIDFromContext(ctx)
+		threadID, _ := ThreadIDFromContext(ctx)
+		threadPart := threadID
+		if threadID == messageID {
+			threadPart = ""
+		}
+		return conv.Platform + ":" + conv.ChatID + ":" + threadPart
+	}
+}
+
+// KeyByWorkflow wraps another strategy, overriding it with a dedicated,
+// stable per-workflow key whenever WorkflowIDFromContext is set — either
+// this run IS a workflow run, or it's a reply that traced back to one —
+// falling back to fallback otherwise. The workflow key is intentionally
+// not shaped like fallback's own keys (no conv/thread component at all):
+// it's meant to be one ongoing bucket across every run of that workflow,
+// not scoped to any single conversation or thread.
+func KeyByWorkflow(fallback MemoryKeyFunc) MemoryKeyFunc {
+	return func(ctx context.Context, conv ConversationRef) string {
+		if workflowID, ok := WorkflowIDFromContext(ctx); ok {
+			return "workflow:" + workflowID
+		}
+		return fallback(ctx, conv)
+	}
 }

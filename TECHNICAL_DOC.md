@@ -186,7 +186,7 @@ type Memory interface {
 
 `NewAgent` wires every agent to a `FileHistory` at `data/memory/<id>.json` via `newAgentMemory`, falling back to `InMemoryHistory` if the directory can't be created or the file can't be loaded — a filesystem problem degrades that one agent's memory rather than crashing the runtime.
 
-`id` is an arbitrary string chosen by the caller — `RunLoop` currently uses a single constant (`ownerMemoryKey = "owner"`) for every call regardless of platform or `ConversationRef.ChatID`, so an agent's memory is one shared thread across every conversation it's reachable on. This is a deliberate single-owner design choice, not a general property of the `Memory` interface itself — see the doc comment on `ownerMemoryKey` in `agent/agent.go` for the tradeoff if that assumption ever needs to change.
+`id` is an arbitrary string chosen by the caller — `RunLoop`/`runWorkflow`/`runDelegatedTask` all derive it via `Agent.memoryKey`, which delegates to a configurable `messaging.MemoryKeyFunc` (`Agent.SetMemoryKeyFunc`). The default, `messaging.KeyByAgent()`, reproduces the platform's original behavior — one shared key ("owner") for every call regardless of platform/conversation/thread — but isn't the only option: `KeyByConversation`/`KeyByThread` partition by `ConversationRef`/Slack thread, and `KeyByWorkflow` gives each workflow (see `workflow.Workflow`) its own ongoing bucket across every run, including replies traced back to it via a Messenger-specific tagging mechanism (see `messaging.WithWorkflowID`). See `messaging/messaging.go` for the full set of presets and how to compose or write your own.
 
 ---
 

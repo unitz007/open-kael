@@ -391,7 +391,7 @@ type Memory interface {
 
 Two implementations ship: `memory.NewInMemoryHistory()` (process-local, lost on restart) and `memory.NewFileHistory(path)` (JSON-file-backed, survives a restart). `agent.NewAgent` wires every agent to a `FileHistory` at `data/memory/<id>.json` automatically, falling back to in-memory on any filesystem error.
 
-**Every `RunLoop` call for a given agent reads and writes the same memory thread**, regardless of which platform or which `ConversationRef.ChatID` the message came in on — there's a single constant key inside `agent.go`, not one per conversation. This is a deliberate single-owner design: an agent reachable on both Telegram and Slack remembers the same conversation across both, rather than starting a fresh thread per platform. The tradeoff: nothing distinguishes *who* is messaging — anyone able to reach any registered `Messenger` for that agent shares the same history. If you need per-conversation or per-user isolation, that's a change to make in your own fork or wrapper around `Agent`, not something this module's `Memory` interface itself prevents (the interface takes an arbitrary `id` — it's `agent.go`'s own call site that currently always passes the same one).
+**How memory gets partitioned is a configurable strategy, not a fixed rule.** `RunLoop`/`runWorkflow`/`runDelegatedTask` all derive their memory key via `Agent.SetMemoryKeyFunc(fn messaging.MemoryKeyFunc)` — unset, it defaults to `messaging.KeyByAgent()`, one shared thread for the whole agent regardless of platform/conversation/thread (the original single-owner behavior: an agent reachable on both Telegram and Slack remembers the same conversation across both, at the cost of nothing distinguishing *who* is messaging). `messaging.KeyByConversation()`/`KeyByThread()` partition by `ConversationRef`/Slack thread instead, and `KeyByWorkflow(fallback)` gives each workflow its own ongoing bucket across every run — including a reply that traces back to it via a Messenger-specific tagging mechanism (Slack: invisible message metadata read back via `conversations.replies`; see `messaging.WithWorkflowID`). Compose these, or write your own `MemoryKeyFunc` — e.g. per-user isolation, which nothing ships today (no user-id field exists in the inbound pipeline), is exactly the kind of thing a custom strategy is for.
 
 ---
 
@@ -427,7 +427,7 @@ Two implementations ship: `memory.NewInMemoryHistory()` (process-local, lost on 
 - **Double JSON unmarshal** — every tool handler receives a JSON string wrapper around its actual arguments (see [§4](#4-creating-tools-with-toolbuilder)).
 - **Single trigger type implemented** — `WebhookTriggerType`/`EventTriggerType` are declared but have no handling in `Agent.Start`.
 - **No shared-channel routing** — each agent needs its own `Messenger`/bot token to be directly reachable by a human; there's no way yet for multiple agents to field messages from one shared channel and have a human pick which one to address.
-- **Single-owner memory** — see [§10](#10-memory); not a fit for a multi-tenant deployment as-is.
+- **No built-in per-user memory partitioning preset** — see [§10](#10-memory); write a custom `MemoryKeyFunc` if you need it, not a fit for a multi-tenant deployment out of the box otherwise.
 - **No test coverage** for the loop's guard rails (repeat-blocking, tool-less nudge, runaway-batch cap) yet — manually verified during development only.
 
 ---
