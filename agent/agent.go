@@ -48,7 +48,7 @@ type Agent struct {
 	eventBus       EventPublisher
 	memory         memory.Memory
 	inBox          *MessageQueue
-	human          *human.Human
+	human          human.Human
 	messengers     map[string]messaging.Messenger
 	directory      AgentDirectory
 	webhookMux     *http.ServeMux
@@ -423,15 +423,13 @@ const loopProtocolInstructions = "You have access to tools. " +
 	"Never expose a tool name or argument in your final answer — the user should not see any tool calls, only the final_message you put in end_loop."
 
 func NewAgent(id, name, description, identityPrompt string, llm llm.LLM) *Agent {
-	h := human.FromEnv()
 	a := &Agent{
 		Id:             id,
 		Name:           name,
 		Description:    description,
-		IdentityPrompt: humanIdentityPrefix(h) + identityPrompt + loopProtocolInstructions,
+		IdentityPrompt: identityPrompt + loopProtocolInstructions,
 		Workflows:      make([]*workflow.Workflow, 0),
 		LLM:            llm,
-		human:          h,
 		Tools: []*tools.ToolSpec{
 			tools.NewToolBuilder("end_loop", "Call this when you have fully completed the user's request and have nothing further to do. Do not call this if you still need to call another tool").
 				Parameter("final_message", "string", "The actual final answer to the user. This is the one place your answer is captured — do not leave it empty.", true).
@@ -640,6 +638,14 @@ func (a *Agent) DefaultConversation() (conv messaging.ConversationRef, ok bool) 
 // still available via KeyByAgent, just no longer the only option.
 func (a *Agent) SetMemoryKeyFunc(fn messaging.MemoryKeyFunc) {
 	a.memoryKeyFunc = fn
+}
+
+// SetHuman wires h onto this agent — its Details() is read fresh on every
+// prompt build (see humanBlock). Normally called once by Runtime.SetHuman
+// on every registered agent, not per agent directly; exposed here so an
+// agent used standalone (no Runtime) can still opt in.
+func (a *Agent) SetHuman(h human.Human) {
+	a.human = h
 }
 
 // memoryKey resolves the configured (or default) MemoryKeyFunc for the
@@ -909,41 +915,23 @@ func (a *Agent) systemPrompt() string {
 	return a.IdentityPrompt + "\n" + a.humanBlock() + a.capabilitiesBlock()
 }
 
-// humanIdentityPrefix opens IdentityPrompt — personalized if h is set
-// (see human.FromEnv), a generic fallback otherwise, so an agent with no
-// HUMAN_NAME configured reads exactly as it did before this existed.
-func humanIdentityPrefix(h *human.Human) string {
-	if h == nil || h.Name == "" {
-		return "You are an AI agent."
-	}
-	return "You are an AI agent for " + h.Name + "."
-}
-
-// humanBlock describes the person this agent serves beyond just their name
-// (already in IdentityPrompt via humanIdentityPrefix) — location, timezone,
-// and any freeform notes, when set. Empty string if a.human is nil, so it's
-// safe to always splice into a prompt unconditionally. workflowToolSpec's
-// nested run builds its own separate prompt from wf.SystemPrompt rather
-// than calling systemPrompt() — see runWorkflow, which appends this
-// explicitly for that reason.
+// humanBlock describes the person this agent serves, when a Human is
+// wired in (see SetHuman) — read fresh on every call, so an implementation
+// backed by a live cache stays current without this needing to know
+// anything about how. Empty string if a.human is nil or Details() returns
+// "", so it's safe to always splice into a prompt unconditionally.
+// workflowToolSpec's nested run builds its own separate prompt from
+// wf.SystemPrompt rather than calling systemPrompt() — see runWorkflow,
+// which appends this explicitly for that reason.
 func (a *Agent) humanBlock() string {
 	if a.human == nil {
 		return ""
 	}
-	var b strings.Builder
-	if a.human.Location != "" {
-		fmt.Fprintf(&b, "They're based in %s. ", a.human.Location)
-	}
-	if a.human.Timezone != "" {
-		fmt.Fprintf(&b, "Their timezone is %s. ", a.human.Timezone)
-	}
-	if a.human.Notes != "" {
-		fmt.Fprintf(&b, "%s ", a.human.Notes)
-	}
-	if b.Len() == 0 {
+	details := a.human.Details()
+	if details == "" {
 		return ""
 	}
-	return b.String() + "\n"
+	return "These are the human's details: " + details + "\n"
 }
 
 // delegationBlock lists sibling agents available via delegateToolSpecs, so

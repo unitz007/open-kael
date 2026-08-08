@@ -1,10 +1,11 @@
 package runtime
 
 import (
-	"github.com/unitz007/kael/agent"
-	"github.com/unitz007/kael/events"
 	"context"
 	"fmt"
+	"github.com/unitz007/kael/agent"
+	"github.com/unitz007/kael/events"
+	"github.com/unitz007/kael/human"
 	"log"
 	"net/http"
 )
@@ -15,6 +16,18 @@ type Runtime struct {
 	agentRegistry []*agent.Agent
 	EventBus      *events.EventBus
 	webhookMux    *http.ServeMux
+	human         human.Human
+}
+
+// SetHuman wires h onto every currently-registered agent, and onto every
+// agent registered after this call — set once here rather than per agent,
+// the same way EventBus and the webhook mux are already shared through
+// RegisterAgent rather than configured on each agent individually.
+func (r *Runtime) SetHuman(h human.Human) {
+	r.human = h
+	for _, a := range r.agentRegistry {
+		a.SetHuman(h)
+	}
 }
 
 func NewRuntime() *Runtime {
@@ -48,6 +61,9 @@ func (r *Runtime) RegisterAgent(a *agent.Agent) {
 	a.SetEventBus(r.EventBus)
 	a.SetDirectory(r)
 	a.SetWebhookMux(r.webhookMux)
+	if r.human != nil {
+		a.SetHuman(r.human)
+	}
 	r.agentRegistry = append(r.agentRegistry, a)
 
 	r.EventBus.PublishEvent(string(events.EventAgentRegistered), a.Name, "", fmt.Sprintf("Agent %s registered", a.Name), nil, nil)
