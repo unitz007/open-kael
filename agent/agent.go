@@ -50,11 +50,19 @@ type Agent struct {
 	inBox          *MessageQueue
 	human          human.Human
 	messengers     map[string]messaging.Messenger
-	directory      AgentDirectory
-	webhookMux     *http.ServeMux
-	identities     map[string]identity.Identity
-	retrievers     map[string]rag.Retriever
-	memoryKeyFunc  messaging.MemoryKeyFunc
+	// primaryMessenger is whichever Messenger AddMessenger sees first —
+	// used by DefaultConversation so a proactive send with no active
+	// conversation to inherit (a cron/webhook-triggered workflow) has a
+	// deterministic platform to land on once an agent has more than one
+	// messenger registered. Ranging over messengers itself for this would
+	// pick effectively at random: Go map iteration order is randomized,
+	// not insertion order.
+	primaryMessenger messaging.Messenger
+	directory        AgentDirectory
+	webhookMux       *http.ServeMux
+	identities       map[string]identity.Identity
+	retrievers       map[string]rag.Retriever
+	memoryKeyFunc    messaging.MemoryKeyFunc
 	// MaxIterations caps RunLoop and runDelegatedTask's own loops — a
 	// workflow's nested run can still go further via its own Iteration
 	// field (falling back to this value when unset), but a plain
@@ -362,6 +370,9 @@ func (a *Agent) AddMessenger(m messaging.Messenger) {
 		a.messengers = make(map[string]messaging.Messenger)
 	}
 	a.messengers[m.Platform()] = m
+	if a.primaryMessenger == nil {
+		a.primaryMessenger = m
+	}
 }
 
 // IdentifyAs declares who this agent is on an external system — a specific
@@ -613,16 +624,18 @@ func (a *Agent) resolveSendTarget(ctx context.Context) (messaging.ConversationRe
 	return messaging.ConversationRef{}, nil, fmt.Errorf("no messenger registered")
 }
 
-// DefaultConversation returns the first registered messenger's default
+// DefaultConversation returns the first-registered messenger's default
 // conversation — where a proactive send with no active conversation in
-// context goes. ok is false if no messenger is registered at all. External
+// context goes (see primaryMessenger's own doc comment for why this has
+// to be insertion-ordered rather than an arbitrary pick across
+// messengers). ok is false if no messenger is registered at all. External
 // callers (main.go) use this to address an initial message without needing
 // to know which platform is actually registered.
 func (a *Agent) DefaultConversation() (conv messaging.ConversationRef, ok bool) {
-	for _, m := range a.messengers {
-		return m.DefaultConversation(), true
+	if a.primaryMessenger == nil {
+		return messaging.ConversationRef{}, false
 	}
-	return messaging.ConversationRef{}, false
+	return a.primaryMessenger.DefaultConversation(), true
 }
 
 // SetMemoryKeyFunc overrides how this agent partitions memory across
