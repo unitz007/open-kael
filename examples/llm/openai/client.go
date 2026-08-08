@@ -1,11 +1,21 @@
+// Package openai is a working, copyable reference implementation of
+// llm.LLM, talking to any OpenAI-compatible chat-completions endpoint
+// (OpenRouter, OpenAI itself, or any self-hosted equivalent) — same
+// reasoning as examples/messenger: the core library ships no LLM
+// implementations of its own, the interface (llm.LLM) is the contract.
+// Copy this package into your own project, rename it, and edit freely —
+// it isn't meant to be depended on as a permanent import from here. In
+// particular, if you need to pin/exclude specific providers (e.g. via
+// OpenRouter's provider routing), that's exactly the kind of deployment-
+// specific tuning that belongs in your own copy, not upstream here.
 package openai
 
 import (
-	"github.com/unitz007/kael/llm"
-	"github.com/unitz007/kael/tools"
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/unitz007/kael/llm"
+	"github.com/unitz007/kael/tools"
 	"io"
 	"log"
 	"log/slog"

@@ -174,7 +174,7 @@ package myagents
 
 import (
 	"github.com/unitz007/kael/agent"
-	"github.com/unitz007/kael/llm/openai"
+	"github.com/unitz007/kael/examples/llm/openai"
 	"github.com/unitz007/kael/messaging"
 )
 
@@ -403,7 +403,7 @@ Two implementations ship: `memory.NewInMemoryHistory()` (process-local, lost on 
 | No reply to a message, no errors logged | A second process is using the same bot token/connection | Check for a duplicate process, kill it, restart one instance |
 | `telegram getUpdates failed (code 409): Conflict...` | Same as above, for Telegram — surfaced explicitly in logs | Same fix |
 | `⏱️...hit the N-iteration cap without calling end_loop` | The model never produced a valid final answer within 6 iterations | Usually a sign the request needs breaking down, or that a tool is failing repeatedly — check for `Tool execution error` lines just before it |
-| `⚠️...returned plain text instead of a tool call` | The model responded without calling any tool — the loop nudges it to retry rather than accepting unverified content; not by itself an error, just a retry cost | If it happens repeatedly for the same kind of request, tighten that agent/workflow's prompt. If it persists even after a retry, check the logged `finish_reason`/`reasoning` — a reasoning-capable model may need `enableReasoning: false` (see `llm/openai.NewClient`) |
+| `⚠️...returned plain text instead of a tool call` | The model responded without calling any tool — the loop nudges it to retry rather than accepting unverified content; not by itself an error, just a retry cost | If it happens repeatedly for the same kind of request, tighten that agent/workflow's prompt. If it persists even after a retry, check the logged `finish_reason`/`reasoning` — a reasoning-capable model may need `enableReasoning: false` (see `examples/llm/openai.NewClient`) |
 | `⚠️...response contained N tool calls in one turn` | The model's response degenerated into repeating the same tool call many times (a decoding glitch) — the whole batch is discarded automatically | Not actionable beyond noting which request triggered it; retry usually succeeds |
 | `⚠️...tried to repeat ... — blocked` | The model tried to call the same tool with the same arguments twice after it already succeeded | Expected behavior, not a bug — if the model keeps needing this, its prompt may be unclear about when to call `end_loop` |
 | "agent ... already exists in the registry" log | Duplicate `RegisterAgent` call with the same `Id` | Agent IDs must be unique |

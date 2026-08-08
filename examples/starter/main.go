@@ -18,8 +18,8 @@ import (
 	"os/signal"
 
 	"github.com/unitz007/kael/agent"
+	"github.com/unitz007/kael/examples/llm/openai"
 	"github.com/unitz007/kael/examples/messenger"
-	"github.com/unitz007/kael/llm/openai"
 	"github.com/unitz007/kael/runtime"
 	"github.com/unitz007/kael/triggers"
 	"github.com/unitz007/kael/workflow"

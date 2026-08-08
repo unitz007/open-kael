@@ -1,9 +1,9 @@
 package openai
 
 import (
+	"encoding/json"
 	"github.com/unitz007/kael/llm"
 	"github.com/unitz007/kael/tools"
-	"encoding/json"
 )
 
 type ToolSchema struct {

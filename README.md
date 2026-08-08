@@ -157,7 +157,7 @@ a.AddTool(tool)
 
 ## The LLM client
 
-`llm.LLM` is a one-method interface (`Call(messages, tools) (*Response, error)`), so any chat-completions-shaped provider can back an agent. `llm/openai` ships an OpenAI-compatible client:
+`llm.LLM` is a one-method interface (`Call(messages, tools) (*Response, error)`), so any chat-completions-shaped provider can back an agent. `examples/llm/openai` ships an OpenAI-compatible client:
 
 ```go
 openai.NewClient(model string, enableReasoning bool) llm.LLM
@@ -178,11 +178,12 @@ memory/      Memory interface — no implementations
 workflow/    Workflow struct (Trigger, AllowDelegation, Iteration, Tools)
 triggers/    TriggerType, Trigger
 tools/       ToolSpec and its builder
-llm/, llm/openai/  provider-agnostic types + an OpenAI-compatible client
+llm/         provider-agnostic types (Message, Response, the LLM interface) — no implementations
 events/      a pub/sub event bus
 human/       a placeholder type, not yet used by anything in this module
 examples/    starter (identity + memory + cron + webhook + messenger, copyable), basic (two-agent delegation demo),
-             researchspecialist (delegation-only demo agent), messenger (Slack/Telegram Messenger reference)
+             researchspecialist (delegation-only demo agent), messenger (Slack/Telegram Messenger reference),
+             llm/openai (OpenAI-compatible chat-completions client reference)
 ```
 
 ## What isn't finished

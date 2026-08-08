@@ -35,7 +35,7 @@ The shared engine behind every entry point (`RunLoop`, a workflow's nested run, 
 
 1. Threads `a.identities` onto `ctx` via `identity.WithIdentities` — done here, at the top, rather than per-entry-point, so agent-level, nested-workflow, and delegated calls all inherit it, and a delegated call resolves against the *target* agent's identities once `runDelegatedTask` calls back into this function on the target.
 2. Calls `a.LLM.Call(messages, toolset)`.
-3. **No tool calls at all** → not accepted as a final answer, even though every request sets `tool_choice: "required"` (a provider can still ignore it). Silently accepting freeform content here is how an ungrounded answer — invented rather than fetched via a real tool — would sail through unchecked. The response is appended as an assistant turn, a corrective user-role nudge is appended, and the iteration is consumed rather than the loop ending. The nudge and every skipped answer get logged with the response's real `finish_reason` and `reasoning` fields, since a reasoning-capable model has been observed silently dropping the tool-call handoff entirely (see `llm/openai`).
+3. **No tool calls at all** → not accepted as a final answer, even though every request sets `tool_choice: "required"` (a provider can still ignore it). Silently accepting freeform content here is how an ungrounded answer — invented rather than fetched via a real tool — would sail through unchecked. The response is appended as an assistant turn, a corrective user-role nudge is appended, and the iteration is consumed rather than the loop ending. The nudge and every skipped answer get logged with the response's real `finish_reason` and `reasoning` fields, since a reasoning-capable model has been observed silently dropping the tool-call handoff entirely (see `examples/llm/openai`).
 4. **More than `maxToolCallsPerResponse` (10) tool calls in one response** → discarded wholesale, nothing in the batch executes. This is a decoding glitch some models fall into (dozens of copies of the same call in one shot), not real multi-tool intent — same "consume an iteration, nudge, try again" shape as above.
 5. Each remaining tool call is looked up by name; an unrecognized name gets an `error: unknown tool` result. A **repeat guard** (keyed by `name + "\x00" + arguments`) blocks a tool already called once with the same arguments from firing again — except `end_loop`, which is exempt. The guard only marks a call "used" on success, so a transient failure can be retried.
 6. `end_loop` is handled specially: its handler returns `endLoopResult{Reason, FinalMessage}`, and `FinalMessage` (not `Reason`) becomes `LoopResult.Content` — the only place the model's answer is captured, since `tool_choice: "required"` rules out a plain-content-only response.
@@ -240,7 +240,7 @@ json.Unmarshal([]byte(raw), &input)
 
 ---
 
-### `llm/` and `llm/openai/`
+### `llm/` and `examples/llm/openai/`
 
 **`llm.go`** — the provider-agnostic interface:
 
@@ -263,7 +263,7 @@ type LLM interface {
 }
 ```
 
-**`llm/openai/`** — an OpenAI-compatible chat-completions implementation (used against OpenRouter in practice):
+**`examples/llm/openai/`** — an OpenAI-compatible chat-completions implementation (used against OpenRouter in practice):
 
 - **`request.go`** — `NewRequest(model, messages, tools, enableReasoning)` builds the wire payload, always setting `ToolChoice: "required"` and `Reasoning: &ReasoningConfig{Enabled: enableReasoning}`. Each `llm.Message`'s `ToolCalls` gets converted to the **nested** wire shape (`{id, type, function: {name, arguments}}`) — sending the flat internal shape here is silently accepted by the API's schema but leaves the message with no `tool_calls` the API can recognize, so a following `role: "tool"` message gets rejected as orphaned.
 - **`client.go`** — `NewClient(model, enableReasoning)` reads `LLM_API_KEY`/`LLM_BASE_URL` from the environment (`os.Exit(1)` if either is missing), uses a package-level `httpClient` with a 120s timeout (not `http.DefaultClient`, which has none — a hung provider would otherwise block `Call`, and with it the single inbox-processing goroutine and everything queued behind it, forever with no error). `Call` POSTs to `{baseUrl}/api/v1/chat/completions`; on a non-200 response it reads and includes the actual response body in the returned error.
@@ -359,7 +359,7 @@ None of these are read by this module in general — they're specific to whichev
 
 | Variable | Read by |
 |----------|---------|
-| `LLM_API_KEY`, `LLM_BASE_URL` | `llm/openai.NewClient` — `os.Exit(1)` if either is missing |
+| `LLM_API_KEY`, `LLM_BASE_URL` | `examples/llm/openai.NewClient` — `os.Exit(1)` if either is missing |
 | `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID` | `messaging.NewTelegramBot` |
 | `SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN` | `messaging.NewSlackBot` |
 
@@ -455,7 +455,7 @@ Register with `agent.IdentifyAs(myIdentity)`; a tool resolves it with `identity.
 | `triggers/trigger.go` | `TriggerType`, `Trigger` |
 | `tools/tool.go` | `ToolSpec`, `ToolSpecBuilder` |
 | `llm/llm.go` | Provider-agnostic `LLM` interface, `Message`/`Response` |
-| `llm/openai/` | OpenAI-compatible chat-completions client |
+| `examples/llm/openai/` | OpenAI-compatible chat-completions client |
 | `events/events.go` | `EventBus` |
 | `human/human.go` | Placeholder type, currently unused |
 | `examples/researchspecialist/agent.go` | Delegation-only demo agent |

@@ -9,7 +9,7 @@ import (
 	"encoding/json"
 
 	"github.com/unitz007/kael/agent"
-	"github.com/unitz007/kael/llm/openai"
+	"github.com/unitz007/kael/examples/llm/openai"
 	"github.com/unitz007/kael/tools"
 )
 
