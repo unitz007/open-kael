@@ -175,21 +175,27 @@ func KeyByConversation() MemoryKeyFunc {
 	}
 }
 
-// KeyByThread partitions by platform+chat+thread. A message that starts a
-// new thread has threadID == messageID (every Messenger's documented
-// ThreadID contract — see InboundMessage.ThreadID) — that case collapses to
-// the channel's shared non-threaded bucket; a genuine reply inside an
-// existing thread has threadID pointing at the thread's root instead,
-// producing its own separate key.
+// KeyByThread partitions by platform+chat+thread. Keys directly on
+// ThreadID with no special-casing: a message that starts a new thread has
+// ThreadID == its own MessageID (every Messenger's documented ThreadID
+// contract — see InboundMessage.ThreadID), so its own memory turn is
+// already filed under that same value from the start, and a later reply
+// inside that thread — whose ThreadID points back at the same root —
+// resolves to the identical key. This matters in practice more often than
+// it might look: a Messenger's own Send typically threads its reply under
+// the triggering message's ThreadID too (e.g. Slack's thread_ts — see
+// SlackBot.Send in examples/messenger), so most exchanges become a real
+// thread the instant the agent responds, whether or not the human
+// explicitly used their client's "reply in thread" affordance. An earlier
+// version of this collapsed the root case into a shared per-channel
+// bucket instead, which broke exactly that path: the root's own turn
+// would land in the channel bucket while a genuine reply resolved to the
+// thread-specific one, leaving the reply with no visibility into what the
+// root turn had just said.
 func KeyByThread() MemoryKeyFunc {
 	return func(ctx context.Context, conv ConversationRef) string {
-		messageID, _ := MessageIDFromContext(ctx)
 		threadID, _ := ThreadIDFromContext(ctx)
-		threadPart := threadID
-		if threadID == messageID {
-			threadPart = ""
-		}
-		return conv.Platform + ":" + conv.ChatID + ":" + threadPart
+		return conv.Platform + ":" + conv.ChatID + ":" + threadID
 	}
 }
 
