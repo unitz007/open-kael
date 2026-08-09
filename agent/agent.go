@@ -137,6 +137,24 @@ func hasDuplicateToolCalls(calls []tools.ToolCall) bool {
 	return false
 }
 
+// normalizeToolArgs defends against a model calling a tool with no
+// arguments — always possible when every parameter is optional. Handlers
+// expect the OpenAI-compatible wire shape (a JSON-encoded string wrapping
+// the real arguments object) and parse it in two steps; some providers
+// send an empty string (or omit the field) instead of "{}" for a no-arg
+// call, which crashes that second parse with "unexpected end of JSON
+// input" — with nothing actionable for the model to self-correct on, so it
+// just retries the identical call forever. Fixed once here, at the single
+// point every tool call is dispatched from (runLoopFrom below), rather
+// than duplicating the same guard in every handler that decodes args.
+func normalizeToolArgs(args json.RawMessage) json.RawMessage {
+	var inner string
+	if err := json.Unmarshal(args, &inner); err != nil || inner == "" {
+		return json.RawMessage(`"{}"`)
+	}
+	return args
+}
+
 // runLoopFrom is the shared tool-calling engine behind every entry point
 // (RunLoop, a workflow's own nested run, and a delegated call) — same
 // end_loop protocol, same repeat-call guard, just fed a different starting
@@ -265,7 +283,7 @@ func (a *Agent) runLoopFrom(ctx context.Context, messages []llm.Message, toolset
 				continue
 			}
 
-			result, err := tool.Handler(ctx, toolCall.Arguments)
+			result, err := tool.Handler(ctx, normalizeToolArgs(toolCall.Arguments))
 			if err != nil {
 				log.Println("Tool execution error:", err.Error())
 				messages = append(messages, llm.Message{
