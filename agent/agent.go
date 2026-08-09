@@ -571,6 +571,7 @@ func (a *Agent) messengerTools() []*tools.ToolSpec {
 func (a *Agent) sendMessageTool() *tools.ToolSpec {
 	return tools.NewToolBuilder("send_message", "Sends a message back to the user in the current conversation.").
 		Parameter("message", "string", "The message to send", true).
+		Parameter("platform", "string", "Optional. Send through a specific registered platform instead of the current conversation — e.g. \"email\" to email the owner instead of replying here. Only use this when the user explicitly asks to be reached a different way (\"send that to my email\"); leave unset for a normal reply. Fails if that platform isn't registered for this agent.", false).
 		Handler(func(ctx context.Context, args json.RawMessage) (any, error) {
 			if args == nil {
 				return nil, fmt.Errorf("send_message: no arguments provided")
@@ -582,13 +583,14 @@ func (a *Agent) sendMessageTool() *tools.ToolSpec {
 			}
 
 			var input struct {
-				Message string `json:"message"`
+				Message  string `json:"message"`
+				Platform string `json:"platform"`
 			}
 			if err := json.Unmarshal([]byte(raw), &input); err != nil {
 				return nil, err
 			}
 
-			target, messenger, err := a.resolveSendTarget(ctx)
+			target, messenger, err := a.resolveSendTarget(ctx, input.Platform)
 			if err != nil {
 				log.Println("send_message: could not resolve a target:", err)
 				return nil, err
@@ -605,11 +607,29 @@ func (a *Agent) sendMessageTool() *tools.ToolSpec {
 }
 
 // resolveSendTarget picks which conversation/messenger send_message should
-// use: the active conversation from ctx if one's attached (replying to an
-// inbound message), or the first registered messenger's own default
+// use. platform, when non-empty, is an explicit redirect request (e.g. the
+// user asked to be emailed instead of replied to here) — it's honored only
+// if a messenger is actually registered for it, and lands on that
+// messenger's own DefaultConversation unless the active conversation from
+// ctx already happens to be on that same platform (then the real
+// conversation is used instead, preserving thread/channel context rather
+// than falling back to a generic default). With no platform requested,
+// this is the active conversation from ctx if one's attached (replying to
+// an inbound message), or the first registered messenger's own default
 // conversation otherwise (a proactive send — e.g. a cron-triggered
 // workflow with nothing to reply to).
-func (a *Agent) resolveSendTarget(ctx context.Context) (messaging.ConversationRef, messaging.Messenger, error) {
+func (a *Agent) resolveSendTarget(ctx context.Context, platform string) (messaging.ConversationRef, messaging.Messenger, error) {
+	if platform != "" {
+		m, ok := a.messengers[platform]
+		if !ok {
+			return messaging.ConversationRef{}, nil, fmt.Errorf("no messenger registered for platform %q", platform)
+		}
+		if conv, ok := messaging.ConversationFromContext(ctx); ok && conv.Platform == platform {
+			return conv, m, nil
+		}
+		return m.DefaultConversation(), m, nil
+	}
+
 	if conv, ok := messaging.ConversationFromContext(ctx); ok {
 		m, ok := a.messengers[conv.Platform]
 		if !ok {
