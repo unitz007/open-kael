@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"sync"
 
 	"github.com/unitz007/kael/llm"
@@ -27,7 +28,7 @@ func NewInMemoryHistory() *InMemoryHistory {
 	return &InMemoryHistory{byID: make(map[string][]llm.Message)}
 }
 
-func (m *InMemoryHistory) History(id string) []llm.Message {
+func (m *InMemoryHistory) History(ctx context.Context, id string) []llm.Message {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -37,7 +38,7 @@ func (m *InMemoryHistory) History(id string) []llm.Message {
 	return out
 }
 
-func (m *InMemoryHistory) Append(id string, messages ...llm.Message) {
+func (m *InMemoryHistory) Append(ctx context.Context, id string, messages ...llm.Message) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 

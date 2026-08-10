@@ -517,7 +517,7 @@ func newBareMemory() *bareMemory {
 	return &bareMemory{byID: make(map[string][]llm.Message)}
 }
 
-func (m *bareMemory) History(id string) []llm.Message {
+func (m *bareMemory) History(ctx context.Context, id string) []llm.Message {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -527,7 +527,7 @@ func (m *bareMemory) History(id string) []llm.Message {
 	return out
 }
 
-func (m *bareMemory) Append(id string, messages ...llm.Message) {
+func (m *bareMemory) Append(ctx context.Context, id string, messages ...llm.Message) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -651,7 +651,7 @@ func (a *Agent) getThreadHistoryTool() *tools.ToolSpec {
 				return nil, fmt.Errorf("get_thread_history: thread_id is required")
 			}
 
-			messages := a.memory.History(input.ThreadID)
+			messages := a.memory.History(ctx, input.ThreadID)
 			if len(messages) == 0 {
 				return "No history found for that thread_id.", nil
 			}
@@ -1132,7 +1132,7 @@ func (a *Agent) RunLoop(ctx context.Context, conv messaging.ConversationRef, use
 
 	var prior []llm.Message
 	if a.memory != nil {
-		prior = a.memory.History(memKey)
+		prior = a.memory.History(ctx, memKey)
 	}
 
 	messages := make([]llm.Message, 0, len(prior)+2)
@@ -1148,7 +1148,7 @@ func (a *Agent) RunLoop(ctx context.Context, conv messaging.ConversationRef, use
 		// Persist only what this call actually added — everything after the
 		// fresh system message and the prior turns we already had stored.
 		newTurns := final[1+len(prior):]
-		a.memory.Append(memKey, newTurns...)
+		a.memory.Append(ctx, memKey, newTurns...)
 	}
 
 	if err != nil {
@@ -1364,7 +1364,7 @@ func (a *Agent) runWorkflow(ctx context.Context, wf *workflow.Workflow, includeU
 
 	var prior []llm.Message
 	if a.memory != nil {
-		prior = a.memory.History(memKey)
+		prior = a.memory.History(ctx, memKey)
 	}
 
 	messages := make([]llm.Message, 0, len(prior)+2)
@@ -1410,7 +1410,7 @@ func (a *Agent) runWorkflow(ctx context.Context, wf *workflow.Workflow, includeU
 	result, final, err := a.runLoopFrom(ctx, messages, toolset, maxIter, maxDuplicateToolCalls, maxToolCalls)
 	if a.memory != nil {
 		newTurns := final[1+len(prior):]
-		a.memory.Append(memKey, newTurns...)
+		a.memory.Append(ctx, memKey, newTurns...)
 	}
 	return result, err
 }
@@ -1621,7 +1621,7 @@ func (a *Agent) runDelegatedTask(ctx context.Context, task string) (*LoopResult,
 
 	var prior []llm.Message
 	if a.memory != nil {
-		prior = a.memory.History(memKey)
+		prior = a.memory.History(ctx, memKey)
 	}
 
 	systemContent := a.systemPrompt() +
@@ -1638,7 +1638,7 @@ func (a *Agent) runDelegatedTask(ctx context.Context, task string) (*LoopResult,
 	result, final, err := a.runLoopFrom(ctx, messages, toolset, a.MaxIterations, a.MaxDuplicateToolCallsPerResponse, a.MaxToolCallsPerResponse)
 	if a.memory != nil {
 		newTurns := final[1+len(prior):]
-		a.memory.Append(memKey, newTurns...)
+		a.memory.Append(ctx, memKey, newTurns...)
 	}
 	return result, err
 }

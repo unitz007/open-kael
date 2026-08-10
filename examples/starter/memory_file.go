@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log"
@@ -45,7 +46,7 @@ func NewFileHistory(path string) (*FileHistory, error) {
 	return f, nil
 }
 
-func (f *FileHistory) History(id string) []llm.Message {
+func (f *FileHistory) History(ctx context.Context, id string) []llm.Message {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -55,7 +56,7 @@ func (f *FileHistory) History(id string) []llm.Message {
 	return out
 }
 
-func (f *FileHistory) Append(id string, messages ...llm.Message) {
+func (f *FileHistory) Append(ctx context.Context, id string, messages ...llm.Message) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
