@@ -1501,7 +1501,7 @@ func (a *Agent) delegateToolSpec(target *Agent) *tools.ToolSpec {
 
 			log.Printf("🤝%s: delegating to %s: %q", a.Name, target.Name, input.Task)
 			recordDelegation(ctx, target)
-			result, err := target.runDelegatedTask(ctx, input.Task)
+			result, err := target.runDelegatedTask(messaging.WithDelegator(ctx, a.Id), input.Task)
 			if err != nil {
 				return nil, err
 			}

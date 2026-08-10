@@ -151,6 +151,26 @@ func WorkflowIDFromContext(ctx context.Context) (string, bool) {
 	return id, id != ""
 }
 
+type delegatorCtxKey struct{}
+
+// WithDelegator attaches the delegating agent's own id to ctx, right before
+// a delegate_to_<target> tool call hands ctx off to the target agent's
+// runDelegatedTask — same reasoning as WithWorkflowID: a persistent Memory
+// implementation that wants to record which agent's own conversation
+// triggered a delegated run has no other way to learn that, since
+// ConversationRef/ThreadID/WorkflowID are all agent-agnostic on their own.
+func WithDelegator(ctx context.Context, agentID string) context.Context {
+	return context.WithValue(ctx, delegatorCtxKey{}, agentID)
+}
+
+// DelegatorFromContext returns the id WithDelegator attached, if any. ok is
+// false both when nothing was attached (not a delegated call) and when an
+// empty id was.
+func DelegatorFromContext(ctx context.Context) (string, bool) {
+	id, _ := ctx.Value(delegatorCtxKey{}).(string)
+	return id, id != ""
+}
+
 // MemoryKeyFunc derives the memory.Memory key for the current run — the
 // extension point Agent.RunLoop/runWorkflow/runDelegatedTask use instead of
 // a fixed key, so anyone building on this framework can choose (or write)
