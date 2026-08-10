@@ -57,12 +57,13 @@ type Agent struct {
 	// messenger registered. Ranging over messengers itself for this would
 	// pick effectively at random: Go map iteration order is randomized,
 	// not insertion order.
-	primaryMessenger messaging.Messenger
-	directory        AgentDirectory
-	webhookMux       *http.ServeMux
-	identities       map[string]identity.Identity
-	retrievers       map[string]rag.Retriever
-	memoryKeyFunc    messaging.MemoryKeyFunc
+	primaryMessenger      messaging.Messenger
+	directory             AgentDirectory
+	webhookMux            *http.ServeMux
+	identities            map[string]identity.Identity
+	retrievers            map[string]rag.Retriever
+	retrieverDescriptions map[string]string
+	memoryKeyFunc         messaging.MemoryKeyFunc
 	// MaxIterations caps RunLoop and runDelegatedTask's own loops — a
 	// workflow's nested run can still go further via its own Iteration
 	// field (falling back to this value when unset), but a plain
@@ -410,16 +411,21 @@ func (a *Agent) IdentifyAs(id identity.Identity) {
 
 // AddRetriever registers a queryable, already-indexed source (a codebase, a
 // docs corpus, ...) under name — an agent can hold more than one, e.g.
-// "codebase" and "docs". Same reasoning as IdentifyAs: a tool doesn't take
-// a Retriever directly, since a workflow's tools are built before the
-// owning agent even exists — they resolve whichever retriever they need at
-// call time via rag.FromContext, since runLoopFrom threads a.retrievers
-// into ctx on every run.
-func (a *Agent) AddRetriever(name string, r rag.Retriever) {
+// "codebase" and "docs". description is shown to the model as the reason to
+// call this source's generated tool (see retrieverToolSpecs) — write it the
+// way you'd write any other ToolSpec description, since that's exactly
+// where it ends up. Same reasoning as IdentifyAs: a tool doesn't take a
+// Retriever directly, since a workflow's tools are built before the owning
+// agent even exists — they resolve whichever retriever they need at call
+// time via rag.FromContext, since runLoopFrom threads a.retrievers into ctx
+// on every run.
+func (a *Agent) AddRetriever(name, description string, r rag.Retriever) {
 	if a.retrievers == nil {
 		a.retrievers = make(map[string]rag.Retriever)
+		a.retrieverDescriptions = make(map[string]string)
 	}
 	a.retrievers[name] = r
+	a.retrieverDescriptions[name] = description
 }
 
 // EnqueueMessage is the external entry point for feeding a message to this
@@ -551,11 +557,110 @@ const maxBareMemoryMessages = 20
 // ctx from the delegating call, using its own (the delegate's) registered
 // messenger. See messengerTools for the caveat that implies.
 func (a *Agent) baseTools() []*tools.ToolSpec {
-	if len(a.messengers) == 0 {
-		return a.Tools
+	out := append([]*tools.ToolSpec{}, a.Tools...)
+	if len(a.messengers) > 0 {
+		out = append(out, a.sendMessageTool())
+		out = append(out, a.messengerTools()...)
 	}
-	out := append(append([]*tools.ToolSpec{}, a.Tools...), a.sendMessageTool())
-	return append(out, a.messengerTools()...)
+	out = append(out, a.retrieverToolSpecs()...)
+	if a.memory != nil {
+		out = append(out, a.getThreadHistoryTool())
+	}
+	return out
+}
+
+// retrieverToolSpecs turns every registered rag.Retriever into a callable
+// query_<name> tool — the generic bridge nothing in this codebase had
+// before: AddRetriever only ever put a Retriever into a.retrievers/ctx, and
+// nothing turned that into something the model could actually call. Any
+// retriever registered via AddRetriever gets this automatically, the same
+// inheritance workflowToolSpecs/messengerTools already give their own
+// sources.
+func (a *Agent) retrieverToolSpecs() []*tools.ToolSpec {
+	specs := make([]*tools.ToolSpec, 0, len(a.retrievers))
+	for name, r := range a.retrievers {
+		specs = append(specs, a.retrieverToolSpec(name, a.retrieverDescriptions[name], r))
+	}
+	return specs
+}
+
+// defaultRetrieverTopK bounds how many results a query_<name> tool call
+// returns — generous enough to be useful, small enough not to flood the
+// model's context with marginal matches.
+const defaultRetrieverTopK = 5
+
+func (a *Agent) retrieverToolSpec(name, description string, r rag.Retriever) *tools.ToolSpec {
+	if description == "" {
+		description = fmt.Sprintf("Searches %s for relevant context.", name)
+	}
+	return tools.NewToolBuilder("query_"+name, description).
+		Parameter("query", "string", "What to search for", true).
+		Handler(func(ctx context.Context, args json.RawMessage) (any, error) {
+			var raw string
+			if err := json.Unmarshal(args, &raw); err != nil {
+				return nil, err
+			}
+			var input struct {
+				Query string `json:"query"`
+			}
+			if err := json.Unmarshal([]byte(raw), &input); err != nil {
+				return nil, err
+			}
+			if input.Query == "" {
+				return nil, fmt.Errorf("query_%s: query is required", name)
+			}
+
+			results, err := r.Query(ctx, input.Query, defaultRetrieverTopK)
+			if err != nil {
+				return nil, err
+			}
+			if len(results) == 0 {
+				return "No matches found.", nil
+			}
+
+			var b strings.Builder
+			for i, res := range results {
+				fmt.Fprintf(&b, "%d. [id: %s] (score %.2f) %s\n", i+1, res.Document.ID, res.Score, res.Document.Content)
+			}
+			return b.String(), nil
+		}).Build()
+}
+
+// getThreadHistoryTool returns the full transcript for a specific id — the
+// same string a query_<name> retriever tool's result Document.ID/Source
+// returned, otherwise not something the model has any way to discover on
+// its own. Only needs the base Memory interface, not Searchable/Retriever,
+// but is only really useful alongside a retriever tool that can surface an
+// id to begin with — see baseTools, which folds this in whenever a.memory
+// is set at all.
+func (a *Agent) getThreadHistoryTool() *tools.ToolSpec {
+	return tools.NewToolBuilder("get_thread_history", "Fetches the full message history for a specific id returned by a query_* search tool, for full context around a match.").
+		Parameter("thread_id", "string", "The id value from a query_* search result", true).
+		Handler(func(ctx context.Context, args json.RawMessage) (any, error) {
+			var raw string
+			if err := json.Unmarshal(args, &raw); err != nil {
+				return nil, err
+			}
+			var input struct {
+				ThreadID string `json:"thread_id"`
+			}
+			if err := json.Unmarshal([]byte(raw), &input); err != nil {
+				return nil, err
+			}
+			if input.ThreadID == "" {
+				return nil, fmt.Errorf("get_thread_history: thread_id is required")
+			}
+
+			messages := a.memory.History(input.ThreadID)
+			if len(messages) == 0 {
+				return "No history found for that thread_id.", nil
+			}
+			var b strings.Builder
+			for _, msg := range messages {
+				fmt.Fprintf(&b, "[%s] %s\n", msg.Role, msg.Content)
+			}
+			return b.String(), nil
+		}).Build()
 }
 
 // messengerTools collects whatever extra tools each registered messenger
