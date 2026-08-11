@@ -122,6 +122,18 @@ const defaultMaxDuplicateToolCallsPerResponse = 10
 // defaultMaxToolCallsPerResponse seeds Agent.MaxToolCallsPerResponse in NewAgent.
 const defaultMaxToolCallsPerResponse = 50
 
+// maxConsecutiveToolFailures bounds how many turns in a row can pass
+// without a single genuinely new, successful tool call before runLoopFrom
+// gives up early — distinct from maxIter, which only bounds the total turn
+// count and can't tell a healthy long-running task from a model stuck
+// retrying (or repeatedly re-attempting an already-blocked duplicate of)
+// the same failing call. Confirmed live in a deployment of this library: an
+// agent retried a single blocked tool call every ~2s for minutes straight,
+// completely unresponsive to the "you already called it, call end_loop
+// now" message each rejection carried — nothing short of a caller's own
+// (possibly very high) MaxIterations would have stopped it without this.
+const maxConsecutiveToolFailures = 3
+
 // hasDuplicateToolCalls reports whether any two calls in calls share the
 // same name and arguments — the signature of a model stuck repeating
 // itself, as opposed to a large-but-legitimate batch of genuinely distinct
@@ -185,6 +197,13 @@ func (a *Agent) runLoopFrom(ctx context.Context, messages []llm.Message, toolset
 	// to repeating an already-succeeded call (e.g. sending the same message
 	// several times) instead of moving on to end_loop.
 	calledBefore := make(map[string]bool)
+
+	// consecutiveFailures counts turns in a row with zero genuinely new,
+	// successful tool calls — an unknown tool, a blocked repeat, or a real
+	// tool.Handler error all count; any real success resets it to 0. See
+	// maxConsecutiveToolFailures's own doc comment for why this exists
+	// alongside, not instead of, maxIter.
+	consecutiveFailures := 0
 
 	// maxIter <= 0 means unlimited — the loop then only ever ends via
 	// end_loop or an LLM.Call error, never by exhausting a count. There's
@@ -269,6 +288,7 @@ func (a *Agent) runLoopFrom(ctx context.Context, messages []llm.Message, toolset
 					Content:    fmt.Sprintf("error: unknown tool %q", toolCall.Name),
 					ToolCallID: toolCall.Id,
 				})
+				consecutiveFailures++
 				continue
 			}
 
@@ -281,6 +301,7 @@ func (a *Agent) runLoopFrom(ctx context.Context, messages []llm.Message, toolset
 					Name:       tool.Name,
 					Content:    fmt.Sprintf("error: %s was not executed again — you already called it with these exact arguments and it succeeded. If you're finished, call end_loop now with your final_message.", toolCall.Name),
 				})
+				consecutiveFailures++
 				continue
 			}
 
@@ -293,9 +314,11 @@ func (a *Agent) runLoopFrom(ctx context.Context, messages []llm.Message, toolset
 					Name:       tool.Name,
 					Content:    fmt.Sprintf("error: %v", err),
 				})
+				consecutiveFailures++
 				continue
 			}
 			calledBefore[callKey] = true
+			consecutiveFailures = 0
 
 			if toolCall.Name == "end_loop" {
 				er, ok := result.(endLoopResult)
@@ -332,6 +355,11 @@ func (a *Agent) runLoopFrom(ctx context.Context, messages []llm.Message, toolset
 				ToolCallID: toolCall.Id,
 				Name:       toolCall.Name,
 			})
+		}
+
+		if consecutiveFailures >= maxConsecutiveToolFailures {
+			log.Printf("⚠️%s made no successful tool call in %d consecutive turns — giving up rather than burning the rest of the %d-iteration budget on repeats", a.Name, consecutiveFailures, maxIter)
+			return &LoopResult{Iteration: i + 1, Status: LLMToolCallError}, messages, nil
 		}
 	}
 
@@ -1212,6 +1240,9 @@ func (a *Agent) handleMessage(msg InBox) error {
 
 	if result.Status == LLMStatusMaxIteration {
 		return fmt.Errorf("message handling hit the %d-iteration cap without completing", a.MaxIterations)
+	}
+	if result.Status == LLMToolCallError {
+		return fmt.Errorf("message handling gave up at iteration %d after %d consecutive turns with no successful tool call", result.Iteration, maxConsecutiveToolFailures)
 	}
 	return nil
 }
