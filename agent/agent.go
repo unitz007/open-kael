@@ -554,12 +554,24 @@ type endLoopResult struct {
 // runLoopFrom call is subject to — shared between an agent's own
 // IdentityPrompt and a workflow's SystemPrompt (which predates this
 // protocol and doesn't mention it) when a workflow runs as a nested loop.
+//
+// The diminishing-returns sentence was added after a live incident: an
+// agent trying to recall a specific past answer called the same kind of
+// tool 15+ times in a row, each with different arguments, never converging
+// — every individual call succeeded, so nothing here told it to stop, and
+// it ran until a separate mechanical cap (MaxSameToolCallsPerRun) cut it
+// off. That cap is still the real backstop (this is a prose instruction, not
+// a guarantee), but nothing was telling the model itself when to give up on
+// a line of exploration — deliberately worded around "repeating a similar
+// action," not any specific tool, so it generalizes to whatever the next
+// version of this pattern looks like, on any agent.
 const loopProtocolInstructions = "You have access to tools. " +
 	"When you have fully completed the request and have nothing further to do, call the end_loop tool. " +
 	"Do not call end_loop while you still have pending work. " +
 	"Put your actual answer in end_loop's final_message argument — every response must call a tool, so that is the only place your answer is captured. " +
 	"Never repeat a tool call with the same arguments after it has already succeeded — one send is enough. As soon as an action succeeds, call end_loop immediately unless explicitly asked for it to happen more than once." +
-	"Never expose a tool name or argument in your final answer — the user should not see any tool calls, only the final_message you put in end_loop."
+	"Never expose a tool name or argument in your final answer — the user should not see any tool calls, only the final_message you put in end_loop." +
+	"If repeating a similar action with different inputs stops turning up anything new, that's information too — don't keep trying variations hoping for a better result. Work with what you've already found, or if that's not enough to proceed confidently, say so in end_loop's final_message and ask what you need, rather than continuing indefinitely."
 
 func NewAgent(id, name, description, identityPrompt string, llm llm.LLM) *Agent {
 	a := &Agent{
