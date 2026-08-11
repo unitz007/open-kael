@@ -364,7 +364,16 @@ func (a *Agent) runLoopFrom(ctx context.Context, messages []llm.Message, toolset
 				return &LoopResult{Iteration: i + 1, Status: LLMStatusComplete, Content: er.FinalMessage}, messages, nil
 			}
 
-			//log.Printf("Tool %s executed successfully with result: %v", tool.Name, result)
+			// Deliberately just the agent and tool name, not result — the
+			// point is diagnosability (which agent, which tool, was this
+			// what looped) not a full audit trail, and several of these
+			// tools' results carry real financial/personal data that has
+			// no reason to also live in Fly's log stream. This was
+			// commented out before; restoring it is exactly what would
+			// have made three separate live incidents this session
+			// (stuck-in-a-loop agents with no way to tell what they were
+			// calling) diagnosable in the moment instead of after the fact.
+			log.Printf("🔧%s: %s succeeded", a.Name, tool.Name)
 
 			var content string
 			switch v := result.(type) {
