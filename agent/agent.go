@@ -212,9 +212,16 @@ func (a *Agent) runLoopFrom(ctx context.Context, messages []llm.Message, toolset
 	// several times) instead of moving on to end_loop.
 	calledBefore := make(map[string]bool)
 
-	// toolCallCounts tracks how many times each tool name has succeeded in
-	// this run — see maxSameToolCallsPerRun for why this exists separately
-	// from calledBefore/consecutiveFailures.
+	// toolCallCounts tracks how many separate turns (LLM round-trips) have
+	// included at least one successful call to each tool name — see
+	// maxSameToolCallsPerRun for why this exists separately from
+	// calledBefore/consecutiveFailures. Deliberately counts turns, not raw
+	// calls: a single turn can legitimately contain many distinct calls to
+	// the same tool (e.g. one replace_in_google_doc per fix when applying
+	// 24 real, distinct edits at once — confirmed live, see
+	// maxSameToolCallsPerRun) and that's real planned work, not the
+	// call-one-at-a-time-forever pattern this guards against. seenThisTurn
+	// is reset at the top of every outer iteration and dedupes within it.
 	toolCallCounts := make(map[string]int)
 
 	// consecutiveFailures counts turns in a row with zero genuinely new,
@@ -249,6 +256,10 @@ func (a *Agent) runLoopFrom(ctx context.Context, messages []llm.Message, toolset
 	// below still apply exactly as they do with a normal cap — this only
 	// removes the iteration count as a termination condition.
 	for i := 0; maxIter <= 0 || i < maxIter; i++ {
+		// seenThisTurn dedupes toolCallCounts within a single turn — see
+		// toolCallCounts's own doc comment.
+		seenThisTurn := make(map[string]bool)
+
 		response, err := a.LLM.Call(messages, toolset)
 		if err != nil {
 			log.Println("Error:", err)
@@ -413,10 +424,13 @@ func (a *Agent) runLoopFrom(ctx context.Context, messages []llm.Message, toolset
 				Name:       toolCall.Name,
 			})
 
-			toolCallCounts[toolCall.Name]++
-			if toolCallCounts[toolCall.Name] > maxSameToolCallsPerRun {
-				log.Printf("⚠️%s called %s %d times in this run — giving up rather than continuing what looks like an unproductive one-call-at-a-time pattern", a.Name, toolCall.Name, toolCallCounts[toolCall.Name])
-				return &LoopResult{Iteration: i + 1, Status: LLMToolCallError}, messages, nil
+			if !seenThisTurn[toolCall.Name] {
+				seenThisTurn[toolCall.Name] = true
+				toolCallCounts[toolCall.Name]++
+				if toolCallCounts[toolCall.Name] > maxSameToolCallsPerRun {
+					log.Printf("⚠️%s called %s across %d separate turns in this run — giving up rather than continuing what looks like an unproductive one-call-at-a-time pattern", a.Name, toolCall.Name, toolCallCounts[toolCall.Name])
+					return &LoopResult{Iteration: i + 1, Status: LLMToolCallError}, messages, nil
+				}
 			}
 		}
 
