@@ -730,6 +730,30 @@ func (a *Agent) retrieverToolSpec(name, description string, r rag.Retriever) *to
 		}).Build()
 }
 
+// deepHistory is an optional capability a memory.Memory implementation can
+// satisfy to let getThreadHistoryTool pull a genuinely bigger window than
+// History's own default — same optional-interface pattern as
+// rag.Retriever/messaging.ToolProvider elsewhere in this codebase.
+// Without this, get_thread_history calls straight through to History and
+// gets back exactly the same small window already auto-injected into every
+// turn — confirmed live: an 8-message default window meant to keep
+// per-turn cost down also silently capped the one tool whose entire job is
+// to deliberately pull *more* than that, defeating its own purpose. A
+// Memory backed by something with no natural "give me N instead" knob
+// (e.g. NewAgent's own bareMemory) just falls back to History() below —
+// not a functional loss, since that implementation has nothing larger to
+// give anyway.
+type deepHistory interface {
+	HistoryN(ctx context.Context, id string, n int) []llm.Message
+}
+
+// threadHistoryWindow bounds a get_thread_history pull on a Memory that
+// implements deepHistory — deliberately much larger than the default
+// auto-injected window (see deepHistory's own doc comment): this only runs
+// when the model explicitly decided it needs deep context, so the extra
+// cost is justified, unlike paying it on every single turn by default.
+const threadHistoryWindow = 40
+
 // getThreadHistoryTool returns the full transcript for a specific id — the
 // same string a query_<name> retriever tool's result Document.ID/Source
 // returned, otherwise not something the model has any way to discover on
@@ -755,7 +779,12 @@ func (a *Agent) getThreadHistoryTool() *tools.ToolSpec {
 				return nil, fmt.Errorf("get_thread_history: thread_id is required")
 			}
 
-			messages := a.memory.History(ctx, input.ThreadID)
+			var messages []llm.Message
+			if dh, ok := a.memory.(deepHistory); ok {
+				messages = dh.HistoryN(ctx, input.ThreadID, threadHistoryWindow)
+			} else {
+				messages = a.memory.History(ctx, input.ThreadID)
+			}
 			if len(messages) == 0 {
 				return "No history found for that thread_id.", nil
 			}
