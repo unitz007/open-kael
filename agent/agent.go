@@ -743,8 +743,25 @@ func (a *Agent) retrieverToolSpec(name, description string, r rag.Retriever) *to
 			if err != nil {
 				return nil, err
 			}
+			// Logs the query and result count (not result content — same
+			// reasoning the per-tool "🔧 succeeded" log line elsewhere in
+			// this file already follows: diagnosability without putting
+			// real conversation content, which can carry PII, into Fly's
+			// log stream) — added after a live incident where a model
+			// guessed at query_conversation_history phrasing 15+ times in a
+			// row with zero visibility into what it was actually searching
+			// for or getting back at each attempt.
+			log.Printf("🔎%s: query_%s(%q) → %d result(s)", a.Name, name, input.Query, len(results))
 			if len(results) == 0 {
-				return "No matches found.", nil
+				// Deliberately doesn't just say "No matches found" — a
+				// model getting that back for query after query has no
+				// signal to change strategy on, which is exactly what drove
+				// the live incident above: 16 different guessed phrasings,
+				// each returning this same uninformative string. Naming the
+				// actual limitation (most Retriever implementations here
+				// are exact/keyword search, not semantic) gives it a real
+				// reason to stop guessing and ask instead.
+				return "No matches found for that exact query. If this is exact/keyword-based search, a paraphrase can miss content that's genuinely there — try the other party's own literal wording if you know it, and if you don't have a specific term to try, ask the owner directly rather than guessing more phrasings.", nil
 			}
 
 			var b strings.Builder
