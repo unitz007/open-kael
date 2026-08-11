@@ -134,6 +134,20 @@ const defaultMaxToolCallsPerResponse = 50
 // (possibly very high) MaxIterations would have stopped it without this.
 const maxConsecutiveToolFailures = 3
 
+// maxSameToolCallsPerRun bounds how many times a single tool name can be
+// called in one runLoopFrom run, regardless of whether each call's arguments
+// differ — distinct from maxConsecutiveToolFailures, which only fires on
+// no-progress turns. A model can call the same tool with genuinely different
+// arguments every single time (so every call succeeds, resetting
+// consecutiveFailures) while still never making real progress toward
+// end_loop — e.g. searching a document one query term at a time instead of
+// reading it once. Confirmed live: Personal Assistant Agent called
+// search_in_google_doc 48 times over ~3 minutes, all but the last few
+// succeeding, before finally repeating itself enough to trip the
+// consecutive-failure breaker by accident. This catches that pattern
+// directly instead of relying on it eventually degenerating into repeats.
+const maxSameToolCallsPerRun = 15
+
 // hasDuplicateToolCalls reports whether any two calls in calls share the
 // same name and arguments — the signature of a model stuck repeating
 // itself, as opposed to a large-but-legitimate batch of genuinely distinct
@@ -197,6 +211,11 @@ func (a *Agent) runLoopFrom(ctx context.Context, messages []llm.Message, toolset
 	// to repeating an already-succeeded call (e.g. sending the same message
 	// several times) instead of moving on to end_loop.
 	calledBefore := make(map[string]bool)
+
+	// toolCallCounts tracks how many times each tool name has succeeded in
+	// this run — see maxSameToolCallsPerRun for why this exists separately
+	// from calledBefore/consecutiveFailures.
+	toolCallCounts := make(map[string]int)
 
 	// consecutiveFailures counts turns in a row with zero genuinely new,
 	// successful tool calls — an unknown tool, a blocked repeat, a real
@@ -393,6 +412,12 @@ func (a *Agent) runLoopFrom(ctx context.Context, messages []llm.Message, toolset
 				ToolCallID: toolCall.Id,
 				Name:       toolCall.Name,
 			})
+
+			toolCallCounts[toolCall.Name]++
+			if toolCallCounts[toolCall.Name] > maxSameToolCallsPerRun {
+				log.Printf("⚠️%s called %s %d times in this run — giving up rather than continuing what looks like an unproductive one-call-at-a-time pattern", a.Name, toolCall.Name, toolCallCounts[toolCall.Name])
+				return &LoopResult{Iteration: i + 1, Status: LLMToolCallError}, messages, nil
+			}
 		}
 
 		if r := giveUp(i); r != nil {
@@ -1279,7 +1304,7 @@ func (a *Agent) handleMessage(msg InBox) error {
 		return fmt.Errorf("message handling hit the %d-iteration cap without completing", a.MaxIterations)
 	}
 	if result.Status == LLMToolCallError {
-		return fmt.Errorf("message handling gave up at iteration %d after %d consecutive turns with no successful tool call", result.Iteration, maxConsecutiveToolFailures)
+		return fmt.Errorf("message handling gave up early at iteration %d — either too many consecutive turns with no successful tool call, or one tool called too many times in this run; see the ⚠️ log line just above for which", result.Iteration)
 	}
 	return nil
 }
