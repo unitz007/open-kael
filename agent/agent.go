@@ -199,11 +199,28 @@ func (a *Agent) runLoopFrom(ctx context.Context, messages []llm.Message, toolset
 	calledBefore := make(map[string]bool)
 
 	// consecutiveFailures counts turns in a row with zero genuinely new,
-	// successful tool calls — an unknown tool, a blocked repeat, or a real
-	// tool.Handler error all count; any real success resets it to 0. See
+	// successful tool calls — an unknown tool, a blocked repeat, a real
+	// tool.Handler error, a tool-less response, or a discarded duplicate/
+	// oversized batch all count; any real success resets it to 0. See
 	// maxConsecutiveToolFailures's own doc comment for why this exists
 	// alongside, not instead of, maxIter.
 	consecutiveFailures := 0
+
+	// giveUp reports (as a non-nil LoopResult) once consecutiveFailures
+	// crosses the line — called from every no-progress continue site below,
+	// not just the ones inside the tool-execution loop. The three earlier
+	// branches (no tool call, discarded duplicate batch, discarded oversized
+	// batch) continue the outer loop directly, which would otherwise skip
+	// straight past a check placed only after the tool-execution loop. Takes
+	// the current iteration explicitly since it's defined before the loop
+	// that declares it.
+	giveUp := func(iteration int) *LoopResult {
+		if consecutiveFailures < maxConsecutiveToolFailures {
+			return nil
+		}
+		log.Printf("⚠️%s made no successful tool call in %d consecutive turns — giving up rather than burning the rest of the %d-iteration budget on repeats", a.Name, consecutiveFailures, maxIter)
+		return &LoopResult{Iteration: iteration + 1, Status: LLMToolCallError}
+	}
 
 	// maxIter <= 0 means unlimited — the loop then only ever ends via
 	// end_loop or an LLM.Call error, never by exhausting a count. There's
@@ -237,6 +254,10 @@ func (a *Agent) runLoopFrom(ctx context.Context, messages []llm.Message, toolset
 				llm.Message{Role: "assistant", Content: response.Content},
 				llm.Message{Role: "user", Content: "That response had no tool call, so it wasn't recorded as an answer. If you already have everything you need, call end_loop with your final_message now. Otherwise call the tool you actually need next — don't state an answer without the tool call that backs it up."},
 			)
+			consecutiveFailures++
+			if r := giveUp(i); r != nil {
+				return r, messages, nil
+			}
 			continue
 		}
 
@@ -257,6 +278,10 @@ func (a *Agent) runLoopFrom(ctx context.Context, messages []llm.Message, toolset
 				llm.Message{Role: "assistant", Content: response.Content},
 				llm.Message{Role: "user", Content: "That response repeated tool calls an unreasonable number of times in one turn, so none of them were executed. Try again with one single, deliberate tool call."},
 			)
+			consecutiveFailures++
+			if r := giveUp(i); r != nil {
+				return r, messages, nil
+			}
 			continue
 		}
 
@@ -270,6 +295,10 @@ func (a *Agent) runLoopFrom(ctx context.Context, messages []llm.Message, toolset
 				llm.Message{Role: "assistant", Content: response.Content},
 				llm.Message{Role: "user", Content: "That response tried to call an unreasonable number of distinct tools in one turn, so none of them were executed. Split this into smaller batches across multiple turns."},
 			)
+			consecutiveFailures++
+			if r := giveUp(i); r != nil {
+				return r, messages, nil
+			}
 			continue
 		}
 
@@ -357,9 +386,8 @@ func (a *Agent) runLoopFrom(ctx context.Context, messages []llm.Message, toolset
 			})
 		}
 
-		if consecutiveFailures >= maxConsecutiveToolFailures {
-			log.Printf("⚠️%s made no successful tool call in %d consecutive turns — giving up rather than burning the rest of the %d-iteration budget on repeats", a.Name, consecutiveFailures, maxIter)
-			return &LoopResult{Iteration: i + 1, Status: LLMToolCallError}, messages, nil
+		if r := giveUp(i); r != nil {
+			return r, messages, nil
 		}
 	}
 
