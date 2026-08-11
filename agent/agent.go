@@ -1330,10 +1330,16 @@ func (a *Agent) RunLoop(ctx context.Context, conv messaging.ConversationRef, use
 	// loop completes successfully, regardless of whether the model
 	// remembered to call send_message along the way — delivery is a
 	// structural consequence of the loop finishing, not something that
-	// depends on the model choosing the right tool. Skipped if send_mhowessage
+	// depends on the model choosing the right tool. Skipped if send_message
 	// already succeeded this turn, so a model that DID use it to reply
-	// doesn't get its answer sent twice.
-	if err == nil && result.Status == LLMStatusComplete && result.Content != "" {
+	// doesn't get its answer sent twice. Fires even when result.Content is
+	// empty: confirmed live that a model can call end_loop with an empty
+	// final_message on a genuinely-completed turn (tool calls all
+	// succeeded, nothing more to do) — the old `result.Content != ""` guard
+	// silently dropped that case entirely, logging status=completed while
+	// the user received nothing at all. A generic fallback beats silence,
+	// since the caller has no other signal the run ever happened.
+	if err == nil && result.Status == LLMStatusComplete {
 		alreadyReplied := false
 		for _, m := range final[1+len(prior):] {
 			if m.Role == "tool" && m.Name == "send_message" && !strings.HasPrefix(m.Content, "error:") {
@@ -1343,7 +1349,11 @@ func (a *Agent) RunLoop(ctx context.Context, conv messaging.ConversationRef, use
 		}
 		if !alreadyReplied {
 			if m, ok := a.messengers[conv.Platform]; ok {
-				finalContent := consumeDelegationNotes(ctx) + result.Content
+				content := result.Content
+				if content == "" {
+					content = "Done — the task completed, but I didn't leave a summary. Let me know if you'd like more detail."
+				}
+				finalContent := consumeDelegationNotes(ctx) + content
 				if sendErr := m.Send(ctx, conv, finalContent); sendErr != nil {
 					log.Println("failed to deliver final answer:", sendErr)
 				}
