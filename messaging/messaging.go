@@ -42,6 +42,22 @@ type InboundMessage struct {
 	WorkflowID string
 }
 
+// MessengerResponse is what Send/Reply return once a message is actually
+// posted. A struct rather than a bare string so a future field (e.g. a
+// permalink, once some platform has an equivalent) doesn't need another
+// Messenger interface signature change — every existing caller destructures
+// by field name, so an addition here is source-compatible.
+type MessengerResponse struct {
+	// MessageID is the platform's own id for the message that was just
+	// posted (e.g. Slack's ts, Telegram's message_id) — the same kind of
+	// value InboundMessage.MessageID carries for an inbound one. Lets a
+	// caller that needs to find this exact message again later (e.g.
+	// job_application_wf recording which Slack message a job notification
+	// landed as, so a future reply can be matched back to it) do so
+	// without a platform-specific escape hatch outside this interface.
+	MessageID string
+}
+
 // Messenger is a full bidirectional platform adapter: send to a specific
 // conversation, and listen for new inbound ones. This package ships no
 // implementations — see examples/messenger for a working Slack/Telegram
@@ -55,7 +71,7 @@ type Messenger interface {
 	// own notification, or anything else with no specific inbound message
 	// to address the reply back to. Use Reply instead whenever there is
 	// one.
-	Send(ctx context.Context, conv ConversationRef, text string) error
+	Send(ctx context.Context, conv ConversationRef, text string) (MessengerResponse, error)
 	// Reply delivers text addressed back to a specific inbound message —
 	// every platform has some mechanism for this (Slack's thread_ts,
 	// Telegram's reply_parameters, WhatsApp's context.message_id, email's
@@ -64,7 +80,7 @@ type Messenger interface {
 	// message being answered). A Messenger with nothing meaningful to
 	// address back to (to.MessageID/to.ThreadID both empty) should behave
 	// like a plain Send.
-	Reply(ctx context.Context, to InboundMessage, text string) error
+	Reply(ctx context.Context, to InboundMessage, text string) (MessengerResponse, error)
 	// Listen blocks, calling onMessage for each inbound message, until ctx
 	// is cancelled, at which point it returns nil.
 	Listen(ctx context.Context, onMessage func(InboundMessage)) error

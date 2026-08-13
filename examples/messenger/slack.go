@@ -109,11 +109,12 @@ func (b *SlackBot) DefaultConversation() messaging.ConversationRef {
 type slackAPIResponse struct {
 	Ok    bool   `json:"ok"`
 	Error string `json:"error"`
+	Ts    string `json:"ts"` // the posted message's own timestamp — Slack's de facto message id
 }
 
 // Send always posts a fresh, un-threaded message — use Reply instead to
 // address a response back to a specific inbound message.
-func (b *SlackBot) Send(ctx context.Context, conv messaging.ConversationRef, message string) error {
+func (b *SlackBot) Send(ctx context.Context, conv messaging.ConversationRef, message string) (messaging.MessengerResponse, error) {
 	return b.post(ctx, conv.ChatID, message, "")
 }
 
@@ -121,12 +122,12 @@ func (b *SlackBot) Send(ctx context.Context, conv messaging.ConversationRef, mes
 // thread's root — see InboundMessage.ThreadID's own doc comment), or as a
 // fresh top-level message if to.ThreadID is empty (e.g. a DM, which has no
 // threading concept by default — see Listen).
-func (b *SlackBot) Reply(ctx context.Context, to messaging.InboundMessage, message string) error {
+func (b *SlackBot) Reply(ctx context.Context, to messaging.InboundMessage, message string) (messaging.MessengerResponse, error) {
 	return b.post(ctx, to.Conversation.ChatID, message, to.ThreadID)
 }
 
 // post is Send/Reply's shared chat.postMessage call.
-func (b *SlackBot) post(ctx context.Context, channel, message, threadID string) error {
+func (b *SlackBot) post(ctx context.Context, channel, message, threadID string) (messaging.MessengerResponse, error) {
 	payload := map[string]string{
 		"channel": channel,
 		"text":    formatForSlack(message),
@@ -136,32 +137,32 @@ func (b *SlackBot) post(ctx context.Context, channel, message, threadID string) 
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return err
+		return messaging.MessengerResponse{}, err
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://slack.com/api/chat.postMessage", bytes.NewReader(body))
 	if err != nil {
-		return err
+		return messaging.MessengerResponse{}, err
 	}
 	req.Header.Set("Content-Type", "application/json; charset=utf-8")
 	req.Header.Set("Authorization", "Bearer "+b.BotToken)
 
 	resp, err := slackHTTPClient.Do(req)
 	if err != nil {
-		return err
+		return messaging.MessengerResponse{}, err
 	}
 	defer resp.Body.Close()
 
 	var result slackAPIResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return err
+		return messaging.MessengerResponse{}, err
 	}
 	if !result.Ok {
-		return fmt.Errorf("slack chat.postMessage failed: %s", result.Error)
+		return messaging.MessengerResponse{}, fmt.Errorf("slack chat.postMessage failed: %s", result.Error)
 	}
 
 	log.Printf("📤slack: sent message to channel %s", channel)
-	return nil
+	return messaging.MessengerResponse{MessageID: result.Ts}, nil
 }
 
 // AddReaction adds an emoji reaction (name without colons, e.g.

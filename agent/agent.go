@@ -997,7 +997,7 @@ func (a *Agent) sendMessageTool() *tools.ToolSpec {
 			log.Printf("📤%s: routing send_message to %s/%s", a.Name, target.Platform, target.ChatID)
 
 			input.Message = consumeDelegationNotes(ctx) + input.Message
-			if err := a.replyOrSend(ctx, messenger, target, input.Message); err != nil {
+			if _, err := a.replyOrSend(ctx, messenger, target, input.Message); err != nil {
 				log.Println("Error sending message:", err)
 				return nil, err
 			}
@@ -1051,7 +1051,7 @@ func (a *Agent) resolveSendTarget(ctx context.Context, platform string) (messagi
 // different platform than the one the message came from (replying "into"
 // a conversation on a platform other than where it started doesn't mean
 // anything, so that's always a fresh Send too).
-func (a *Agent) replyOrSend(ctx context.Context, m messaging.Messenger, conv messaging.ConversationRef, text string) error {
+func (a *Agent) replyOrSend(ctx context.Context, m messaging.Messenger, conv messaging.ConversationRef, text string) (messaging.MessengerResponse, error) {
 	msgID, hasMsg := messaging.MessageIDFromContext(ctx)
 	origConv, hasConv := messaging.ConversationFromContext(ctx)
 	if hasMsg && hasConv && origConv == conv {
@@ -1459,7 +1459,7 @@ func (a *Agent) RunLoop(ctx context.Context, conv messaging.ConversationRef, use
 		// block below, just for the failure case it doesn't cover.
 		if m, ok := a.messengers[conv.Platform]; ok {
 			errNotice := consumeDelegationNotes(ctx) + "Sorry, I ran into an error and couldn't finish handling that. Please try again."
-			if sendErr := a.replyOrSend(ctx, m, conv, errNotice); sendErr != nil {
+			if _, sendErr := a.replyOrSend(ctx, m, conv, errNotice); sendErr != nil {
 				log.Println("failed to deliver error notice:", sendErr)
 			}
 		}
@@ -1494,7 +1494,7 @@ func (a *Agent) RunLoop(ctx context.Context, conv messaging.ConversationRef, use
 					content = "Done — the task completed, but I didn't leave a summary. Let me know if you'd like more detail."
 				}
 				finalContent := consumeDelegationNotes(ctx) + content
-				if sendErr := a.replyOrSend(ctx, m, conv, finalContent); sendErr != nil {
+				if _, sendErr := a.replyOrSend(ctx, m, conv, finalContent); sendErr != nil {
 					log.Println("failed to deliver final answer:", sendErr)
 				}
 			}

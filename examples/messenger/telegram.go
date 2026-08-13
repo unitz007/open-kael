@@ -60,7 +60,18 @@ func (b *TelegramBot) DefaultConversation() messaging.ConversationRef {
 	return messaging.ConversationRef{Platform: telegramPlatform, ChatID: b.ChatId}
 }
 
-func (b *TelegramBot) Send(ctx context.Context, conv messaging.ConversationRef, message string) error {
+// telegramSendMessageResponse is sendMessage's response — just enough to
+// learn the posted message's own id (result.message_id), Telegram's
+// equivalent of Slack's ts.
+type telegramSendMessageResponse struct {
+	Ok          bool   `json:"ok"`
+	Description string `json:"description"`
+	Result      struct {
+		MessageID int `json:"message_id"`
+	} `json:"result"`
+}
+
+func (b *TelegramBot) Send(ctx context.Context, conv messaging.ConversationRef, message string) (messaging.MessengerResponse, error) {
 
 	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", b.Token)
 
@@ -73,13 +84,13 @@ func (b *TelegramBot) Send(ctx context.Context, conv messaging.ConversationRef, 
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, strings.NewReader(data.Encode()))
 	if err != nil {
-		return err
+		return messaging.MessengerResponse{}, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return err
+		return messaging.MessengerResponse{}, err
 	}
 	defer func(Body io.ReadCloser) {
 		err := Body.Close()
@@ -88,12 +99,20 @@ func (b *TelegramBot) Send(ctx context.Context, conv messaging.ConversationRef, 
 		}
 	}(resp.Body)
 
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return messaging.MessengerResponse{}, err
+	}
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("telegram API returned status %d: %s", resp.StatusCode, string(body))
+		return messaging.MessengerResponse{}, fmt.Errorf("telegram API returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var result telegramSendMessageResponse
+	if err := json.Unmarshal(body, &result); err != nil {
+		return messaging.MessengerResponse{}, err
 	}
 	log.Printf("📤telegram: sent message to chat %s", conv.ChatID)
-	return nil
+	return messaging.MessengerResponse{MessageID: strconv.Itoa(result.Result.MessageID)}, nil
 }
 
 // Reply currently just delegates to Send: Listen doesn't capture an
@@ -102,7 +121,7 @@ func (b *TelegramBot) Send(ctx context.Context, conv messaging.ConversationRef, 
 // per-message reply mechanism (unlike Slack's shared-thread-root model, it
 // points at the specific message being answered) — wiring that up for
 // real just needs Listen to start populating InboundMessage.MessageID.
-func (b *TelegramBot) Reply(ctx context.Context, to messaging.InboundMessage, message string) error {
+func (b *TelegramBot) Reply(ctx context.Context, to messaging.InboundMessage, message string) (messaging.MessengerResponse, error) {
 	return b.Send(ctx, to.Conversation, message)
 }
 
