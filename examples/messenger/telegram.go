@@ -96,6 +96,16 @@ func (b *TelegramBot) Send(ctx context.Context, conv messaging.ConversationRef, 
 	return nil
 }
 
+// Reply currently just delegates to Send: Listen doesn't capture an
+// inbound message's own id today, so there's nothing for Telegram's own
+// reply_parameters.message_id to point at yet. Telegram does have a real
+// per-message reply mechanism (unlike Slack's shared-thread-root model, it
+// points at the specific message being answered) — wiring that up for
+// real just needs Listen to start populating InboundMessage.MessageID.
+func (b *TelegramBot) Reply(ctx context.Context, to messaging.InboundMessage, message string) error {
+	return b.Send(ctx, to.Conversation, message)
+}
+
 // telegramUpdatesResponse is the subset of Telegram's getUpdates response
 // this cares about — just enough to route a text message, plus the error
 // fields Telegram sends when Ok is false (e.g. a 409 Conflict from a second

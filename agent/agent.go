@@ -53,14 +53,14 @@ type Agent struct {
 	// llmState is a parallel slice to LLMs (llmState[i] tracks LLMs[i]) —
 	// see callLLM's circuit-breaker logic. Guarded by llmMu since RunLoop
 	// can be called concurrently for different conversations.
-	llmMu    sync.Mutex
-	llmState []llmProviderState
-	Tools    []*tools.ToolSpec `json:"tools"`
-	eventBus       EventPublisher
-	memory         memory.Memory
-	inBox          *MessageQueue
-	human          human.Human
-	messengers     map[string]messaging.Messenger
+	llmMu      sync.Mutex
+	llmState   []llmProviderState
+	Tools      []*tools.ToolSpec `json:"tools"`
+	eventBus   EventPublisher
+	memory     memory.Memory
+	inBox      *MessageQueue
+	human      human.Human
+	messengers map[string]messaging.Messenger
 	// primaryMessenger is whichever Messenger AddMessenger sees first —
 	// used by DefaultConversation so a proactive send with no active
 	// conversation to inherit (a cron/webhook-triggered workflow) has a
@@ -997,7 +997,7 @@ func (a *Agent) sendMessageTool() *tools.ToolSpec {
 			log.Printf("📤%s: routing send_message to %s/%s", a.Name, target.Platform, target.ChatID)
 
 			input.Message = consumeDelegationNotes(ctx) + input.Message
-			if err := messenger.Send(ctx, target, input.Message); err != nil {
+			if err := a.replyOrSend(ctx, messenger, target, input.Message); err != nil {
 				log.Println("Error sending message:", err)
 				return nil, err
 			}
@@ -1041,6 +1041,28 @@ func (a *Agent) resolveSendTarget(ctx context.Context, platform string) (messagi
 		return conv, a.messengers[conv.Platform], nil
 	}
 	return messaging.ConversationRef{}, nil, fmt.Errorf("no messenger registered")
+}
+
+// replyOrSend delivers text to conv via m, addressed back to the
+// triggering inbound message when ctx actually carries one for that same
+// conversation (a genuine reply), or falling back to a plain proactive
+// Send otherwise — covers both a cron/webhook-triggered workflow with
+// nothing to reply to, and resolveSendTarget having redirected to a
+// different platform than the one the message came from (replying "into"
+// a conversation on a platform other than where it started doesn't mean
+// anything, so that's always a fresh Send too).
+func (a *Agent) replyOrSend(ctx context.Context, m messaging.Messenger, conv messaging.ConversationRef, text string) error {
+	msgID, hasMsg := messaging.MessageIDFromContext(ctx)
+	origConv, hasConv := messaging.ConversationFromContext(ctx)
+	if hasMsg && hasConv && origConv == conv {
+		threadID, _ := messaging.ThreadIDFromContext(ctx)
+		return m.Reply(ctx, messaging.InboundMessage{
+			Conversation: conv,
+			MessageID:    msgID,
+			ThreadID:     threadID,
+		}, text)
+	}
+	return m.Send(ctx, conv, text)
 }
 
 // DefaultConversation returns the first-registered messenger's default
@@ -1437,7 +1459,7 @@ func (a *Agent) RunLoop(ctx context.Context, conv messaging.ConversationRef, use
 		// block below, just for the failure case it doesn't cover.
 		if m, ok := a.messengers[conv.Platform]; ok {
 			errNotice := consumeDelegationNotes(ctx) + "Sorry, I ran into an error and couldn't finish handling that. Please try again."
-			if sendErr := m.Send(ctx, conv, errNotice); sendErr != nil {
+			if sendErr := a.replyOrSend(ctx, m, conv, errNotice); sendErr != nil {
 				log.Println("failed to deliver error notice:", sendErr)
 			}
 		}
@@ -1472,7 +1494,7 @@ func (a *Agent) RunLoop(ctx context.Context, conv messaging.ConversationRef, use
 					content = "Done — the task completed, but I didn't leave a summary. Let me know if you'd like more detail."
 				}
 				finalContent := consumeDelegationNotes(ctx) + content
-				if sendErr := m.Send(ctx, conv, finalContent); sendErr != nil {
+				if sendErr := a.replyOrSend(ctx, m, conv, finalContent); sendErr != nil {
 					log.Println("failed to deliver final answer:", sendErr)
 				}
 			}

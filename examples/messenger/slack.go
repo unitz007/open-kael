@@ -111,15 +111,27 @@ type slackAPIResponse struct {
 	Error string `json:"error"`
 }
 
+// Send always posts a fresh, un-threaded message — use Reply instead to
+// address a response back to a specific inbound message.
 func (b *SlackBot) Send(ctx context.Context, conv messaging.ConversationRef, message string) error {
+	return b.post(ctx, conv.ChatID, message, "")
+}
+
+// Reply posts message into to's thread (Slack's thread_ts, keyed on the
+// thread's root — see InboundMessage.ThreadID's own doc comment), or as a
+// fresh top-level message if to.ThreadID is empty (e.g. a DM, which has no
+// threading concept by default — see Listen).
+func (b *SlackBot) Reply(ctx context.Context, to messaging.InboundMessage, message string) error {
+	return b.post(ctx, to.Conversation.ChatID, message, to.ThreadID)
+}
+
+// post is Send/Reply's shared chat.postMessage call.
+func (b *SlackBot) post(ctx context.Context, channel, message, threadID string) error {
 	payload := map[string]string{
-		"channel": conv.ChatID,
+		"channel": channel,
 		"text":    formatForSlack(message),
 	}
-	// Reply into the same thread the triggering message came from, if any —
-	// a proactive/cron-triggered send has no thread in ctx and just posts a
-	// new top-level message, same as before this existed.
-	if threadID, ok := messaging.ThreadIDFromContext(ctx); ok {
+	if threadID != "" {
 		payload["thread_ts"] = threadID
 	}
 	body, err := json.Marshal(payload)
@@ -148,7 +160,7 @@ func (b *SlackBot) Send(ctx context.Context, conv messaging.ConversationRef, mes
 		return fmt.Errorf("slack chat.postMessage failed: %s", result.Error)
 	}
 
-	log.Printf("📤slack: sent message to channel %s", conv.ChatID)
+	log.Printf("📤slack: sent message to channel %s", channel)
 	return nil
 }
 

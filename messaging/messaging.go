@@ -50,8 +50,21 @@ type InboundMessage struct {
 type Messenger interface {
 	// Platform identifies this adapter for routing — matches ConversationRef.Platform.
 	Platform() string
-	// Send delivers text to a specific conversation on this platform.
+	// Send delivers text as a fresh, un-threaded message to a specific
+	// conversation on this platform — a cron/webhook-triggered workflow's
+	// own notification, or anything else with no specific inbound message
+	// to address the reply back to. Use Reply instead whenever there is
+	// one.
 	Send(ctx context.Context, conv ConversationRef, text string) error
+	// Reply delivers text addressed back to a specific inbound message —
+	// every platform has some mechanism for this (Slack's thread_ts,
+	// Telegram's reply_parameters, WhatsApp's context.message_id, email's
+	// In-Reply-To), even though what they each key off differs (Slack
+	// threads off a shared root; most others point at the specific
+	// message being answered). A Messenger with nothing meaningful to
+	// address back to (to.MessageID/to.ThreadID both empty) should behave
+	// like a plain Send.
+	Reply(ctx context.Context, to InboundMessage, text string) error
 	// Listen blocks, calling onMessage for each inbound message, until ctx
 	// is cancelled, at which point it returns nil.
 	Listen(ctx context.Context, onMessage func(InboundMessage)) error
