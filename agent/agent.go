@@ -43,8 +43,19 @@ type Agent struct {
 	IdentityPrompt string               `json:"identity_prompt"`
 	Workflows      []*workflow.Workflow `json:"workflow"`
 	Model          string               `json:"model"`
-	LLM            llm.LLM
-	Tools          []*tools.ToolSpec `json:"tools"`
+	// LLMs is the ordered list of providers this agent can use. LLMs[0] is
+	// the default — every call tries it first. Anything after that is a
+	// fallback, tried in order only once the ones before it are judged down
+	// (see callLLM) — never round-robined or load-balanced, purely a
+	// priority chain. A single-provider agent just has a length-1 slice and
+	// behaves exactly as before.
+	LLMs []llm.LLM
+	// llmState is a parallel slice to LLMs (llmState[i] tracks LLMs[i]) —
+	// see callLLM's circuit-breaker logic. Guarded by llmMu since RunLoop
+	// can be called concurrently for different conversations.
+	llmMu    sync.Mutex
+	llmState []llmProviderState
+	Tools    []*tools.ToolSpec `json:"tools"`
 	eventBus       EventPublisher
 	memory         memory.Memory
 	inBox          *MessageQueue
@@ -147,6 +158,87 @@ const maxConsecutiveToolFailures = 3
 // consecutive-failure breaker by accident. This catches that pattern
 // directly instead of relying on it eventually degenerating into repeats.
 const maxSameToolCallsPerRun = 15
+
+// llmMaxRetries is how many times callLLM retries a single provider (with
+// exponential backoff) before treating it as down and falling through to
+// the next one in Agent.LLMs — enough to ride out a one-off blip without
+// mistaking it for an outage.
+const llmMaxRetries = 3
+
+// llmBaseBackoff is the first retry's wait; each subsequent retry within
+// the same callLLM attempt doubles it (1s, 2s, 4s for the default
+// llmMaxRetries of 3).
+const llmBaseBackoff = time.Second
+
+// llmCooldown is how long a provider that just exhausted llmMaxRetries is
+// skipped on subsequent calls, once callLLM has already fallen through to
+// a later provider for it once — avoids paying the same retry-then-fall-
+// through latency on every single call while a provider is genuinely down.
+const llmCooldown = 60 * time.Second
+
+// llmProviderState is callLLM's circuit-breaker bookkeeping for one entry
+// in Agent.LLMs — see Agent.llmState's own doc comment.
+type llmProviderState struct {
+	downUntil time.Time // zero value means never tripped / currently healthy
+}
+
+// callLLM walks Agent.LLMs in priority order (index 0 first) so every
+// runLoopFrom call site gets automatic fallback for free, without needing
+// to know how many providers are configured. For each provider it isn't
+// currently skipping (see the cooldown check below), it retries up to
+// llmMaxRetries times with exponential backoff before moving on — that's
+// the "one-off blip vs. a real outage" distinction. A provider that
+// exhausts its retries is marked down for llmCooldown so later calls skip
+// straight past it instead of re-paying the same retry cost, EXCEPT the
+// last provider in the list, which is always tried regardless of cooldown
+// — there's nothing left to fall back to, so a skipped attempt there would
+// just mean returning an error without ever actually trying.
+func (a *Agent) callLLM(messages []llm.Message, toolset []*tools.ToolSpec) (*llm.Response, error) {
+	a.llmMu.Lock()
+	if len(a.llmState) != len(a.LLMs) {
+		a.llmState = make([]llmProviderState, len(a.LLMs))
+	}
+	a.llmMu.Unlock()
+
+	now := time.Now()
+	var lastErr error
+	for i, provider := range a.LLMs {
+		isLast := i == len(a.LLMs)-1
+
+		a.llmMu.Lock()
+		downUntil := a.llmState[i].downUntil
+		a.llmMu.Unlock()
+		if !isLast && now.Before(downUntil) {
+			continue
+		}
+
+		var resp *llm.Response
+		var err error
+		for attempt := 0; attempt <= llmMaxRetries; attempt++ {
+			if attempt > 0 {
+				time.Sleep(llmBaseBackoff * time.Duration(1<<(attempt-1)))
+			}
+			resp, err = provider.Call(messages, toolset)
+			if err == nil {
+				a.llmMu.Lock()
+				a.llmState[i].downUntil = time.Time{}
+				a.llmMu.Unlock()
+				return resp, nil
+			}
+		}
+
+		lastErr = err
+		if len(a.LLMs) > 1 {
+			log.Printf("%s: LLM provider %d/%d failed %d times in a row (%v) — %s", a.Name, i+1, len(a.LLMs), llmMaxRetries+1, err,
+				map[bool]string{true: "no more providers to fall back to", false: "falling through to the next provider"}[isLast])
+		}
+		a.llmMu.Lock()
+		a.llmState[i].downUntil = now.Add(llmCooldown)
+		a.llmMu.Unlock()
+	}
+
+	return nil, fmt.Errorf("all %d LLM provider(s) failed, last error: %w", len(a.LLMs), lastErr)
+}
 
 // hasDuplicateToolCalls reports whether any two calls in calls share the
 // same name and arguments — the signature of a model stuck repeating
@@ -262,7 +354,7 @@ func (a *Agent) runLoopFrom(ctx context.Context, messages []llm.Message, toolset
 		// toolCallCounts's own doc comment.
 		seenThisTurn := make(map[string]bool)
 
-		response, err := a.LLM.Call(messages, toolset)
+		response, err := a.callLLM(messages, toolset)
 		if err != nil {
 			log.Println("Error:", err)
 			return nil, messages, err
@@ -586,14 +678,23 @@ const loopProtocolInstructions = "You have access to tools. " +
 	"Never expose a tool name or argument in your final answer — the user should not see any tool calls, only the final_message you put in end_loop." +
 	"If repeating a similar action with different inputs stops turning up anything new, that's information too — don't keep trying variations hoping for a better result. Work with what you've already found, or if that's not enough to proceed confidently, say so in end_loop's final_message and ask what you need, rather than continuing indefinitely."
 
-func NewAgent(id, name, description, identityPrompt string, llm llm.LLM) *Agent {
+// NewAgent builds an Agent bound to one or more LLM providers. llms[0] is
+// the default, tried first on every call — anything after it is a
+// fallback, used only once earlier providers are judged down (see
+// Agent.callLLM). Passing a single provider (the common case) behaves
+// exactly as before.
+func NewAgent(id, name, description, identityPrompt string, llms ...llm.LLM) *Agent {
+	if len(llms) == 0 {
+		panic("agent: NewAgent requires at least one LLM provider")
+	}
 	a := &Agent{
 		Id:             id,
 		Name:           name,
 		Description:    description,
 		IdentityPrompt: identityPrompt + loopProtocolInstructions,
 		Workflows:      make([]*workflow.Workflow, 0),
-		LLM:            llm,
+		LLMs:           llms,
+		llmState:       make([]llmProviderState, len(llms)),
 		Tools: []*tools.ToolSpec{
 			tools.NewToolBuilder("end_loop", "Call this when you have fully completed the user's request and have nothing further to do. Do not call this if you still need to call another tool").
 				Parameter("final_message", "string", "The actual final answer to the user. This is the one place your answer is captured — do not leave it empty.", true).
