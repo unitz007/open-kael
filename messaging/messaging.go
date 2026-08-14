@@ -11,8 +11,9 @@ import (
 // Also feeds into memory partitioning (see MemoryKeyFunc) alongside
 // whatever else a given strategy reads off ctx.
 type ConversationRef struct {
-	Platform string // "telegram", "slack", ...
-	ChatID   string // platform-specific chat/channel/DM id
+	Platform      string // "telegram", "slack", ...
+	ChatID        string // platform-specific chat/channel/DM id
+	DirectMessage bool   // true when this is a 1:1 DM, not a group/channel
 }
 
 // InboundMessage is what a Messenger hands back for each new message it
@@ -230,19 +231,19 @@ func KeyByConversation() MemoryKeyFunc {
 // contract — see InboundMessage.ThreadID), so its own memory turn is
 // already filed under that same value from the start, and a later reply
 // inside that thread — whose ThreadID points back at the same root —
-// resolves to the identical key. This matters in practice more often than
-// it might look: a Messenger's own Send typically threads its reply under
-// the triggering message's ThreadID too (e.g. Slack's thread_ts — see
-// SlackBot.Send in examples/messenger), so most exchanges become a real
-// thread the instant the agent responds, whether or not the human
-// explicitly used their client's "reply in thread" affordance. An earlier
-// version of this collapsed the root case into a shared per-channel
-// bucket instead, which broke exactly that path: the root's own turn
-// would land in the channel bucket while a genuine reply resolved to the
-// thread-specific one, leaving the reply with no visibility into what the
-// root turn had just said.
+// resolves to the identical key.
+//
+// DMs (ConversationRef.DirectMessage == true) are the one exception:
+// a DM conversation is inherently flat — a new DM gets no thread, and
+// a thread reply is just UI sugar on the same 1:1 conversation — so
+// the thread component is always dropped, collapsing every exchange in
+// a DM to a single memory bucket regardless of whether the human used
+// their client's "reply in thread" affordance.
 func KeyByThread() MemoryKeyFunc {
 	return func(ctx context.Context, conv ConversationRef) string {
+		if conv.DirectMessage {
+			return conv.Platform + ":" + conv.ChatID + ":"
+		}
 		threadID, _ := ThreadIDFromContext(ctx)
 		return conv.Platform + ":" + conv.ChatID + ":" + threadID
 	}
