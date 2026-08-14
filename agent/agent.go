@@ -283,7 +283,7 @@ func normalizeToolArgs(args json.RawMessage) json.RawMessage {
 // conversation history (RunLoop) can see exactly what turns were added. ctx
 // flows to every tool call unchanged — this is how a conversation attached
 // via messaging.WithConversation reaches send_message's handler.
-func (a *Agent) runLoopFrom(ctx context.Context, messages []llm.Message, toolset []*tools.ToolSpec, maxIter, maxDuplicateToolCalls, maxToolCalls int) (*LoopResult, []llm.Message, error) {
+func (a *Agent) runLoopFrom(ctx context.Context, messages []llm.Message, toolset []*tools.ToolSpec, maxIter, maxDuplicateToolCalls, maxToolCalls, maxSameToolCalls int) (*LoopResult, []llm.Message, error) {
 	// Every tool call in this run — agent-level or nested inside a workflow
 	// (workflows route through this same function) — can reach whichever of
 	// this agent's identities it needs via identity.FromContext, regardless
@@ -459,7 +459,7 @@ func (a *Agent) runLoopFrom(ctx context.Context, messages []llm.Message, toolset
 			if toolCall.Name != "end_loop" && !seenThisTurn[toolCall.Name] {
 				seenThisTurn[toolCall.Name] = true
 				toolCallCounts[toolCall.Name]++
-				if toolCallCounts[toolCall.Name] > maxSameToolCallsPerRun {
+				if toolCallCounts[toolCall.Name] > maxSameToolCalls {
 					log.Printf("⚠️%s attempted %s across %d separate turns in this run — giving up rather than continuing what looks like an unproductive one-call-at-a-time pattern", a.Name, toolCall.Name, toolCallCounts[toolCall.Name])
 					return &LoopResult{Iteration: i + 1, Status: LLMToolCallError}, messages, nil
 				}
@@ -1440,7 +1440,7 @@ func (a *Agent) RunLoop(ctx context.Context, conv messaging.ConversationRef, use
 
 	toolset := mergeTools(a.baseTools(), a.workflowToolSpecs(true), a.delegateToolSpecs())
 	toolset = filterToolsForPlatform(toolset, conv.Platform)
-	result, final, err := a.runLoopFrom(ctx, messages, toolset, a.MaxIterations, a.MaxDuplicateToolCallsPerResponse, a.MaxToolCallsPerResponse)
+	result, final, err := a.runLoopFrom(ctx, messages, toolset, a.MaxIterations, a.MaxDuplicateToolCallsPerResponse, a.MaxToolCallsPerResponse, maxSameToolCallsPerRun)
 
 	if a.memory != nil {
 		// Persist only what this call actually added — everything after the
@@ -1718,7 +1718,7 @@ func (a *Agent) runWorkflow(ctx context.Context, wf *workflow.Workflow, includeU
 	if maxToolCalls <= 0 {
 		maxToolCalls = a.MaxToolCallsPerResponse
 	}
-	result, final, err := a.runLoopFrom(ctx, messages, toolset, maxIter, maxDuplicateToolCalls, maxToolCalls)
+	result, final, err := a.runLoopFrom(ctx, messages, toolset, maxIter, maxDuplicateToolCalls, maxToolCalls, maxIter)
 	if a.memory != nil {
 		newTurns := final[1+len(prior):]
 		a.memory.Append(ctx, memKey, newTurns...)
@@ -1946,7 +1946,7 @@ func (a *Agent) runDelegatedTask(ctx context.Context, task string) (*LoopResult,
 	toolset = excludeTool(toolset, "send_message")
 	toolset = filterToolsForPlatform(toolset, a.resolvePlatform(ctx))
 
-	result, final, err := a.runLoopFrom(ctx, messages, toolset, a.MaxIterations, a.MaxDuplicateToolCallsPerResponse, a.MaxToolCallsPerResponse)
+	result, final, err := a.runLoopFrom(ctx, messages, toolset, a.MaxIterations, a.MaxDuplicateToolCallsPerResponse, a.MaxToolCallsPerResponse, maxSameToolCallsPerRun)
 	if a.memory != nil {
 		newTurns := final[1+len(prior):]
 		a.memory.Append(ctx, memKey, newTurns...)
