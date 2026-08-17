@@ -43,7 +43,7 @@ type ToolSpec struct {
 	// ApprovalSummarize builds the human-readable approval-prompt text
 	// from the tool's raw call arguments. Only meaningful when
 	// RequiresApproval is true.
-	ApprovalSummarize func(args json.RawMessage) string `json:"-"`
+	ApprovalSummarize func(ctx context.Context, args json.RawMessage) string `json:"-"`
 	// ApprovalTimeout bounds how long to wait before an unanswered prompt
 	// is treated as declined. Only meaningful when RequiresApproval is
 	// true.
@@ -107,7 +107,7 @@ func (tb *ToolSpecBuilder) Platform(platform string) *ToolSpecBuilder {
 // builds the human-readable prompt text from the tool's raw call
 // arguments; timeout bounds how long to wait before an unanswered prompt
 // is treated as declined.
-func (tb *ToolSpecBuilder) RequireApproval(summarize func(args json.RawMessage) string, timeout time.Duration) *ToolSpecBuilder {
+func (tb *ToolSpecBuilder) RequireApproval(summarize func(ctx context.Context, args json.RawMessage) string, timeout time.Duration) *ToolSpecBuilder {
 	tb.toolSpec.RequiresApproval = true
 	tb.toolSpec.ApprovalSummarize = summarize
 	tb.toolSpec.ApprovalTimeout = timeout

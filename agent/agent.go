@@ -1073,7 +1073,7 @@ func (a *Agent) callTool(ctx context.Context, tool *tools.ToolSpec, args json.Ra
 	}
 	approveCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	approved, err := am.RequestApproval(approveCtx, conv, tool.ApprovalSummarize(args))
+	approved, err := am.RequestApproval(approveCtx, conv, tool.ApprovalSummarize(ctx, args))
 	if err != nil {
 		return nil, fmt.Errorf("%s approval wait failed: %w", tool.Name, err)
 	}
