@@ -787,15 +787,15 @@ const maxBareMemoryMessages = 20
 // ctx from the delegating call, using its own (the delegate's) registered
 // messenger. See messengerTools for the caveat that implies.
 func (a *Agent) baseTools() []*tools.ToolSpec {
-	return append(a.unconditionalTools(), a.messagingTools()...)
+	return append(a.defaultTools(), a.messagingTools()...)
 }
 
-// unconditionalTools is a.Tools (everything added via AddTool, including
+// defaultTools is a.Tools (everything added via AddTool, including
 // anything RequiresApproval) plus retrievers and thread-history — every
 // tool with no dependency on there being a live, identity-matched
 // conversation to act through. Never gated behind anything. See
 // Agent.messagingTools for the one category that is gated, and why.
-func (a *Agent) unconditionalTools() []*tools.ToolSpec {
+func (a *Agent) defaultTools() []*tools.ToolSpec {
 	out := append([]*tools.ToolSpec{}, a.Tools...)
 	out = append(out, a.retrieverToolSpecs()...)
 	if a.memory != nil {
@@ -1699,7 +1699,7 @@ func incrementDelegationDepth(ctx context.Context) (context.Context, int, bool) 
 // itself — specifically, that a.Tools can never end up excluded — is
 // directly testable without running an actual LLM loop.
 func (a *Agent) workflowToolset(wf *workflow.Workflow, messagingTools []*tools.ToolSpec) []*tools.ToolSpec {
-	base := append(a.unconditionalTools(), messagingTools...)
+	base := append(a.defaultTools(), messagingTools...)
 	toolset := mergeTools(base, toolMapValues(wf.Tools))
 	if wf.AllowDelegation {
 		toolset = mergeTools(toolset, a.delegateToolSpecs())
@@ -1969,7 +1969,7 @@ func consumeDelegationNotes(ctx context.Context) string {
 //     context, in its own memory store, so e.g. a delegation traced back to
 //     a specific workflow gets its own accumulating history on the
 //     delegate's side too, distinct from a plain one-off delegated call.
-//   - Its toolset is unconditionalTools() + messengerTools() +
+//   - Its toolset is defaultTools() + messengerTools() +
 //     workflowToolSpecs(nil) — everything a normal conversational run
 //     gets EXCEPT send_message itself: a delegate has no live,
 //     identity-matched conversation to post into as its own bot (see
@@ -2010,7 +2010,7 @@ func (a *Agent) runDelegatedTask(ctx context.Context, task string) (*LoopResult,
 	messages = append(messages, llm.Message{Role: "system", Content: systemContent})
 	messages = append(messages, prior...)
 	messages = append(messages, llm.Message{Role: "user", Content: task})
-	toolset := mergeTools(a.unconditionalTools(), a.messengerTools(), a.workflowToolSpecs(nil))
+	toolset := mergeTools(a.defaultTools(), a.messengerTools(), a.workflowToolSpecs(nil))
 	toolset = filterToolsForPlatform(toolset, a.resolvePlatform(ctx))
 
 	result, final, err := a.runLoopFrom(ctx, messages, toolset, a.MaxIterations, a.MaxDuplicateToolCallsPerResponse, a.MaxToolCallsPerResponse, maxSameToolCallsPerRun)
