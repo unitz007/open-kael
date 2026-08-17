@@ -1066,23 +1066,33 @@ func (a *Agent) resolveSendTarget(ctx context.Context, platform string) (messagi
 
 // callTool runs tool.Handler, first enforcing RequiresApproval if the tool
 // declares it (see ToolSpec.RequiresApproval's own doc comment — the tool
-// only says approval is needed, never how to obtain it). Resolves whatever
-// messenger is active for the current call the same way send_message does
-// (resolveSendTarget) and requires it to implement
-// messaging.ApprovalMessenger; a messenger that doesn't is refused outright
-// rather than treated as "no approval needed" — never a silent bypass. A
-// human decline or an unanswered prompt both come back as a normal,
-// non-error result (Handler never runs) so the model sees "not approved"
-// like any other tool outcome, not a failure to retry.
+// only says approval is needed, never how to obtain it). Deliberately
+// resolves the approval target via a.DefaultConversation() — this agent's
+// own identity — rather than resolveSendTarget's ambient-ctx-preferring
+// logic (what send_message uses): ctx can carry a ConversationRef
+// inherited from a completely different agent (e.g. mid-delegation — see
+// runDelegatedTask, which forwards its caller's ctx unchanged into its own
+// nested loop), and resolveSendTarget would happily pair that foreign
+// ConversationRef with THIS agent's own messenger — posting an approval
+// prompt as the wrong bot into a channel it likely isn't even a member
+// of. An approval prompt is always something this agent originates on its
+// own behalf, never a reply within someone else's conversation, so it
+// should never inherit one. Requires the resolved messenger to implement
+// messaging.ApprovalMessenger; one that doesn't is refused outright rather
+// than treated as "no approval needed" — never a silent bypass. A human
+// decline or an unanswered prompt both come back as a normal, non-error
+// result (Handler never runs) so the model sees "not approved" like any
+// other tool outcome, not a failure to retry.
 func (a *Agent) callTool(ctx context.Context, tool *tools.ToolSpec, args json.RawMessage) (any, error) {
 	if !tool.RequiresApproval {
 		return tool.Handler(ctx, args)
 	}
 
-	conv, m, err := a.resolveSendTarget(ctx, "")
-	if err != nil {
-		return nil, fmt.Errorf("%s requires approval but no messenger is available: %w", tool.Name, err)
+	conv, ok := a.DefaultConversation()
+	if !ok {
+		return nil, fmt.Errorf("%s requires approval but no messenger is available", tool.Name)
 	}
+	m := a.messengers[conv.Platform]
 	am, ok := m.(messaging.ApprovalMessenger)
 	if !ok {
 		return nil, fmt.Errorf("%s requires approval, but %s doesn't support interactive approval — refusing to run rather than executing unapproved", tool.Name, m.Platform())
