@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"time"
 )
 
 type HandlerFunc func(ctx context.Context, message json.RawMessage) (any, error)
@@ -30,6 +31,23 @@ type ToolSpec struct {
 	// default for the vast majority of tools, which have no such
 	// restriction.
 	Platform string
+
+	// RequiresApproval gates this tool behind an interactive human
+	// approve/reject prompt before Handler ever runs — set via
+	// ToolSpecBuilder.RequireApproval. Declares only *that* approval is
+	// needed, never *how* to obtain it — the mechanism is resolved at call
+	// time against whatever messenger is active (see
+	// messaging.ApprovalMessenger), so a tool definition itself never
+	// references a specific messaging platform.
+	RequiresApproval bool `json:"-"`
+	// ApprovalSummarize builds the human-readable approval-prompt text
+	// from the tool's raw call arguments. Only meaningful when
+	// RequiresApproval is true.
+	ApprovalSummarize func(args json.RawMessage) string `json:"-"`
+	// ApprovalTimeout bounds how long to wait before an unanswered prompt
+	// is treated as declined. Only meaningful when RequiresApproval is
+	// true.
+	ApprovalTimeout time.Duration `json:"-"`
 }
 
 type ToolSpecBuilder struct {
@@ -81,6 +99,18 @@ func (tb *ToolSpecBuilder) Handler(handler HandlerFunc) *ToolSpecBuilder {
 // ToolSpec.Platform.
 func (tb *ToolSpecBuilder) Platform(platform string) *ToolSpecBuilder {
 	tb.toolSpec.Platform = platform
+	return tb
+}
+
+// RequireApproval gates this tool behind an interactive approve/reject
+// prompt before its Handler runs — see ToolSpec.RequiresApproval. summarize
+// builds the human-readable prompt text from the tool's raw call
+// arguments; timeout bounds how long to wait before an unanswered prompt
+// is treated as declined.
+func (tb *ToolSpecBuilder) RequireApproval(summarize func(args json.RawMessage) string, timeout time.Duration) *ToolSpecBuilder {
+	tb.toolSpec.RequiresApproval = true
+	tb.toolSpec.ApprovalSummarize = summarize
+	tb.toolSpec.ApprovalTimeout = timeout
 	return tb
 }
 

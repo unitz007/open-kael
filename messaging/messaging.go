@@ -107,21 +107,15 @@ type ToolProvider interface {
 	Tools() []*tools.ToolSpec
 }
 
-// NotifyingMessenger is implemented by a Messenger that can render a
-// message in an interactively-trackable form (e.g. Slack Block Kit
-// Approve/Reject buttons) instead of plain text — send_message's
-// needs_response=true path (see agent.Agent.sendMessage) prefers this over
-// plain Send/Reply when the resolved messenger implements it. Optional,
-// same pattern as ToolProvider: a Messenger that doesn't implement this
-// (e.g. a platform with no button/interactive-payload concept) just falls
-// back to plain Send/Reply — the message still goes out, and still gets
-// durably recorded by a registered NotificationTracker if one is set, just
-// with no interactive affordance to resolve it by.
-type NotifyingMessenger interface {
-	// Notify is Send's trackable-rendering counterpart.
-	Notify(ctx context.Context, conv ConversationRef, text string) (MessengerResponse, error)
-	// ReplyNotify is Reply's trackable-rendering counterpart.
-	ReplyNotify(ctx context.Context, to InboundMessage, text string) (MessengerResponse, error)
+// ApprovalMessenger is implemented by a Messenger that can gate an action
+// behind an interactive approve/reject prompt — used by a ToolSpec marked
+// RequiresApproval (see tools.ToolSpecBuilder.RequireApproval). Optional,
+// same pattern as ToolProvider: a Messenger that doesn't implement this has
+// no way to ask, so an approval-gated tool call against it is refused
+// outright rather than executed unapproved (see Agent.callTool) — never a
+// silent bypass.
+type ApprovalMessenger interface {
+	RequestApproval(ctx context.Context, conv ConversationRef, text string) (approved bool, err error)
 }
 
 type conversationCtxKey struct{}

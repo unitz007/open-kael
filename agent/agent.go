@@ -53,19 +53,14 @@ type Agent struct {
 	// llmState is a parallel slice to LLMs (llmState[i] tracks LLMs[i]) —
 	// see callLLM's circuit-breaker logic. Guarded by llmMu since RunLoop
 	// can be called concurrently for different conversations.
-	llmMu    sync.Mutex
-	llmState []llmProviderState
-	Tools    []*tools.ToolSpec `json:"tools"`
-	eventBus EventPublisher
-	// notificationTracker is an optional plug-in send_message's
-	// needs_response=true path records through — see NotificationTracker's
-	// own doc comment. nil (the default) means that path still sends, just
-	// without any durable record of it.
-	notificationTracker NotificationTracker
-	memory              memory.Memory
-	inBox               *MessageQueue
-	human               human.Human
-	messengers          map[string]messaging.Messenger
+	llmMu      sync.Mutex
+	llmState   []llmProviderState
+	Tools      []*tools.ToolSpec `json:"tools"`
+	eventBus   EventPublisher
+	memory     memory.Memory
+	inBox      *MessageQueue
+	human      human.Human
+	messengers map[string]messaging.Messenger
 	// primaryMessenger is whichever Messenger AddMessenger sees first —
 	// used by DefaultConversation so a proactive send with no active
 	// conversation to inherit (a cron/webhook-triggered workflow) has a
@@ -483,7 +478,7 @@ func (a *Agent) runLoopFrom(ctx context.Context, messages []llm.Message, toolset
 				continue
 			}
 
-			result, err := tool.Handler(ctx, normalizeToolArgs(toolCall.Arguments))
+			result, err := a.callTool(ctx, tool, normalizeToolArgs(toolCall.Arguments))
 			if err != nil {
 				log.Println("Tool execution error:", err.Error())
 				messages = append(messages, llm.Message{
@@ -577,15 +572,6 @@ func (a *Agent) SetMemory(m memory.Memory) {
 // eventBus (the default) just means those PublishEvent calls are skipped.
 func (a *Agent) SetEventBus(eventBus EventPublisher) {
 	a.eventBus = eventBus
-}
-
-// SetNotificationTracker wires an optional NotificationTracker — see its
-// own doc comment. A nil tracker (the default) means send_message's
-// needs_response=true still sends (with trackable rendering when the
-// resolved messenger implements NotifyingMessenger) but nothing is durably
-// recorded, so nothing can resolve it later.
-func (a *Agent) SetNotificationTracker(t NotificationTracker) {
-	a.notificationTracker = t
 }
 
 // SetDirectory wires this agent into a shared registry of sibling agents
@@ -985,7 +971,6 @@ func (a *Agent) sendMessageTool() *tools.ToolSpec {
 	return tools.NewToolBuilder("send_message", "Sends a message back to the user in the current conversation.").
 		Parameter("message", "string", "The message to send", true).
 		Parameter("platform", "string", "Optional. Send through a specific registered platform instead of the current conversation — e.g. \"email\" to email the owner instead of replying here. Only use this when the user explicitly asks to be reached a different way (\"send that to my email\"); leave unset for a normal reply. Fails if that platform isn't registered for this agent.", false).
-		Parameter("needs_response", "boolean", "Optional. Set true when this message asks something the owner needs to respond to later (an approval, a question) — it's rendered trackably where the platform supports it (e.g. Slack buttons) and durably recorded so a later resolve-style call can find it. Leave false (the default) for a normal fire-and-forget message.", false).
 		Handler(func(ctx context.Context, args json.RawMessage) (any, error) {
 			if args == nil {
 				return nil, fmt.Errorf("send_message: no arguments provided")
@@ -997,9 +982,8 @@ func (a *Agent) sendMessageTool() *tools.ToolSpec {
 			}
 
 			var input struct {
-				Message       string `json:"message"`
-				Platform      string `json:"platform"`
-				NeedsResponse bool   `json:"needs_response"`
+				Message  string `json:"message"`
+				Platform string `json:"platform"`
 			}
 			if err := json.Unmarshal([]byte(raw), &input); err != nil {
 				return nil, err
@@ -1013,61 +997,12 @@ func (a *Agent) sendMessageTool() *tools.ToolSpec {
 			log.Printf("📤%s: routing send_message to %s/%s", a.Name, target.Platform, target.ChatID)
 
 			input.Message = consumeDelegationNotes(ctx) + input.Message
-			if _, err := a.sendMessage(ctx, messenger, target, input.Message, input.NeedsResponse); err != nil {
+			if _, err := a.replyOrSend(ctx, messenger, target, input.Message); err != nil {
 				log.Println("Error sending message:", err)
 				return nil, err
 			}
 			return "Message sent successfully", nil
 		}).Build()
-}
-
-// sendMessage is send_message's actual dispatch. needsResponse=false runs
-// exactly replyOrSend's existing logic — every other caller of replyOrSend
-// (workflow error notices, etc.) is untouched and still calls it directly.
-// needsResponse=true mirrors replyOrSend's own reply-vs-send resolution,
-// but prefers m's trackable rendering (messaging.NotifyingMessenger) when m
-// implements it, falling back to plain Reply/Send otherwise — graceful
-// degradation for a messenger with no interactive-rendering concept. On
-// success, if a NotificationTracker is registered, records the result; a
-// recording error is logged, not returned, since the message itself
-// already sent successfully and failing the tool call over a bookkeeping
-// error would misleadingly tell the model the send itself failed.
-func (a *Agent) sendMessage(ctx context.Context, m messaging.Messenger, conv messaging.ConversationRef, text string, needsResponse bool) (messaging.MessengerResponse, error) {
-	if !needsResponse {
-		return a.replyOrSend(ctx, m, conv, text)
-	}
-
-	nm, notifying := m.(messaging.NotifyingMessenger)
-
-	var resp messaging.MessengerResponse
-	var err error
-	switch {
-	case notifying:
-		msgID, hasMsg := messaging.MessageIDFromContext(ctx)
-		origConv, hasConv := messaging.ConversationFromContext(ctx)
-		if hasMsg && hasConv && origConv == conv {
-			threadID, _ := messaging.ThreadIDFromContext(ctx)
-			resp, err = nm.ReplyNotify(ctx, messaging.InboundMessage{
-				Conversation: conv,
-				MessageID:    msgID,
-				ThreadID:     threadID,
-			}, text)
-		} else {
-			resp, err = nm.Notify(ctx, conv, text)
-		}
-	default:
-		resp, err = a.replyOrSend(ctx, m, conv, text)
-	}
-	if err != nil {
-		return resp, err
-	}
-
-	if a.notificationTracker != nil {
-		if trackErr := a.notificationTracker.Record(ctx, conv, resp, text); trackErr != nil {
-			log.Printf("send_message: needs_response was set but recording it failed (message still sent): %v", trackErr)
-		}
-	}
-	return resp, nil
 }
 
 // resolveSendTarget picks which conversation/messenger send_message should
@@ -1106,6 +1041,46 @@ func (a *Agent) resolveSendTarget(ctx context.Context, platform string) (messagi
 		return conv, a.messengers[conv.Platform], nil
 	}
 	return messaging.ConversationRef{}, nil, fmt.Errorf("no messenger registered")
+}
+
+// callTool runs tool.Handler, first enforcing RequiresApproval if the tool
+// declares it (see ToolSpec.RequiresApproval's own doc comment — the tool
+// only says approval is needed, never how to obtain it). Resolves whatever
+// messenger is active for the current call the same way send_message does
+// (resolveSendTarget) and requires it to implement
+// messaging.ApprovalMessenger; a messenger that doesn't is refused outright
+// rather than treated as "no approval needed" — never a silent bypass. A
+// human decline or an unanswered prompt both come back as a normal,
+// non-error result (Handler never runs) so the model sees "not approved"
+// like any other tool outcome, not a failure to retry.
+func (a *Agent) callTool(ctx context.Context, tool *tools.ToolSpec, args json.RawMessage) (any, error) {
+	if !tool.RequiresApproval {
+		return tool.Handler(ctx, args)
+	}
+
+	conv, m, err := a.resolveSendTarget(ctx, "")
+	if err != nil {
+		return nil, fmt.Errorf("%s requires approval but no messenger is available: %w", tool.Name, err)
+	}
+	am, ok := m.(messaging.ApprovalMessenger)
+	if !ok {
+		return nil, fmt.Errorf("%s requires approval, but %s doesn't support interactive approval — refusing to run rather than executing unapproved", tool.Name, m.Platform())
+	}
+
+	timeout := tool.ApprovalTimeout
+	if timeout <= 0 {
+		timeout = 10 * time.Minute
+	}
+	approveCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	approved, err := am.RequestApproval(approveCtx, conv, tool.ApprovalSummarize(args))
+	if err != nil {
+		return nil, fmt.Errorf("%s approval wait failed: %w", tool.Name, err)
+	}
+	if !approved {
+		return "Not approved within the timeout — action not taken.", nil
+	}
+	return tool.Handler(ctx, args)
 }
 
 // replyOrSend delivers text to conv via m, addressed back to the
@@ -1178,20 +1153,6 @@ func (a *Agent) memoryKey(ctx context.Context, conv messaging.ConversationRef) s
 
 type EventPublisher interface {
 	PublishEvent(eventType, agentName, workflow, message string, err error, data map[string]interface{})
-}
-
-// NotificationTracker is an optional, storage-agnostic hook a caller can
-// register (see Agent.SetNotificationTracker) so send_message's
-// needs_response=true path durably records what it sent, for later
-// resolution by a caller-owned tool. Record receives only opaque,
-// structural handles — the conversation and the MessengerResponse just
-// returned by Send/Reply/Notify/ReplyNotify, plus the raw text —
-// deliberately nothing business-shaped: this package has no concept of
-// "topic" or "subject," only "a message went out and might need a reply."
-// Same reasoning as EventPublisher: a pure plug-in point with no natural
-// home elsewhere in this framework.
-type NotificationTracker interface {
-	Record(ctx context.Context, conv messaging.ConversationRef, resp messaging.MessengerResponse, text string) error
 }
 
 // missedCronLookback bounds how far back warnIfCronRunLikelyMissed searches
