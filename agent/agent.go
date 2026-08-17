@@ -788,15 +788,28 @@ const maxBareMemoryMessages = 20
 // messenger. See messengerTools for the caveat that implies.
 func (a *Agent) baseTools() []*tools.ToolSpec {
 	out := append([]*tools.ToolSpec{}, a.Tools...)
-	if len(a.messengers) > 0 {
-		out = append(out, a.sendMessageTool())
-		out = append(out, a.messengerTools()...)
-	}
+	out = append(out, a.messagingTools()...)
 	out = append(out, a.retrieverToolSpecs()...)
 	if a.memory != nil {
 		out = append(out, a.getThreadHistoryTool())
 	}
 	return out
+}
+
+// messagingTools is send_message plus any messenger-contributed tools
+// (add_reaction, ...) — the only tools that require a live,
+// identity-matched conversation to act through, and so the only ones
+// runWorkflow ever excludes. Everything else a workflow might need
+// (a.Tools — including anything RequiresApproval — plus retrievers and
+// thread-history) is unconditional; those have no dependency on there
+// being a live conversation and were never a meaningful thing to gate.
+// See runWorkflow's own doc comment for where that exclusion actually
+// happens and why.
+func (a *Agent) messagingTools() []*tools.ToolSpec {
+	if len(a.messengers) == 0 {
+		return nil
+	}
+	return append([]*tools.ToolSpec{a.sendMessageTool()}, a.messengerTools()...)
 }
 
 // retrieverToolSpecs turns every registered rag.Retriever into a callable
@@ -1234,13 +1247,13 @@ func (a *Agent) Start(ctx context.Context) error {
 					a.eventBus.PublishEvent("workflow.triggered", a.Name, wf.Name, "Workflow triggered", nil, nil)
 				}
 
-				// includeUserReply: true — a cron-triggered workflow has no
+				// a.messagingTools() — a cron-triggered workflow has no
 				// human waiting in an active conversation, but it still needs
 				// send_message to actually deliver anything (the movie
 				// recommendation workflow's whole point). resolveSendTarget
 				// falls back to the messenger's DefaultConversation() when,
 				// as here, ctx carries no active ConversationRef.
-				result, err := a.runWorkflow(context.Background(), wf, true, "You were triggered on your scheduled cron. Run now.")
+				result, err := a.runWorkflow(context.Background(), wf, a.messagingTools(), "You were triggered on your scheduled cron. Run now.")
 				if err != nil {
 					log.Printf("⚠️%s: cron-triggered workflow %q failed: %v", a.Name, wf.Name, err)
 					if a.eventBus != nil {
@@ -1358,7 +1371,7 @@ func (a *Agent) registerWebhook(wf *workflow.Workflow, src webhook.Source) {
 				a.eventBus.PublishEvent("workflow.triggered", a.Name, wf.Name, "Workflow triggered", nil, nil)
 			}
 
-			result, err := a.runWorkflow(context.Background(), wf, true, userTrigger)
+			result, err := a.runWorkflow(context.Background(), wf, a.messagingTools(), userTrigger)
 			if err != nil {
 				log.Printf("⚠️%s: webhook-triggered workflow %q failed: %v", a.Name, wf.Name, err)
 				if a.eventBus != nil {
@@ -1478,7 +1491,7 @@ func (a *Agent) RunLoop(ctx context.Context, conv messaging.ConversationRef, use
 	messages = append(messages, prior...)
 	messages = append(messages, llm.Message{Role: "user", Content: userPrompt})
 
-	toolset := mergeTools(a.baseTools(), a.workflowToolSpecs(true), a.delegateToolSpecs())
+	toolset := mergeTools(a.baseTools(), a.workflowToolSpecs(a.messagingTools()), a.delegateToolSpecs())
 	toolset = filterToolsForPlatform(toolset, conv.Platform)
 	result, final, err := a.runLoopFrom(ctx, messages, toolset, a.MaxIterations, a.MaxDuplicateToolCallsPerResponse, a.MaxToolCallsPerResponse, maxSameToolCallsPerRun)
 
@@ -1637,15 +1650,17 @@ func toolMapValues(m map[string]*tools.ToolSpec) []*tools.ToolSpec {
 
 // workflowToolSpecs turns every workflow the agent owns into a callable
 // tool, so the loop can decide to run one instead of freehanding the task
-// with tools that weren't meant for it. includeUserReply controls whether
-// the workflow's own nested toolset gets send_message: true from RunLoop
-// (a real conversation, where replying to a human is legitimate), false
-// from runDelegatedTask (a workflow triggered mid-delegation has no user to
-// message directly, same reasoning as the delegated call itself).
-func (a *Agent) workflowToolSpecs(includeUserReply bool) []*tools.ToolSpec {
+// with tools that weren't meant for it. messagingTools is passed straight
+// through to each workflow's own nested run (see runWorkflow) — the
+// agent's real a.messagingTools() from RunLoop (a real conversation, where
+// replying to a human directly is legitimate), nil from runDelegatedTask
+// (a workflow triggered mid-delegation has no live, identity-matched
+// conversation to message into, same reasoning as the delegated call
+// itself).
+func (a *Agent) workflowToolSpecs(messagingTools []*tools.ToolSpec) []*tools.ToolSpec {
 	specs := make([]*tools.ToolSpec, 0, len(a.Workflows))
 	for _, wf := range a.Workflows {
-		specs = append(specs, a.workflowToolSpec(wf, includeUserReply))
+		specs = append(specs, a.workflowToolSpec(wf, messagingTools))
 	}
 	return specs
 }
@@ -1681,7 +1696,32 @@ func incrementDelegationDepth(ctx context.Context) (context.Context, int, bool) 
 	return context.WithValue(ctx, delegationDepthKey{}, depth), depth, depth <= maxDelegationDepth
 }
 
-func (a *Agent) runWorkflow(ctx context.Context, wf *workflow.Workflow, includeUserReply bool, userTrigger string) (*LoopResult, error) {
+// workflowToolset composes wf's toolset for one run: a.Tools (everything
+// added via AddTool, including any RequiresApproval tool), retrievers, and
+// thread-history are unconditional — none of them depend on there being a
+// live conversation, so none of them are ever gated. messagingTools
+// (send_message and any messenger-contributed tools, see
+// Agent.messagingTools) is the only conditional piece, supplied by the
+// caller — nil for a run with no live, identity-matched conversation to
+// speak into as itself (see runDelegatedTask and the nested workflow-as-
+// tool calls it makes). Pulled out of runWorkflow so the composition
+// itself — specifically, that a.Tools can never end up excluded — is
+// directly testable without running an actual LLM loop.
+func (a *Agent) workflowToolset(wf *workflow.Workflow, messagingTools []*tools.ToolSpec) []*tools.ToolSpec {
+	base := append([]*tools.ToolSpec{}, a.Tools...)
+	base = append(base, a.retrieverToolSpecs()...)
+	if a.memory != nil {
+		base = append(base, a.getThreadHistoryTool())
+	}
+	base = append(base, messagingTools...)
+	toolset := mergeTools(base, toolMapValues(wf.Tools))
+	if wf.AllowDelegation {
+		toolset = mergeTools(toolset, a.delegateToolSpecs())
+	}
+	return toolset
+}
+
+func (a *Agent) runWorkflow(ctx context.Context, wf *workflow.Workflow, messagingTools []*tools.ToolSpec, userTrigger string) (*LoopResult, error) {
 	var depth int
 	var withinLimit bool
 	ctx, depth, withinLimit = incrementDelegationDepth(ctx)
@@ -1722,14 +1762,7 @@ func (a *Agent) runWorkflow(ctx context.Context, wf *workflow.Workflow, includeU
 	messages = append(messages, llm.Message{Role: "system", Content: a.humanBlock() + wf.SystemPrompt + " " + loopProtocolInstructions})
 	messages = append(messages, prior...)
 	messages = append(messages, llm.Message{Role: "user", Content: userTrigger})
-	base := a.Tools
-	if includeUserReply {
-		base = a.baseTools()
-	}
-	toolset := mergeTools(base, toolMapValues(wf.Tools))
-	if wf.AllowDelegation {
-		toolset = mergeTools(toolset, a.delegateToolSpecs())
-	}
+	toolset := a.workflowToolset(wf, messagingTools)
 	toolset = filterToolsForPlatform(toolset, a.resolvePlatform(ctx))
 
 	maxIter := wf.Iteration
@@ -1768,12 +1801,13 @@ func (a *Agent) runWorkflow(ctx context.Context, wf *workflow.Workflow, includeU
 
 // workflowToolSpec wraps a single workflow as a tool. Invoking it runs a
 // nested loop (via runWorkflow) scoped to that workflow's own system
-// prompt and tools (plus the agent's own tools, and send_message too when
-// includeUserReply is true), plus delegate_to_<sibling> tools when
+// prompt and tools — a.Tools, retrievers, and thread-history unconditionally,
+// plus messagingTools (send_message and any messenger-contributed tools)
+// when the caller supplies them — plus delegate_to_<sibling> tools when
 // wf.AllowDelegation is set — off by default, so most workflows still see
 // only their own tools, and runWorkflow's depth guard bounds how far any
 // resulting delegation chain can actually go.
-func (a *Agent) workflowToolSpec(wf *workflow.Workflow, includeUserReply bool) *tools.ToolSpec {
+func (a *Agent) workflowToolSpec(wf *workflow.Workflow, messagingTools []*tools.ToolSpec) *tools.ToolSpec {
 	return tools.NewToolBuilder(wf.ID, wf.Description).
 		Parameter("context", "string", "Any extra detail from the user's message relevant to this workflow (optional).", false).
 		Handler(func(ctx context.Context, args json.RawMessage) (any, error) {
@@ -1790,7 +1824,7 @@ func (a *Agent) workflowToolSpec(wf *workflow.Workflow, includeUserReply bool) *
 				}
 			}
 
-			result, err := a.runWorkflow(ctx, wf, includeUserReply, userTrigger)
+			result, err := a.runWorkflow(ctx, wf, messagingTools, userTrigger)
 			if err != nil {
 				return nil, err
 			}
@@ -1949,7 +1983,7 @@ func consumeDelegationNotes(ctx context.Context) string {
 //     context, in its own memory store, so e.g. a delegation traced back to
 //     a specific workflow gets its own accumulating history on the
 //     delegate's side too, distinct from a plain one-off delegated call.
-//   - Its toolset is baseTools() + workflowToolSpecs(false) — everything a
+//   - Its toolset is baseTools() + workflowToolSpecs(nil) — everything a
 //     normal conversational run gets, including send_message and any
 //     messenger tools (add_reaction, ...), routed through whatever
 //     ConversationRef the delegating call inherited via ctx — minus
@@ -1982,7 +2016,7 @@ func (a *Agent) runDelegatedTask(ctx context.Context, task string) (*LoopResult,
 	messages = append(messages, llm.Message{Role: "system", Content: systemContent})
 	messages = append(messages, prior...)
 	messages = append(messages, llm.Message{Role: "user", Content: task})
-	toolset := mergeTools(a.baseTools(), a.workflowToolSpecs(false))
+	toolset := mergeTools(a.baseTools(), a.workflowToolSpecs(nil))
 	toolset = excludeTool(toolset, "send_message")
 	toolset = filterToolsForPlatform(toolset, a.resolvePlatform(ctx))
 
