@@ -787,8 +787,16 @@ const maxBareMemoryMessages = 20
 // ctx from the delegating call, using its own (the delegate's) registered
 // messenger. See messengerTools for the caveat that implies.
 func (a *Agent) baseTools() []*tools.ToolSpec {
+	return append(a.unconditionalTools(), a.messagingTools()...)
+}
+
+// unconditionalTools is a.Tools (everything added via AddTool, including
+// anything RequiresApproval) plus retrievers and thread-history — every
+// tool with no dependency on there being a live, identity-matched
+// conversation to act through. Never gated behind anything. See
+// Agent.messagingTools for the one category that is gated, and why.
+func (a *Agent) unconditionalTools() []*tools.ToolSpec {
 	out := append([]*tools.ToolSpec{}, a.Tools...)
-	out = append(out, a.messagingTools()...)
 	out = append(out, a.retrieverToolSpecs()...)
 	if a.memory != nil {
 		out = append(out, a.getThreadHistoryTool())
@@ -1588,23 +1596,6 @@ func mergeTools(sets ...[]*tools.ToolSpec) []*tools.ToolSpec {
 	return result
 }
 
-// excludeTool drops any tool with the given name from toolset. Used to
-// structurally remove a tool rather than just instructing the model not to
-// use it — prompt-only restrictions have already proven unreliable this
-// codebase's own testing (see resetDelegationNotes/announceDelegation):
-// runDelegatedTask uses this to take send_message off a delegate's own
-// toolset entirely, since its only guaranteed reply path is now
-// end_loop's final_message relayed back to the delegating agent.
-func excludeTool(toolset []*tools.ToolSpec, name string) []*tools.ToolSpec {
-	filtered := make([]*tools.ToolSpec, 0, len(toolset))
-	for _, t := range toolset {
-		if t.Name != name {
-			filtered = append(filtered, t)
-		}
-	}
-	return filtered
-}
-
 // resolvePlatform determines which platform the current run is actually on,
 // so platform-scoped tools (ToolSpec.Platform) can be filtered before they
 // ever reach the LLM — a Slack-only tool offered during a Telegram
@@ -1708,12 +1699,7 @@ func incrementDelegationDepth(ctx context.Context) (context.Context, int, bool) 
 // itself — specifically, that a.Tools can never end up excluded — is
 // directly testable without running an actual LLM loop.
 func (a *Agent) workflowToolset(wf *workflow.Workflow, messagingTools []*tools.ToolSpec) []*tools.ToolSpec {
-	base := append([]*tools.ToolSpec{}, a.Tools...)
-	base = append(base, a.retrieverToolSpecs()...)
-	if a.memory != nil {
-		base = append(base, a.getThreadHistoryTool())
-	}
-	base = append(base, messagingTools...)
+	base := append(a.unconditionalTools(), messagingTools...)
 	toolset := mergeTools(base, toolMapValues(wf.Tools))
 	if wf.AllowDelegation {
 		toolset = mergeTools(toolset, a.delegateToolSpecs())
@@ -1983,11 +1969,19 @@ func consumeDelegationNotes(ctx context.Context) string {
 //     context, in its own memory store, so e.g. a delegation traced back to
 //     a specific workflow gets its own accumulating history on the
 //     delegate's side too, distinct from a plain one-off delegated call.
-//   - Its toolset is baseTools() + workflowToolSpecs(nil) — everything a
-//     normal conversational run gets, including send_message and any
-//     messenger tools (add_reaction, ...), routed through whatever
-//     ConversationRef the delegating call inherited via ctx — minus
-//     delegateToolSpecs(), so no further delegation, preventing a cycle.
+//   - Its toolset is unconditionalTools() + messengerTools() +
+//     workflowToolSpecs(nil) — everything a normal conversational run
+//     gets EXCEPT send_message itself: a delegate has no live,
+//     identity-matched conversation to post into as its own bot (see
+//     Agent.messagingTools) — its one guaranteed way back is
+//     end_loop's final_message, relayed by the delegator. add_reaction
+//     (or another messenger-contributed tool) stays available, since the
+//     system prompt below offers it as a lightweight status signal, not
+//     a reply mechanism. No delegateToolSpecs() either, so no further
+//     delegation from this agent's own direct turn — preventing a cycle
+//     (a nested workflow this delegate calls can still delegate further
+//     if it opts in via AllowDelegation; incrementDelegationDepth is
+//     what actually bounds that, not a blanket ban).
 func (a *Agent) runDelegatedTask(ctx context.Context, task string) (*LoopResult, error) {
 	var depth int
 	var withinLimit bool
@@ -2016,8 +2010,7 @@ func (a *Agent) runDelegatedTask(ctx context.Context, task string) (*LoopResult,
 	messages = append(messages, llm.Message{Role: "system", Content: systemContent})
 	messages = append(messages, prior...)
 	messages = append(messages, llm.Message{Role: "user", Content: task})
-	toolset := mergeTools(a.baseTools(), a.workflowToolSpecs(nil))
-	toolset = excludeTool(toolset, "send_message")
+	toolset := mergeTools(a.unconditionalTools(), a.messengerTools(), a.workflowToolSpecs(nil))
 	toolset = filterToolsForPlatform(toolset, a.resolvePlatform(ctx))
 
 	result, final, err := a.runLoopFrom(ctx, messages, toolset, a.MaxIterations, a.MaxDuplicateToolCallsPerResponse, a.MaxToolCallsPerResponse, maxSameToolCallsPerRun)
