@@ -17,6 +17,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1192,6 +1193,17 @@ type EventPublisher interface {
 // actually uses) with margin to spare.
 const missedCronLookback = 8 * 24 * time.Hour
 
+// recoverFromPanic must be deferred at the top of every goroutine that runs
+// agent-supplied logic (LLM calls, tool handlers) outside the shared inbox
+// queue (which recovers on its own) — this binary hosts several independent
+// agents in one process, so a panic in one agent's cron- or webhook-triggered
+// workflow run must not take the other agents down with it.
+func recoverFromPanic(agentName, context string) {
+	if r := recover(); r != nil {
+		log.Printf("⚠️%s: recovered from panic in %s: %v\n%s", agentName, context, r, debug.Stack())
+	}
+}
+
 // missedCronWindow is how close to "now" that most recent past occurrence
 // can be before it's treated as a likely-skipped run.
 const missedCronWindow = 15 * time.Minute
@@ -1238,6 +1250,7 @@ func (a *Agent) Start(ctx context.Context) error {
 
 	for _, m := range a.messengers {
 		go func(m messaging.Messenger) {
+			defer recoverFromPanic(a.Name, "messenger "+m.Platform()+" listen loop")
 			if err := m.Listen(ctx, func(msg messaging.InboundMessage) {
 				a.EnqueueMessage(msg.Conversation, msg.Text, msg.MessageID, msg.ThreadID, msg.WorkflowID)
 			}); err != nil {
@@ -1259,6 +1272,8 @@ func (a *Agent) Start(ctx context.Context) error {
 			s, _ := gocron.NewScheduler()
 			cronJob := gocron.CronJob(cronExpr, false)
 			task := gocron.NewTask(func() {
+				defer recoverFromPanic(a.Name, "cron-triggered workflow "+wf.Name)
+
 				log.Printf("🧨%s for %s Triggered", wf.Name, a.Name)
 
 				if a.eventBus != nil {
@@ -1383,6 +1398,7 @@ func (a *Agent) registerWebhook(wf *workflow.Workflow, src webhook.Source) {
 		// as every hand-rolled webhook handler this replaces.
 		go func() {
 			defer running.Store(false)
+			defer recoverFromPanic(a.Name, "webhook-triggered workflow "+wf.Name)
 
 			log.Printf("🧨%s for %s Triggered", wf.Name, a.Name)
 			if a.eventBus != nil {

@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"github.com/unitz007/kael/messaging"
+	"log"
+	"runtime/debug"
 	"sync"
 )
 
@@ -57,7 +59,18 @@ func (q *MessageQueue) Listen(ctx context.Context, handler func(box InBox)) {
 				if !ok {
 					return // queue closed and drained
 				}
-				handler(msg)
+				// A panic while handling one message (e.g. a malformed
+				// upstream API response the caller didn't guard against)
+				// must not take down every other agent sharing this
+				// process — recover, log, and keep the listener alive.
+				func() {
+					defer func() {
+						if r := recover(); r != nil {
+							log.Printf("agent: recovered from panic handling message %d: %v\n%s", msg.ID, r, debug.Stack())
+						}
+					}()
+					handler(msg)
+				}()
 			case <-ctx.Done():
 				return
 			}
