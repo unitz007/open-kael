@@ -1,8 +1,8 @@
 # Kael
 
-Kael is a Go library for building LLM agents. Give an agent a system prompt, some tools, and optionally a messenger to talk over, a memory store, and identities to act as on external systems — then call `Launch`, and Kael takes over: it runs the tool-calling loop, fires workflows on a cron or webhook trigger, delegates tasks between agents, and can hold a sensitive tool for a human's approval before it's allowed to run.
+Kael is a Go library providing the runtime for LLM agents: a tool-calling loop, multi-agent delegation, scheduled and webhook-triggered workflows, and a mechanism for holding a sensitive tool call behind a human's approval before it runs. It defines the interfaces for messaging, memory, and identity, but ships no implementations — those are left to the application.
 
-This repo is just the platform: the agent loop, the messaging/memory/identity/webhook/rag interfaces, and an OpenAI-compatible LLM client. It ships no `Identity`, `Memory`, `Messenger`, or `webhook.Source` implementations — those live as copyable references under [`examples/`](https://github.com/unitz007/open-kael/tree/main/examples) (see `examples/starter` for all four together) — you bring your own agents, tools, and identities by importing this module.
+This repo is just the platform — no application code, no specific agents. Copyable reference implementations (`Identity`, `Memory`, `Messenger`, `webhook.Source`, and an OpenAI-compatible LLM client) live under [`examples/`](https://github.com/unitz007/open-kael/tree/main/examples) — see `examples/starter` for identity, memory, a cron workflow, a webhook workflow, and a messenger all together in one agent. Copy what fits, or bring your own; you build agents, tools, and identities by importing this module.
 
 ## Install
 
