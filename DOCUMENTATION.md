@@ -15,10 +15,11 @@ This guide covers installing the module, running the bundled example, and how to
 7. [Agent-to-Agent Delegation](#7-agent-to-agent-delegation)
 8. [Messenger Interface](#8-messenger-interface)
 9. [Identity Interface](#9-identity-interface)
-10. [Memory](#10-memory)
-11. [Troubleshooting](#11-troubleshooting)
-12. [Known Limitations](#12-known-limitations)
-13. [Related Docs](#13-related-docs)
+10. [Approval-Gated Tools](#10-approval-gated-tools)
+11. [Memory](#11-memory)
+12. [Troubleshooting](#12-troubleshooting)
+13. [Known Limitations](#13-known-limitations)
+14. [Related Docs](#14-related-docs)
 
 ---
 
@@ -56,7 +57,7 @@ go run .
 
 This registers an assistant agent and a delegation-only research specialist ([examples/researchspecialist/agent.go](examples/researchspecialist/agent.go)) on a `Runtime` and launches it. Neither agent has a `Messenger` attached in the example, so nothing is reachable from outside the process yet — see [§8](#8-messenger-interface) to wire one up. `go build ./...` to just compile. `Ctrl+C` to stop.
 
-**Run only one instance per bot token.** Telegram allows exactly one active `getUpdates` long-poll connection per bot token. A second instance — including one started from an IDE's own run button while a terminal instance is already up — doesn't error at startup; it silently competes for the same updates, and one of them stops receiving messages. See [Troubleshooting](#11-troubleshooting).
+**Run only one instance per bot token.** Telegram allows exactly one active `getUpdates` long-poll connection per bot token. A second instance — including one started from an IDE's own run button while a terminal instance is already up — doesn't error at startup; it silently competes for the same updates, and one of them stops receiving messages. See [Troubleshooting](#12-troubleshooting).
 
 ---
 
@@ -74,18 +75,20 @@ main()
 
 Inbound message (any Messenger)
   └─► Messenger.Listen decodes it → Agent.EnqueueMessage(conv, text)
-        └─► handleMessage → RunLoop(ctx, conv, text)
-              └─► load this agent's memory (a single shared thread — see §10)
-              └─► build toolset: agent's own tools (+ send_message if a messenger is
-                  registered) + every workflow as a tool + every sibling agent as a
-                  delegate_to_<id> tool
-              └─► loop (max 6 iterations):
-                    LLM.Call(messages, tools) — tool_choice is always "required"
-                    execute whatever tool was called
-                    repeat until end_loop is called
-              └─► persist new turns back to memory
-              └─► deliver the final answer via the messenger, unless send_message
-                  already handled it during the run
+        └─► handleMessage (panic-recovered — see the README's Reliability section)
+              └─► RunLoop(ctx, conv, text)
+                    └─► load this agent's memory (partitioned per Agent.SetMemoryKeyFunc — see §11)
+                    └─► build toolset: agent's own tools (+ send_message if a messenger is
+                        registered) + every workflow as a tool + every sibling agent as a
+                        delegate_to_<id> tool
+                    └─► loop (max Agent.MaxIterations, 6 by default):
+                          LLM.Call(messages, tools) — tool_choice is always "required"
+                          execute whatever tool was called, via callTool — which blocks on
+                          human approval first for any tool with RequiresApproval (see §10)
+                          repeat until end_loop is called
+                    └─► persist new turns back to memory
+                    └─► deliver the final answer via the messenger, unless send_message
+                        already handled it during the run
 ```
 
 ---
@@ -210,7 +213,7 @@ rt.Launch(ctx)
 
 Registering through the same `Runtime` is what makes agents visible to each other for delegation — an agent constructed but never registered has no siblings and gets no `delegate_to_*` tools.
 
-**Only register one agent's `AddMessenger` per bot token/connection.** Each `Messenger` gets its own `Listen` goroutine per agent that registers it; two agents (or two process instances) using the same underlying bot token will silently compete for updates. See [Troubleshooting](#11-troubleshooting).
+**Only register one agent's `AddMessenger` per bot token/connection.** Each `Messenger` gets its own `Listen` goroutine per agent that registers it; two agents (or two process instances) using the same underlying bot token will silently compete for updates. See [Troubleshooting](#12-troubleshooting).
 
 ---
 
@@ -238,7 +241,7 @@ a.AddWorkflow(&myWorkflow)
 
 Once attached, a workflow is automatically exposed to the agent's own loop as a callable tool named after its `ID` — the model can decide to invoke it mid-conversation (e.g. "give me today's summary now"), which runs a **fresh, nested** loop scoped to the workflow's own system prompt and tools (plus the agent's own tools, so it can still reply/finish).
 
-**The cron `Trigger` is currently scheduled but not executed** — `Agent.Start` registers the job and logs when it fires, but the scheduled task doesn't call into the loop yet. Right now, a workflow only actually runs when something (a user, or the agent's own reasoning) explicitly invokes it as a tool.
+A `CronTriggerType` or `WebhookTriggerType` trigger runs the same way, for real — `Agent.Start` schedules/registers it and, on fire, calls `runWorkflow` directly (not just an event publish), with `send_message` falling back to the messenger's `DefaultConversation()` since there's no active conversation to reply into. A panic during that run is recovered and logged rather than taking the whole process down — see [the README's Reliability section](README.md#reliability-one-agents-bug-cant-take-down-the-others).
 
 ---
 
@@ -380,22 +383,56 @@ This works even for a tool attached to a `Workflow`, built before any specific a
 
 ---
 
-## 10) Memory
+## 10) Approval-Gated Tools
+
+A tool can require a human's approval before its `Handler` actually runs — declared on the tool itself, not on whatever calls it:
 
 ```go
-type Memory interface {
-	History(id string) []llm.Message
-	Append(id string, messages ...llm.Message)
+tool := tools.NewToolBuilder("place_trade", "Places a real trade").
+	Parameter("symbol", "string", "...", true).
+	RequireApproval(func(ctx context.Context, args json.RawMessage) string {
+		return "About to place a trade — approve?" // the approval prompt's text
+	}, 3*time.Minute). // timeout — unanswered is treated as reject, never "keep waiting"
+	Handler(func(ctx context.Context, args json.RawMessage) (any, error) {
+		return broker.PlaceTrade(...), nil // only runs once approved
+	}).
+	Build()
+```
+
+Every tool call — from a real conversation, a workflow, or a delegated task — passes through `Agent.callTool`, the single interception point: if `!tool.RequiresApproval`, `Handler` runs directly; otherwise it resolves the agent's own `DefaultConversation()` (deliberately not whatever conversation happens to be on `ctx` — that could belong to a different agent mid-delegation), requires the registered messenger to implement `messaging.ApprovalMessenger`:
+
+```go
+type ApprovalMessenger interface {
+	RequestApproval(ctx context.Context, conv ConversationRef, text string) (approved bool, err error)
 }
 ```
 
-Two implementations ship: `memory.NewInMemoryHistory()` (process-local, lost on restart) and `memory.NewFileHistory(path)` (JSON-file-backed, survives a restart). `agent.NewAgent` wires every agent to a `FileHistory` at `data/memory/<id>.json` automatically, falling back to in-memory on any filesystem error.
+and blocks on it up to `ApprovalTimeout` (default 10 minutes if left zero). A messenger that doesn't implement `ApprovalMessenger` makes the call fail outright, with a clear error — never a silent bypass that runs the handler unapproved. Declined or timed out returns an ordinary "not approved" tool result; approved runs `Handler` exactly as if `RequiresApproval` were false.
+
+`examples/messenger`'s `SlackBot` implements `ApprovalMessenger` as a thin wrapper over its own pre-existing button-based `WaitForApproval` — copy that pattern for a custom messenger.
+
+---
+
+## 11) Memory
+
+```go
+type Memory interface {
+	History(ctx context.Context, id string) []llm.Message
+	Append(ctx context.Context, id string, messages ...llm.Message)
+}
+```
+
+No implementations ship in this module — same reasoning as `identity`/`webhook`/`rag`. `agent.NewAgent` defaults every agent to an internal, unexported, bare in-memory implementation just enough to make an agent usable without calling `SetMemory` first — process-local, lost on restart, no persistence. For anything that needs to survive a restart, see [`examples/starter`](https://github.com/unitz007/open-kael/tree/main/examples/starter)'s `InMemoryHistory` (process-local, explicit) and `FileHistory` (JSON-file-backed, atomic write-then-rename) as copyable references, or bring your own database-backed implementation:
+
+```go
+a.SetMemory(myMemory) // call before Start / the first RunLoop
+```
 
 **How memory gets partitioned is a configurable strategy, not a fixed rule.** `RunLoop`/`runWorkflow`/`runDelegatedTask` all derive their memory key via `Agent.SetMemoryKeyFunc(fn messaging.MemoryKeyFunc)` — unset, it defaults to `messaging.KeyByAgent()`, one shared thread for the whole agent regardless of platform/conversation/thread (the original single-owner behavior: an agent reachable on both Telegram and Slack remembers the same conversation across both, at the cost of nothing distinguishing *who* is messaging). `messaging.KeyByConversation()`/`KeyByThread()` partition by `ConversationRef`/Slack thread instead, and `KeyByWorkflow(fallback)` gives each workflow its own ongoing bucket across every run — including a reply that traces back to it via a Messenger-specific tagging mechanism (Slack: invisible message metadata read back via `conversations.replies`; see `messaging.WithWorkflowID`). Compose these, or write your own `MemoryKeyFunc` — e.g. per-user isolation, which nothing ships today (no user-id field exists in the inbound pipeline), is exactly the kind of thing a custom strategy is for.
 
 ---
 
-## 11) Troubleshooting
+## 12) Troubleshooting
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
@@ -408,6 +445,8 @@ Two implementations ship: `memory.NewInMemoryHistory()` (process-local, lost on 
 | `⚠️...tried to repeat ... — blocked` | The model tried to call the same tool with the same arguments twice after it already succeeded | Expected behavior, not a bug — if the model keeps needing this, its prompt may be unclear about when to call `end_loop` |
 | "agent ... already exists in the registry" log | Duplicate `RegisterAgent` call with the same `Id` | Agent IDs must be unique |
 | `send_message: could not resolve a target` / `no messenger registered` | The agent has no `Messenger` registered, or the active conversation's platform doesn't match any registered messenger | Call `AddMessenger` for that platform, or don't expose `send_message` to that agent at all |
+| `<tool> requires approval, but <platform> doesn't support interactive approval` | The tool has `RequiresApproval: true` but the resolved messenger doesn't implement `messaging.ApprovalMessenger` | Implement `ApprovalMessenger` on that messenger, or don't gate the tool for an agent using it |
+| A panic's stack trace appears in logs but the process keeps running | Expected — recovered by `recoverFromPanic` at the relevant goroutine entry point, not a crash | Fix the root cause the stack trace points to; the recovery is a containment measure, not a fix |
 
 ### Debug tips
 
@@ -415,24 +454,24 @@ Two implementations ship: `memory.NewInMemoryHistory()` (process-local, lost on 
 - Per-agent startup: `🤖{AgentName} started successfully`
 - Message handling: `💬{AgentName}: handling message from ...` → `💬{AgentName}: finished handling message ... status=... iterations=N`
 - Outbound reply: `📤{AgentName}: routing send_message to {platform}/{chatID}`
-- Workflow trigger (cron): `🧨{WorkflowName} for {AgentName} Triggered` (note: currently doesn't execute — see [Known Limitations](#12-known-limitations))
+- Workflow trigger (cron or webhook): `🧨{WorkflowName} for {AgentName} Triggered` — runs for real, see [§6](#6-workflows)
 - Delegation: `🤝{AgentName}: delegating to {Target}: "..."` → `🤝{AgentName}: {Target} finished (status): ...`
+- Panic recovery: `⚠️{AgentName}: recovered from panic in {context}: ...` followed by a stack trace
 
 ---
 
-## 12) Known Limitations
+## 13) Known Limitations
 
-- **Cron-triggered workflows don't execute yet** — only chat-triggered invocation (the model calling a workflow as a tool) actually runs one.
 - **No graceful shutdown** — agent goroutines in `Runtime.Launch` are fire-and-forget, no `sync.WaitGroup`.
 - **Double JSON unmarshal** — every tool handler receives a JSON string wrapper around its actual arguments (see [§4](#4-creating-tools-with-toolbuilder)).
-- **Single trigger type implemented** — `WebhookTriggerType`/`EventTriggerType` are declared but have no handling in `Agent.Start`.
+- **`EventTriggerType` unimplemented** — declared but has no handling in `Agent.Start`; `CronTriggerType` and `WebhookTriggerType` both run for real.
 - **No shared-channel routing** — each agent needs its own `Messenger`/bot token to be directly reachable by a human; there's no way yet for multiple agents to field messages from one shared channel and have a human pick which one to address.
-- **No built-in per-user memory partitioning preset** — see [§10](#10-memory); write a custom `MemoryKeyFunc` if you need it, not a fit for a multi-tenant deployment out of the box otherwise.
+- **No built-in per-user memory partitioning preset** — see [§11](#11-memory); write a custom `MemoryKeyFunc` if you need it, not a fit for a multi-tenant deployment out of the box otherwise.
 - **No test coverage** for the loop's guard rails (repeat-blocking, tool-less nudge, runaway-batch cap) yet — manually verified during development only.
 
 ---
 
-## 13) Related Docs
+## 14) Related Docs
 
 | Document | Content |
 |----------|---------|

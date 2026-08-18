@@ -69,7 +69,7 @@ A `Messenger` can optionally also implement `messaging.ToolProvider` (one method
 
 `triggers.Trigger{Type, Value}` is deliberately typed with `Value any` rather than a named field per `TriggerType`, so a new trigger kind doesn't need a schema change: `Agent.Start()`'s type switch does the assertion per `TriggerType` constant.
 
-- **`triggers.CronTriggerType`** — `Value` is a cron expression string. `Start()` schedules it with `gocron` and, on fire, runs the workflow through `runWorkflow` for real (not just an event publish) — `send_message` falls back to the messenger's `DefaultConversation()` since there's no active conversation to reply into.
+- **`triggers.CronTriggerType`** — `Value` is a cron expression string. `Start()` schedules it with `gocron` and, on fire, runs the workflow through `runWorkflow` for real (not just an event publish) — `send_message` falls back to the messenger's `DefaultConversation()` since there's no active conversation to reply into. The scheduled task recovers from a panic (logged, not propagated) rather than taking down every other agent sharing the process — see [Reliability](#reliability-one-agents-bug-cant-take-down-the-others).
 - **`triggers.WebhookTriggerType`** — `Value` is a `webhook.Source` (package `webhook`), the webhook counterpart to `messaging.Messenger`: `Path()`, `Verify(body, header) bool`, `Decode(body, header) (userTrigger string, ok bool, err error)`. This module ships no implementations — GitHub, Stripe, or whatever else sends you a webhook each has its own payload shape and signature scheme; use `webhook.VerifyHMACSHA256` as the shared constant-time HMAC building block. `Start()` registers the source's `Path()` on the `Runtime`'s shared `http.ServeMux` (`Runtime.WebhookHandler()` — mount it on your own server), verifies and decodes each incoming request, and runs the matching workflow in a goroutine on success.
 - **`triggers.EventTriggerType`** — reserved, not yet implemented.
 
@@ -116,8 +116,8 @@ Retriever and Indexer are kept separate (unlike `Memory`, which combines read/wr
 ```go
 // package memory
 type Memory interface {
-    History(id string) []llm.Message
-    Append(id string, messages ...llm.Message)
+    History(ctx context.Context, id string) []llm.Message
+    Append(ctx context.Context, id string, messages ...llm.Message)
 }
 ```
 
@@ -155,6 +155,26 @@ tool := tools.NewToolBuilder("get_now_playing", "Gets movies currently in theate
 a.AddTool(tool)
 ```
 
+### Requiring approval before a tool runs
+
+A tool can declare that it needs a human's sign-off before its handler actually executes — the tool itself says so, not the calling agent or the loop:
+
+```go
+tool := tools.NewToolBuilder("place_trade", "Places a real trade").
+    Parameter("symbol", "string", "...", true).
+    RequireApproval(func(ctx context.Context, args json.RawMessage) string {
+        return "About to place a trade — approve?" // rendered as the approval prompt's text
+    }, 3*time.Minute). // timeout — an unanswered prompt is treated as a reject, never as "keep waiting"
+    Handler(func(ctx context.Context, args json.RawMessage) (any, error) {
+        return broker.PlaceTrade(...), nil // never runs unless approved
+    }).
+    Build()
+```
+
+`Agent.callTool` is the single interception point every tool call — from a real conversation, a workflow, or a delegated task — passes through: if `!tool.RequiresApproval`, it calls `Handler` directly; otherwise it resolves the agent's own `DefaultConversation()` (never an ambient context conversation that might belong to a different agent mid-delegation — a real bug this was fixed after), requires the registered messenger to implement `messaging.ApprovalMessenger` (`RequestApproval(ctx, conv, text) (bool, error)`) — a messenger that doesn't implement it makes the call fail outright rather than silently skipping the gate — and blocks on that call up to `ApprovalTimeout` (default 10 minutes if unset). Declined or timed-out returns a normal "not approved" tool result; `Handler` simply never runs. `*messenger.SlackBot` in `examples/messenger` implements `ApprovalMessenger` as a thin wrapper over its own button-based `WaitForApproval`.
+
+This is deliberately a tool-definition-level flag, not a separate messaging primitive or a wrapper the calling agent has to remember to apply — a tool that needs approval needs it everywhere it's reachable from (chat, a workflow, a delegated call) without three different call sites each having to know that.
+
 ## The LLM client
 
 `llm.LLM` is a one-method interface (`Call(messages, tools) (*Response, error)`), so any chat-completions-shaped provider can back an agent. `examples/llm/openai` ships an OpenAI-compatible client:
@@ -165,12 +185,17 @@ openai.NewClient(model string, enableReasoning bool) llm.LLM
 
 `enableReasoning` exists because a reasoning-capable model was observed writing a completely correct plan into its `reasoning` output — "I need to call `get_secret_code`" — and then the response would just end (`finish_reason: "stop"`) without the tool call ever actually landing. Not truncation, not confusion about what to do — the handoff from reasoning to the actual structured tool-call output just didn't happen. Passing `false` requests the underlying `reasoning: {enabled: false}` parameter and sidesteps it; if it resurfaces anyway, the loop's retry logs the real `finish_reason` and `reasoning` content so it's diagnosable instead of a silent, empty response.
 
+## Reliability: one agent's bug can't take down the others
+
+A single process commonly hosts several independent agents (see `Runtime.RegisterAgent`). A panic anywhere in one agent's turn — a malformed upstream API response, a bug in a tool handler — is recovered and logged, not left to propagate and kill the whole process, at every goroutine entry point that runs agent-supplied logic: inbox message handling, cron-triggered workflows, webhook-triggered workflows, and messenger listen loops. This isn't a substitute for fixing the actual bug (`recoverFromPanic` logs a full stack trace specifically so the root cause is diagnosable) — it just means one agent's bad day doesn't reboot the other four's Slack connections, in-flight cron schedules, and Gmail watches along with it.
+
 ## What's here
 
 ```text
-agent/       the loop, RunLoop, runDelegatedTask, workflows-as-tools, delegation + depth guard, built-in send_message/end_loop
+agent/       the loop, RunLoop, runWorkflow, runDelegatedTask, callTool (approval gating), workflows-as-tools,
+             delegation + depth guard, built-in send_message/end_loop, panic recovery at every goroutine entry point
 runtime/     agent registry, shared event bus, shared webhook mux + WebhookHandler(), Launch
-messaging/   Messenger and ToolProvider interfaces, ConversationRef, ctx helpers — no implementations
+messaging/   Messenger, ToolProvider, and ApprovalMessenger interfaces, ConversationRef, ctx helpers — no implementations
 webhook/     Source interface (the webhook counterpart to Messenger), VerifyHMACSHA256 — no implementations
 identity/    Identity interface, ctx helpers — no implementations
 rag/         Retriever/Indexer interfaces, ctx helpers — no implementations

@@ -30,3 +30,7 @@ cover.out
 
 # Local test-generated agent memory artifacts
 agent/data/
+
+# Docs site build tooling/output (built by CI, not committed)
+.venv-docs/
+site/
