@@ -59,6 +59,19 @@ type MessengerResponse struct {
 	MessageID string
 }
 
+// Thread is a group of Messages sharing the same ThreadID.
+type Thread struct {
+	ThreadID string
+	Messages []Message
+}
+
+// Message is a single message within a Thread.
+type Message struct {
+	MessageID string
+	ThreadID  string
+	Text      string
+}
+
 // Messenger is a full bidirectional platform adapter: send to a specific
 // conversation, and listen for new inbound ones. This package ships no
 // implementations — see examples/messenger for a working Slack/Telegram
