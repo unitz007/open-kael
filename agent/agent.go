@@ -4,6 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"runtime/debug"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
 	"github.com/unitz007/kael/human"
 	"github.com/unitz007/kael/identity"
 	"github.com/unitz007/kael/llm"
@@ -14,14 +23,6 @@ import (
 	"github.com/unitz007/kael/triggers"
 	"github.com/unitz007/kael/webhook"
 	"github.com/unitz007/kael/workflow"
-	"io"
-	"log"
-	"net/http"
-	"runtime/debug"
-	"strings"
-	"sync"
-	"sync/atomic"
-	"time"
 
 	"github.com/go-co-op/gocron/v2"
 	"github.com/robfig/cron/v3"
@@ -63,7 +64,7 @@ type Agent struct {
 	human      human.Human
 	messengers map[string]messaging.Messenger
 	// primaryMessenger is whichever Messenger AddMessenger sees first —
-	// used by DefaultConversation so a proactive send with no active
+	// used by DefaultConversation, so a proactive sending with no active
 	// conversation to inherit (a cron/webhook-triggered workflow) has a
 	// deterministic platform to land on once an agent has more than one
 	// messenger registered. Ranging over messengers itself for this would
@@ -1511,6 +1512,17 @@ func (a *Agent) delegationBlock() string {
 // for anything but a real conversation. The agent-to-agent counterpart is
 // runDelegatedTask, a genuinely separate method rather than a flagged
 // variant of this one.
+// ResolvedTools returns this agent's complete, merged toolset for a given
+// platform — base tools, every workflow as a tool, and every sibling agent
+// as a delegate_to_<id> tool — the same assembly RunLoop feeds its own LLM
+// call, exposed as a reusable method so something outside the loop (e.g. an
+// MCP server bridging this agent's tools to an external caller) can get the
+// exact same list without duplicating the merge/filter logic.
+func (a *Agent) ResolvedTools(platform string) []*tools.ToolSpec {
+	toolset := mergeTools(a.baseTools(), a.workflowToolSpecs(a.messagingTools()), a.delegateToolSpecs())
+	return filterToolsForPlatform(toolset, platform)
+}
+
 func (a *Agent) RunLoop(ctx context.Context, conv messaging.ConversationRef, userPrompt string) (*LoopResult, error) {
 	ctx = ensureDelegationNotes(ctx)
 	memKey := a.memoryKey(ctx, conv)
@@ -1525,8 +1537,7 @@ func (a *Agent) RunLoop(ctx context.Context, conv messaging.ConversationRef, use
 	messages = append(messages, prior...)
 	messages = append(messages, llm.Message{Role: "user", Content: userPrompt})
 
-	toolset := mergeTools(a.baseTools(), a.workflowToolSpecs(a.messagingTools()), a.delegateToolSpecs())
-	toolset = filterToolsForPlatform(toolset, conv.Platform)
+	toolset := a.ResolvedTools(conv.Platform)
 	result, final, err := a.runLoopFrom(ctx, messages, toolset, a.MaxIterations, a.MaxDuplicateToolCallsPerResponse, a.MaxToolCallsPerResponse, maxSameToolCallsPerRun)
 
 	if a.memory != nil {
