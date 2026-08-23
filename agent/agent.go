@@ -136,7 +136,7 @@ const defaultMaxDuplicateToolCallsPerResponse = 10
 const defaultMaxToolCallsPerResponse = 50
 
 // maxConsecutiveToolFailures bounds how many turns in a row can pass
-// without a single genuinely new, successful tool call before runLoopFrom
+// without a single genuinely new, successful tool call before nativeLoop.Run
 // gives up early — distinct from maxIter, which only bounds the total turn
 // count and can't tell a healthy long-running task from a model stuck
 // retrying (or repeatedly re-attempting an already-blocked duplicate of)
@@ -148,7 +148,7 @@ const defaultMaxToolCallsPerResponse = 50
 const maxConsecutiveToolFailures = 3
 
 // maxSameToolCallsPerRun bounds how many times a single tool name can be
-// called in one runLoopFrom run, regardless of whether each call's arguments
+// called in one nativeLoop.Run call, regardless of whether each call's arguments
 // differ — distinct from maxConsecutiveToolFailures, which only fires on
 // no-progress turns. A model can call the same tool with genuinely different
 // arguments every single time (so every call succeeds, resetting
@@ -185,7 +185,7 @@ type llmProviderState struct {
 }
 
 // callLLM walks Agent.LLMs in priority order (index 0 first) so every
-// runLoopFrom call site gets automatic fallback for free, without needing
+// nativeLoop.Run call site gets automatic fallback for free, without needing
 // to know how many providers are configured. For each provider it isn't
 // currently skipping (see the cooldown check below), it retries up to
 // llmMaxRetries times with exponential backoff before moving on — that's
@@ -266,7 +266,7 @@ func hasDuplicateToolCalls(calls []tools.ToolCall) bool {
 // call, which crashes that second parse with "unexpected end of JSON
 // input" — with nothing actionable for the model to self-correct on, so it
 // just retries the identical call forever. Fixed once here, at the single
-// point every tool call is dispatched from (runLoopFrom below), rather
+// point every tool call is dispatched from (nativeLoop.Run below), rather
 // than duplicating the same guard in every handler that decodes args.
 func normalizeToolArgs(args json.RawMessage) json.RawMessage {
 	var inner string
@@ -276,23 +276,44 @@ func normalizeToolArgs(args json.RawMessage) json.RawMessage {
 	return args
 }
 
-// runLoopFrom is the shared tool-calling engine behind every entry point
+// AgentLoop is how an agent turns a prepared conversation and toolset into
+// a result. Three real inputs only — anything else (iteration caps, or
+// whatever a future implementation needs) is that implementation's own
+// standing configuration, resolved before it's constructed, never part of
+// the call itself.
+type AgentLoop interface {
+	Run(ctx context.Context, messages []llm.Message, toolset []*tools.ToolSpec) (*LoopResult, []llm.Message, error)
+}
+
+// nativeLoop is the shared tool-calling engine behind every entry point
 // (RunLoop, a workflow's own nested run, and a delegated call) — same
 // end_loop protocol, same repeat-call guard, just fed a different starting
 // transcript, a different tool set, and (since a workflow can legitimately
-// need more or fewer steps than a plain conversation) a different iteration
-// cap. It returns the final transcript too, so a caller that persists
-// conversation history (RunLoop) can see exactly what turns were added. ctx
-// flows to every tool call unchanged — this is how a conversation attached
-// via messaging.WithConversation reaches send_message's handler.
-func (a *Agent) runLoopFrom(ctx context.Context, messages []llm.Message, toolset []*tools.ToolSpec, maxIter, maxDuplicateToolCalls, maxToolCalls, maxSameToolCalls int) (*LoopResult, []llm.Message, error) {
+// need more or fewer steps than a plain conversation) different iteration
+// caps, resolved by each caller before constructing one of these. Run
+// returns the final transcript too, so a caller that persists conversation
+// history (RunLoop) can see exactly what turns were added. ctx flows to
+// every tool call unchanged — this is how a conversation attached via
+// messaging.WithConversation reaches send_message's handler.
+type nativeLoop struct {
+	agent                                                          *Agent
+	maxIter, maxDuplicateToolCalls, maxToolCalls, maxSameToolCalls int
+}
+
+func (n *nativeLoop) Run(ctx context.Context, messages []llm.Message, toolset []*tools.ToolSpec) (*LoopResult, []llm.Message, error) {
+	a := n.agent
+	maxIter := n.maxIter
+	maxDuplicateToolCalls := n.maxDuplicateToolCalls
+	maxToolCalls := n.maxToolCalls
+	maxSameToolCalls := n.maxSameToolCalls
+
 	// Every tool call in this run — agent-level or nested inside a workflow
-	// (workflows route through this same function) — can reach whichever of
+	// (workflows route through this same engine) — can reach whichever of
 	// this agent's identities it needs via identity.FromContext, regardless
 	// of which agent originally built the tool. Overwriting ctx here is
 	// exactly what makes a delegated call resolve against the *target*
 	// agent's own identities rather than the delegator's, once
-	// runDelegatedTask calls back into this function on the target.
+	// runDelegatedTask constructs one of these on the target.
 	ctx = identity.WithIdentities(ctx, a.identities)
 	ctx = rag.WithRetrievers(ctx, a.retrievers)
 
@@ -611,7 +632,7 @@ func (a *Agent) AddMessenger(m messaging.Messenger) {
 // don't take an Identity directly (a workflow's tools are built before the
 // owning agent even exists, so there's nothing to close over yet) — they
 // resolve whichever identity they need at call time via
-// identity.FromContext, since runLoopFrom threads a.identities into ctx on
+// identity.FromContext, since nativeLoop.Run threads a.identities into ctx on
 // every run.
 func (a *Agent) IdentifyAs(id identity.Identity) {
 	if a.identities == nil {
@@ -628,7 +649,7 @@ func (a *Agent) IdentifyAs(id identity.Identity) {
 // where it ends up. Same reasoning as IdentifyAs: a tool doesn't take a
 // Retriever directly, since a workflow's tools are built before the owning
 // agent even exists — they resolve whichever retriever they need at call
-// time via rag.FromContext, since runLoopFrom threads a.retrievers into ctx
+// time via rag.FromContext, since nativeLoop.Run threads a.retrievers into ctx
 // on every run.
 func (a *Agent) AddRetriever(name, description string, r rag.Retriever) {
 	if a.retrievers == nil {
@@ -658,7 +679,7 @@ type endLoopResult struct {
 }
 
 // loopProtocolInstructions explains the end_loop/tool_choice protocol every
-// runLoopFrom call is subject to — shared between an agent's own
+// nativeLoop.Run call is subject to — shared between an agent's own
 // IdentityPrompt and a workflow's SystemPrompt (which predates this
 // protocol and doesn't mention it) when a workflow runs as a nested loop.
 //
@@ -1538,7 +1559,8 @@ func (a *Agent) RunLoop(ctx context.Context, conv messaging.ConversationRef, use
 	messages = append(messages, llm.Message{Role: "user", Content: userPrompt})
 
 	toolset := a.ResolvedTools(conv.Platform)
-	result, final, err := a.runLoopFrom(ctx, messages, toolset, a.MaxIterations, a.MaxDuplicateToolCallsPerResponse, a.MaxToolCallsPerResponse, maxSameToolCallsPerRun)
+	loop := &nativeLoop{agent: a, maxIter: a.MaxIterations, maxDuplicateToolCalls: a.MaxDuplicateToolCallsPerResponse, maxToolCalls: a.MaxToolCallsPerResponse, maxSameToolCalls: maxSameToolCallsPerRun}
+	result, final, err := loop.Run(ctx, messages, toolset)
 
 	if a.memory != nil {
 		// Persist only what this call actually added — everything after the
@@ -1549,7 +1571,7 @@ func (a *Agent) RunLoop(ctx context.Context, conv messaging.ConversationRef, use
 
 	if err != nil {
 		// A genuine infra/LLM failure (Call erroring or timing out) —
-		// runLoopFrom returns before producing any reply here, so without
+		// nativeLoop.Run returns before producing any reply here, so without
 		// this the conversation just goes silent: the error only reaches
 		// the logs, and the user has no way to know their message was even
 		// received. Best-effort notify instead, same "the user should
@@ -1752,7 +1774,7 @@ func (a *Agent) runWorkflow(ctx context.Context, wf *workflow.Workflow, messagin
 		return nil, fmt.Errorf("workflow %q: delegation depth exceeded (%d > %d) — likely a delegation cycle across workflows", wf.Name, depth, maxDelegationDepth)
 	}
 
-	// Threaded here (not left to runLoopFrom, which does this too but only
+	// Threaded here (not left to nativeLoop.Run, which does this too but only
 	// once it's already running) so wf.MaxToolCallsPerResponseFunc and
 	// wf.MaxDuplicateToolCallsPerResponseFunc below can resolve identities
 	// and retrievers via ctx exactly the way a real tool handler does —
@@ -1814,7 +1836,8 @@ func (a *Agent) runWorkflow(ctx context.Context, wf *workflow.Workflow, messagin
 	if maxToolCalls <= 0 {
 		maxToolCalls = a.MaxToolCallsPerResponse
 	}
-	result, final, err := a.runLoopFrom(ctx, messages, toolset, maxIter, maxDuplicateToolCalls, maxToolCalls, maxIter)
+	loop := &nativeLoop{agent: a, maxIter: maxIter, maxDuplicateToolCalls: maxDuplicateToolCalls, maxToolCalls: maxToolCalls, maxSameToolCalls: maxIter}
+	result, final, err := loop.Run(ctx, messages, toolset)
 	if a.memory != nil {
 		newTurns := final[1+len(prior):]
 		a.memory.Append(ctx, memKey, newTurns...)
@@ -1924,7 +1947,7 @@ type delegationNotesCtxKey struct{}
 
 // ensureDelegationNotes attaches a mutable delegation-notes collector to
 // ctx if one isn't already present, so delegateToolSpec's handler (deep
-// inside runLoopFrom, possibly several nested workflow-as-tool calls down)
+// inside nativeLoop.Run, possibly several nested workflow-as-tool calls down)
 // has somewhere to record what it delegated. Idempotent by design: a
 // nested runWorkflow call (workflow-as-tool from within an outer RunLoop)
 // reuses the outer collector rather than shadowing it with its own, so a
@@ -1947,7 +1970,7 @@ func ensureDelegationNotes(ctx context.Context) context.Context {
 // delegator's own pending reply must never leak into — or be silently
 // consumed by — the delegate's own optional send_message call. Without
 // this, ctx (and the collector it carries) flows straight from
-// delegateToolSpec's handler into the delegate's own runLoopFrom, and the
+// delegateToolSpec's handler into the delegate's own nativeLoop.Run, and the
 // delegate's optional direct send_message ends up eating the note meant
 // for the delegator's final relay, leaving the delegator's own message
 // with no note at all.
@@ -2050,7 +2073,8 @@ func (a *Agent) runDelegatedTask(ctx context.Context, task string) (*LoopResult,
 	toolset := mergeTools(a.defaultTools(), a.messengerTools(), a.workflowToolSpecs(nil))
 	toolset = filterToolsForPlatform(toolset, a.resolvePlatform(ctx))
 
-	result, final, err := a.runLoopFrom(ctx, messages, toolset, a.MaxIterations, a.MaxDuplicateToolCallsPerResponse, a.MaxToolCallsPerResponse, maxSameToolCallsPerRun)
+	loop := &nativeLoop{agent: a, maxIter: a.MaxIterations, maxDuplicateToolCalls: a.MaxDuplicateToolCallsPerResponse, maxToolCalls: a.MaxToolCallsPerResponse, maxSameToolCalls: maxSameToolCallsPerRun}
+	result, final, err := loop.Run(ctx, messages, toolset)
 	if a.memory != nil {
 		newTurns := final[1+len(prior):]
 		a.memory.Append(ctx, memKey, newTurns...)
