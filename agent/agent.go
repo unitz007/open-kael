@@ -115,51 +115,6 @@ type Agent struct {
 	// margin. Defaults to defaultMaxToolCallsPerResponse in NewAgent; set
 	// directly to change it.
 	MaxToolCallsPerResponse int
-
-	// loop is how this agent turns a prepared (messages, toolset) pair into
-	// a result — defaults to a *nativeLoop wrapping this agent's own
-	// runLoopFrom, set in NewAgent. Swappable via SetLoop for an agent whose
-	// real work happens somewhere else entirely (a CLI-shaped external
-	// agent reached via remoteagent.CLILoop, or a networked peer via
-	// remoteagent.WebSocketLoop) — RunLoop/RunDelegatedTask call a.loop.Run
-	// exactly the same way regardless of which implementation is behind it.
-	loop Loop
-
-	// capabilities, when set via SetDelegateCapabilities, is what
-	// DelegateCapabilities() reports instead of capabilitiesSummary().
-	// Needed for an agent whose loop isn't *nativeLoop: capabilitiesSummary
-	// lists this agent's own Tools/Workflows, which is meaningless for an
-	// agent whose real capabilities live entirely on the other side of its
-	// Loop (a laptop's CLI agent, a remote peer).
-	capabilities string
-}
-
-// Loop is how an agent turns a prepared conversation and toolset into a
-// result — the one seam between "being an agent" (having identity, memory,
-// a delegate directory) and "how a turn actually gets executed." Two real
-// inputs only: iteration caps and similar are each implementation's own
-// standing configuration, never part of this call. *nativeLoop is the
-// default (today's in-process tool-calling engine); an external CLI-shaped
-// agent or a networked peer swaps in a different implementation via
-// SetLoop, and every other part of *Agent (memory, delegation, workflows
-// for a real in-process agent) is unaffected either way.
-type Loop interface {
-	Run(ctx context.Context, messages []llm.Message, toolset []*tools.ToolSpec) (*LoopResult, []llm.Message, error)
-}
-
-// nativeLoop is the default Loop implementation — a thin adapter over this
-// agent's own runLoopFrom, holding the iteration caps that call would
-// otherwise need threaded through as parameters. RunLoop/RunDelegatedTask
-// use the agent's own defaults (MaxIterations etc.); runWorkflow builds its
-// own nativeLoop per call with its resolved dynamic caps instead, without
-// touching a.loop.
-type nativeLoop struct {
-	agent                                                          *Agent
-	maxIter, maxDuplicateToolCalls, maxToolCalls, maxSameToolCalls int
-}
-
-func (n *nativeLoop) Run(ctx context.Context, messages []llm.Message, toolset []*tools.ToolSpec) (*LoopResult, []llm.Message, error) {
-	return n.agent.runLoopFrom(ctx, messages, toolset, n.maxIter, n.maxDuplicateToolCalls, n.maxToolCalls, n.maxSameToolCalls)
 }
 
 // DelegateTarget is anything that can receive a delegated task and run its
@@ -180,10 +135,9 @@ type DelegateTarget interface {
 
 // AgentDirectory lets an agent see its siblings under a shared host, so it
 // can decide what's worth delegating instead of guessing. Defined here
-// rather than imported, since the natural implementation (LocalRuntime)
-// already imports this package — *runtime.LocalRuntime satisfies this
-// structurally via its existing DelegateTargets method, same trick as
-// EventPublisher below.
+// rather than imported, since the natural implementation (Runtime) already
+// imports this package — *runtime.Runtime satisfies this structurally via
+// its existing DelegateTargets method, same trick as EventPublisher below.
 type AgentDirectory interface {
 	DelegateTargets() []DelegateTarget
 }
@@ -196,12 +150,7 @@ type AgentDirectory interface {
 func (a *Agent) DelegateID() string          { return a.Id }
 func (a *Agent) DelegateName() string        { return a.Name }
 func (a *Agent) DelegateDescription() string { return a.Description }
-func (a *Agent) DelegateCapabilities() string {
-	if a.capabilities != "" {
-		return a.capabilities
-	}
-	return a.capabilitiesSummary()
-}
+func (a *Agent) DelegateCapabilities() string { return a.capabilitiesSummary() }
 
 // defaultMaxIterations seeds Agent.MaxIterations in NewAgent.
 const defaultMaxIterations = 10
@@ -647,7 +596,7 @@ func (a *Agent) SetMemory(m memory.Memory) {
 }
 
 // SetEventBus wires this agent's lifecycle/workflow events into an external
-// publisher (e.g. a LocalRuntime's shared events.EventBus). Optional — a nil
+// publisher (e.g. a Runtime's shared events.EventBus). Optional — a nil
 // eventBus (the default) just means those PublishEvent calls are skipped.
 func (a *Agent) SetEventBus(eventBus EventPublisher) {
 	a.eventBus = eventBus
@@ -659,21 +608,6 @@ func (a *Agent) SetEventBus(eventBus EventPublisher) {
 // show up, same as an agent with no workflows gets no workflow tools.
 func (a *Agent) SetDirectory(d AgentDirectory) {
 	a.directory = d
-}
-
-// SetLoop swaps out how this agent executes a turn — see the Loop doc
-// comment. Optional: NewAgent already sets a *nativeLoop default, so this
-// is only needed to back an agent with something other than its own
-// in-process tool-calling engine (an external CLI agent, a networked peer).
-func (a *Agent) SetLoop(l Loop) {
-	a.loop = l
-}
-
-// SetDelegateCapabilities overrides what DelegateCapabilities() reports —
-// see Agent.capabilities' own doc comment for why this is needed once an
-// agent's loop isn't *nativeLoop.
-func (a *Agent) SetDelegateCapabilities(s string) {
-	a.capabilities = s
 }
 
 // SetWebhookMux wires the shared HTTP mux (e.g. a Runtime's) that Start
@@ -822,13 +756,6 @@ func NewAgent(id, name, description, identityPrompt string, llms ...llm.LLM) *Ag
 		MaxIterations:                    defaultMaxIterations,
 		MaxDuplicateToolCallsPerResponse: defaultMaxDuplicateToolCallsPerResponse,
 		MaxToolCallsPerResponse:          defaultMaxToolCallsPerResponse,
-	}
-	a.loop = &nativeLoop{
-		agent:                 a,
-		maxIter:               a.MaxIterations,
-		maxDuplicateToolCalls: a.MaxDuplicateToolCallsPerResponse,
-		maxToolCalls:          a.MaxToolCallsPerResponse,
-		maxSameToolCalls:      maxSameToolCallsPerRun,
 	}
 
 	return a
@@ -1637,7 +1564,7 @@ func (a *Agent) RunLoop(ctx context.Context, conv messaging.ConversationRef, use
 	messages = append(messages, llm.Message{Role: "user", Content: userPrompt})
 
 	toolset := a.ResolvedTools(conv.Platform)
-	result, final, err := a.loop.Run(ctx, messages, toolset)
+	result, final, err := a.runLoopFrom(ctx, messages, toolset, a.MaxIterations, a.MaxDuplicateToolCallsPerResponse, a.MaxToolCallsPerResponse, maxSameToolCallsPerRun)
 
 	if a.memory != nil {
 		// Persist only what this call actually added — everything after the
@@ -1913,8 +1840,7 @@ func (a *Agent) runWorkflow(ctx context.Context, wf *workflow.Workflow, messagin
 	if maxToolCalls <= 0 {
 		maxToolCalls = a.MaxToolCallsPerResponse
 	}
-	wfLoop := &nativeLoop{agent: a, maxIter: maxIter, maxDuplicateToolCalls: maxDuplicateToolCalls, maxToolCalls: maxToolCalls, maxSameToolCalls: maxIter}
-	result, final, err := wfLoop.Run(ctx, messages, toolset)
+	result, final, err := a.runLoopFrom(ctx, messages, toolset, maxIter, maxDuplicateToolCalls, maxToolCalls, maxIter)
 	if a.memory != nil {
 		newTurns := final[1+len(prior):]
 		a.memory.Append(ctx, memKey, newTurns...)
@@ -2151,7 +2077,7 @@ func (a *Agent) RunDelegatedTask(ctx context.Context, task string) (*LoopResult,
 	toolset := mergeTools(a.defaultTools(), a.messengerTools(), a.workflowToolSpecs(nil))
 	toolset = filterToolsForPlatform(toolset, a.resolvePlatform(ctx))
 
-	result, final, err := a.loop.Run(ctx, messages, toolset)
+	result, final, err := a.runLoopFrom(ctx, messages, toolset, a.MaxIterations, a.MaxDuplicateToolCallsPerResponse, a.MaxToolCallsPerResponse, maxSameToolCallsPerRun)
 	if a.memory != nil {
 		newTurns := final[1+len(prior):]
 		a.memory.Append(ctx, memKey, newTurns...)

@@ -1,7 +1,7 @@
 // Package human lets a deployment's agents know who they're serving, so
 // system prompts can be genuinely personalized instead of only ever saying
 // "the owner." The platform defines nothing but the interface and where
-// it's wired in (agent.Agent.SetHuman / runtime.LocalRuntime.SetHuman) — how the
+// it's wired in (agent.Agent.SetHuman / runtime.Runtime.SetHuman) — how the
 // details are sourced or shaped (env vars, a database, a webhook-fed
 // cache, free text a user typed once) is entirely up to whoever implements
 // Human. Nothing changes for a caller that never sets one at all.
