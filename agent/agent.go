@@ -117,40 +117,14 @@ type Agent struct {
 	MaxToolCallsPerResponse int
 }
 
-// DelegateTarget is anything that can receive a delegated task and run its
-// own complete loop to produce a result — a real in-process *Agent, or a
-// genuinely external agent (Claude Code, Codex, running on the owner's own
-// laptop) reached over a network boundary. Both satisfy this identically;
-// delegateToolSpecs/delegateToolSpec never distinguish between them —
-// "being an agent" is exactly this contract (hand off a task, get back a
-// result via its own loop), nothing more, and nothing tied to kael-platform
-// internals like memory or the LLM interface is required to satisfy it.
-type DelegateTarget interface {
-	DelegateID() string
-	DelegateName() string
-	DelegateDescription() string
-	DelegateCapabilities() string
-	RunDelegatedTask(ctx context.Context, task string) (*LoopResult, error)
-}
-
 // AgentDirectory lets an agent see its siblings under a shared host, so it
 // can decide what's worth delegating instead of guessing. Defined here
 // rather than imported, since the natural implementation (Runtime) already
 // imports this package — *runtime.Runtime satisfies this structurally via
-// its existing DelegateTargets method, same trick as EventPublisher below.
+// its existing GetAgents method, same trick as EventPublisher below.
 type AgentDirectory interface {
-	DelegateTargets() []DelegateTarget
+	GetAgents() []*Agent
 }
-
-// DelegateID, DelegateName, DelegateDescription, DelegateCapabilities are
-// *Agent's thin wrapper methods satisfying DelegateTarget — interfaces
-// match on methods, not the already-public Id/Name/Description fields, so
-// these exist purely to let *Agent participate in DelegateTarget without
-// exposing anything new.
-func (a *Agent) DelegateID() string          { return a.Id }
-func (a *Agent) DelegateName() string        { return a.Name }
-func (a *Agent) DelegateDescription() string { return a.Description }
-func (a *Agent) DelegateCapabilities() string { return a.capabilitiesSummary() }
 
 // defaultMaxIterations seeds Agent.MaxIterations in NewAgent.
 const defaultMaxIterations = 10
@@ -1892,8 +1866,8 @@ func (a *Agent) delegateToolSpecs() []*tools.ToolSpec {
 		return nil
 	}
 	specs := make([]*tools.ToolSpec, 0)
-	for _, sibling := range a.directory.DelegateTargets() {
-		if sibling.DelegateID() == a.Id {
+	for _, sibling := range a.directory.GetAgents() {
+		if sibling.Id == a.Id {
 			continue
 		}
 		specs = append(specs, a.delegateToolSpec(sibling))
@@ -1901,24 +1875,23 @@ func (a *Agent) delegateToolSpecs() []*tools.ToolSpec {
 	return specs
 }
 
-// delegateToolSpec wraps a single sibling DelegateTarget as a tool. Its
-// description carries the target's name, description, and capabilities so
-// the calling LLM can judge what it's actually good for, not just guess
-// from a one-line blurb. Invoking it runs target.RunDelegatedTask — the
-// agent-to-agent path, not RunLoop — so there's no ConversationRef, no
-// memory, and no send_message involved at all on this end; whether the
-// target itself has any of those is entirely up to its own implementation,
-// invisible from here.
-func (a *Agent) delegateToolSpec(target DelegateTarget) *tools.ToolSpec {
+// delegateToolSpec wraps a single sibling agent as a tool. Its description
+// carries the sibling's name, description, and its own tools/workflows
+// (via capabilitiesSummary) so the calling LLM can judge what it's actually
+// good for, not just guess from a one-line blurb. Invoking it runs
+// target.runDelegatedTask — the agent-to-agent path, not RunLoop — so
+// there's no ConversationRef, no memory, and no send_message involved at
+// all; see runDelegatedTask for why.
+func (a *Agent) delegateToolSpec(target *Agent) *tools.ToolSpec {
 	description := fmt.Sprintf(
 		"Delegate a task to %s: %s\nIts capabilities:\n%s",
-		target.DelegateName(), target.DelegateDescription(), target.DelegateCapabilities(),
+		target.Name, target.Description, target.capabilitiesSummary(),
 	)
-	return tools.NewToolBuilder("delegate_to_"+target.DelegateID(), description).
+	return tools.NewToolBuilder("delegate_to_"+target.Id, description).
 		Parameter("task", "string", "What you want this agent to do.", true).
 		Handler(func(ctx context.Context, args json.RawMessage) (any, error) {
 			if args == nil {
-				return nil, fmt.Errorf("delegate_to_%s: no arguments provided", target.DelegateID())
+				return nil, fmt.Errorf("delegate_to_%s: no arguments provided", target.Id)
 			}
 
 			var raw string
@@ -1934,14 +1907,14 @@ func (a *Agent) delegateToolSpec(target DelegateTarget) *tools.ToolSpec {
 				return nil, err
 			}
 
-			log.Printf("🤝%s: delegating to %s: %q", a.Name, target.DelegateName(), input.Task)
+			log.Printf("🤝%s: delegating to %s: %q", a.Name, target.Name, input.Task)
 			recordDelegation(ctx, target)
-			result, err := target.RunDelegatedTask(messaging.WithDelegator(ctx, a.Id), input.Task)
+			result, err := target.runDelegatedTask(messaging.WithDelegator(ctx, a.Id), input.Task)
 			if err != nil {
 				return nil, err
 			}
-			log.Printf("🤝%s: %s finished (%s): %s", a.Name, target.DelegateName(), result.Status, result.Content)
-			return fmt.Sprintf("%s finished (%s): %s", target.DelegateName(), result.Status, result.Content), nil
+			log.Printf("🤝%s: %s finished (%s): %s", a.Name, target.Name, result.Status, result.Content)
+			return fmt.Sprintf("%s finished (%s): %s", target.Name, result.Status, result.Content), nil
 		}).Build()
 }
 
@@ -1996,12 +1969,12 @@ func resetDelegationNotes(ctx context.Context) context.Context {
 // left out of the note — it's already in the log line right above this
 // call, and repeating it here would just restate what the reply right
 // after it already shows.
-func recordDelegation(ctx context.Context, target DelegateTarget) {
+func recordDelegation(ctx context.Context, target *Agent) {
 	ptr, ok := ctx.Value(delegationNotesCtxKey{}).(*[]string)
 	if !ok {
 		return
 	}
-	*ptr = append(*ptr, fmt.Sprintf("🤝 Handed this off to %s", target.DelegateName()))
+	*ptr = append(*ptr, fmt.Sprintf("🤝 Handed this off to %s", target.Name))
 }
 
 // consumeDelegationNotes returns any recorded delegation notes formatted
@@ -2020,7 +1993,7 @@ func consumeDelegationNotes(ctx context.Context) string {
 	return prefix
 }
 
-// RunDelegatedTask is the agent-to-agent counterpart to RunLoop's
+// runDelegatedTask is the agent-to-agent counterpart to RunLoop's
 // agent-to-user path — kept as a genuinely separate method rather than a
 // flagged variant of RunLoop, so the distinction is visible in the type
 // signature instead of hidden in context. Differences from RunLoop, each
@@ -2046,7 +2019,7 @@ func consumeDelegationNotes(ctx context.Context) string {
 //     (a nested workflow this delegate calls can still delegate further
 //     if it opts in via AllowDelegation; incrementDelegationDepth is
 //     what actually bounds that, not a blanket ban).
-func (a *Agent) RunDelegatedTask(ctx context.Context, task string) (*LoopResult, error) {
+func (a *Agent) runDelegatedTask(ctx context.Context, task string) (*LoopResult, error) {
 	var depth int
 	var withinLimit bool
 	ctx, depth, withinLimit = incrementDelegationDepth(ctx)
