@@ -814,10 +814,15 @@ const loopProtocolInstructions = "You have access to tools. " +
 // AgentLoop never touches a.LLMs regardless of how many are configured.
 func NewAgent(id, name, description, identityPrompt string, llms ...llm.LLM) *Agent {
 	a := &Agent{
-		Id:             id,
-		Name:           name,
-		Description:    description,
-		IdentityPrompt: identityPrompt + loopProtocolInstructions,
+		Id:          id,
+		Name:        name,
+		Description: description,
+		// loopProtocolInstructions (end_loop, one-tool-per-response, etc.)
+		// is added in systemPrompt() instead of baked in here — it only
+		// applies once nativeLoop is actually what's running (see
+		// systemPrompt's own doc comment), which isn't known yet at
+		// construction time, before SetLoop has had a chance to be called.
+		IdentityPrompt: identityPrompt,
 		Workflows:      make([]*workflow.Workflow, 0),
 		LLMs:           llms,
 		llmState:       make([]llmProviderState, len(llms)),
@@ -1577,8 +1582,21 @@ func (a *Agent) capabilitiesBlock() string {
 	return b.String()
 }
 
+// systemPrompt builds the system message for a plain conversational turn
+// (RunLoop) or a delegated call (RunDelegatedTask). loopProtocolInstructions
+// and capabilitiesBlock() — end_loop, "describe your capabilities strictly
+// in terms of the tools/workflows listed above" — both describe and
+// constrain nativeLoop specifically; neither applies once a.loop is set to
+// something else. Confirmed live: sending them to a CLILoop-backed Claude
+// Code agent made it refuse real, in-scope work, since it was told (via
+// capabilitiesBlock, built from this agent's own near-empty Tools/Workflows)
+// to strictly limit itself to a list that describes nothing about what it
+// can actually do.
 func (a *Agent) systemPrompt() string {
-	return a.IdentityPrompt + "\n" + a.humanBlock() + a.capabilitiesBlock()
+	if a.loop != nil {
+		return a.IdentityPrompt + "\n" + a.humanBlock()
+	}
+	return a.IdentityPrompt + "\n" + loopProtocolInstructions + "\n" + a.humanBlock() + a.capabilitiesBlock()
 }
 
 // humanBlock describes the person this agent serves, when a Human is
@@ -1909,8 +1927,12 @@ func (a *Agent) runWorkflow(ctx context.Context, wf *workflow.Workflow, messagin
 		prior = a.memory.History(ctx, memKey)
 	}
 
+	sysContent := a.humanBlock() + wf.SystemPrompt
+	if a.loop == nil {
+		sysContent += " " + loopProtocolInstructions
+	}
 	messages := make([]llm.Message, 0, len(prior)+2)
-	messages = append(messages, llm.Message{Role: "system", Content: a.humanBlock() + wf.SystemPrompt + " " + loopProtocolInstructions})
+	messages = append(messages, llm.Message{Role: "system", Content: sysContent})
 	messages = append(messages, prior...)
 	messages = append(messages, llm.Message{Role: "user", Content: userTrigger})
 	toolset := a.workflowToolset(wf, messagingTools)
@@ -2173,8 +2195,12 @@ func (a *Agent) RunDelegatedTask(ctx context.Context, task string) (*LoopResult,
 		prior = a.memory.History(ctx, memKey)
 	}
 
-	systemContent := a.systemPrompt() +
-		"\n\nThis task was delegated to you by another agent, not requested directly by a human. Always call end_loop with your final_message when done — it is relayed back to the delegating agent automatically, and is the one guaranteed way your answer gets through, so the delegating agent can pass it on itself. If a reaction tool (e.g. add_reaction) is available, you may use it on the conversation/message that triggered this delegation as a lightweight status signal — not a replacement for final_message."
+	systemContent := a.systemPrompt()
+	if a.loop == nil {
+		// end_loop/reaction-tool framing — meaningless for anything not
+		// running through nativeLoop's own protocol.
+		systemContent += "\n\nThis task was delegated to you by another agent, not requested directly by a human. Always call end_loop with your final_message when done — it is relayed back to the delegating agent automatically, and is the one guaranteed way your answer gets through, so the delegating agent can pass it on itself. If a reaction tool (e.g. add_reaction) is available, you may use it on the conversation/message that triggered this delegation as a lightweight status signal — not a replacement for final_message."
+	}
 
 	messages := make([]llm.Message, 0, len(prior)+2)
 	messages = append(messages, llm.Message{Role: "system", Content: systemContent})
