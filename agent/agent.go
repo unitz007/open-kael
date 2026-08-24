@@ -77,7 +77,7 @@ type Agent struct {
 	retrievers            map[string]rag.Retriever
 	retrieverDescriptions map[string]string
 	memoryKeyFunc         messaging.MemoryKeyFunc
-	// MaxIterations caps RunLoop and runDelegatedTask's own loops — a
+	// MaxIterations caps RunLoop and RunDelegatedTask's own loops — a
 	// workflow's nested run can still go further via its own Iteration
 	// field (falling back to this value when unset), but a plain
 	// conversation or a plain delegated call has no workflow to carry an
@@ -115,15 +115,82 @@ type Agent struct {
 	// margin. Defaults to defaultMaxToolCallsPerResponse in NewAgent; set
 	// directly to change it.
 	MaxToolCallsPerResponse int
+
+	// loop is how this agent turns a prepared (messages, toolset) pair into
+	// a result. nil (the default) means "use the built-in nativeLoop" — set
+	// via SetLoop only for an agent whose real work happens somewhere else
+	// entirely (a CLI-shaped external agent backed by CLILoop, or a
+	// networked peer). RunLoop/RunDelegatedTask check this before falling
+	// back to nativeLoop; runWorkflow always uses its own nativeLoop
+	// regardless, since a non-nativeLoop agent has no workflows to run.
+	loop AgentLoop
+
+	// capabilities, when set via SetDelegateCapabilities, is what
+	// DelegateCapabilities() reports instead of capabilitiesSummary().
+	// Needed for an agent whose loop isn't nativeLoop: capabilitiesSummary
+	// lists this agent's own Tools/Workflows, which is meaningless for an
+	// agent whose real capabilities live entirely on the other side of its
+	// loop.
+	capabilities string
+}
+
+// DelegateTarget is anything that can receive a delegated task and run its
+// own complete loop to produce a result — a real in-process *Agent, or a
+// genuinely external agent (Claude Code on the owner's laptop, or any
+// networked peer) reached over a network boundary. Both satisfy this
+// identically; delegateToolSpecs/delegateToolSpec never distinguish between
+// them — "being delegatable" is exactly this contract (hand off a task, get
+// back a result), nothing tied to kael-platform internals like memory or
+// the LLM interface required to satisfy it.
+type DelegateTarget interface {
+	DelegateID() string
+	DelegateName() string
+	DelegateDescription() string
+	DelegateCapabilities() string
+	RunDelegatedTask(ctx context.Context, task string) (*LoopResult, error)
+}
+
+// DelegateID, DelegateName, DelegateDescription are *Agent's thin wrapper
+// methods satisfying DelegateTarget — interfaces match on methods, not the
+// already-public Id/Name/Description fields, so these exist purely to let
+// *Agent participate in DelegateTarget without exposing anything new.
+func (a *Agent) DelegateID() string          { return a.Id }
+func (a *Agent) DelegateName() string        { return a.Name }
+func (a *Agent) DelegateDescription() string { return a.Description }
+
+// DelegateCapabilities reports a's own capabilities override if
+// SetDelegateCapabilities was called, else falls back to summarizing its
+// real Tools/Workflows — see Agent.capabilities' own doc comment for why
+// the override exists.
+func (a *Agent) DelegateCapabilities() string {
+	if a.capabilities != "" {
+		return a.capabilities
+	}
+	return a.capabilitiesSummary()
+}
+
+// SetLoop swaps out how this agent executes a turn — see Agent.loop's own
+// doc comment. Optional: NewAgent already behaves as if this were nil
+// (nativeLoop by default), so this is only needed to back an agent with
+// something other than its own in-process tool-calling engine.
+func (a *Agent) SetLoop(l AgentLoop) {
+	a.loop = l
+}
+
+// SetDelegateCapabilities overrides what DelegateCapabilities() reports —
+// see Agent.capabilities' own doc comment for why this is needed once an
+// agent's loop isn't nativeLoop.
+func (a *Agent) SetDelegateCapabilities(s string) {
+	a.capabilities = s
 }
 
 // AgentDirectory lets an agent see its siblings under a shared host, so it
 // can decide what's worth delegating instead of guessing. Defined here
 // rather than imported, since the natural implementation (Runtime) already
 // imports this package — *runtime.Runtime satisfies this structurally via
-// its existing GetAgents method, same trick as EventPublisher below.
+// its existing DelegateTargets method, same trick as EventPublisher below.
 type AgentDirectory interface {
-	GetAgents() []*Agent
+	DelegateTargets() []DelegateTarget
 }
 
 // defaultMaxIterations seeds Agent.MaxIterations in NewAgent.
@@ -196,6 +263,10 @@ type llmProviderState struct {
 // — there's nothing left to fall back to, so a skipped attempt there would
 // just mean returning an error without ever actually trying.
 func (a *Agent) callLLM(messages []llm.Message, toolset []*tools.ToolSpec) (*llm.Response, error) {
+	if len(a.LLMs) == 0 {
+		return nil, fmt.Errorf("%s: no LLM providers configured", a.Name)
+	}
+
 	a.llmMu.Lock()
 	if len(a.llmState) != len(a.LLMs) {
 		a.llmState = make([]llmProviderState, len(a.LLMs))
@@ -285,6 +356,38 @@ type AgentLoop interface {
 	Run(ctx context.Context, messages []llm.Message, toolset []*tools.ToolSpec) (*LoopResult, []llm.Message, error)
 }
 
+// LastUserMessage returns the most recent user-role message's content, or
+// "" if there isn't one — the task text a delegated call appends before
+// invoking a.loop.Run, useful to any AgentLoop implementation that only
+// needs the task itself rather than the full transcript (e.g. one that
+// hands it off to an external process or a network peer).
+func LastUserMessage(messages []llm.Message) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" {
+			return messages[i].Content
+		}
+	}
+	return ""
+}
+
+// SystemMessage returns the first system-role message's content, or "" if
+// there isn't one. For RunLoop/RunDelegatedTask this is boilerplate
+// framing; for a workflow run it's where the real instructions live
+// (wf.SystemPrompt) — an AgentLoop implementation that only reads
+// LastUserMessage sees just the trigger text for a workflow (e.g. "Run
+// this workflow now." for a cron trigger), not what to actually do. An
+// implementation that needs the real task combines this with
+// LastUserMessage; one that doesn't (RunDelegatedTask's own framing is
+// genuinely skippable) can ignore it.
+func SystemMessage(messages []llm.Message) string {
+	for _, m := range messages {
+		if m.Role == "system" {
+			return m.Content
+		}
+	}
+	return ""
+}
+
 // nativeLoop is the shared tool-calling engine behind every entry point
 // (RunLoop, a workflow's own nested run, and a delegated call) — same
 // end_loop protocol, same repeat-call guard, just fed a different starting
@@ -313,7 +416,7 @@ func (n *nativeLoop) Run(ctx context.Context, messages []llm.Message, toolset []
 	// of which agent originally built the tool. Overwriting ctx here is
 	// exactly what makes a delegated call resolve against the *target*
 	// agent's own identities rather than the delegator's, once
-	// runDelegatedTask constructs one of these on the target.
+	// RunDelegatedTask constructs one of these on the target.
 	ctx = identity.WithIdentities(ctx, a.identities)
 	ctx = rag.WithRetrievers(ctx, a.retrievers)
 
@@ -701,15 +804,15 @@ const loopProtocolInstructions = "You have access to tools. " +
 	"Never expose a tool name or argument in your final answer — the user should not see any tool calls, only the final_message you put in end_loop." +
 	"If repeating a similar action with different inputs stops turning up anything new, that's information too — don't keep trying variations hoping for a better result. Work with what you've already found, or if that's not enough to proceed confidently, say so in end_loop's final_message and ask what you need, rather than continuing indefinitely."
 
-// NewAgent builds an Agent bound to one or more LLM providers. llms[0] is
-// the default, tried first on every call — anything after it is a
-// fallback, used only once earlier providers are judged down (see
-// Agent.callLLM). Passing a single provider (the common case) behaves
-// exactly as before.
+// NewAgent builds an Agent. llms[0], if any, is the default provider, tried
+// first on every call — anything after it is a fallback, used only once
+// earlier providers are judged down (see Agent.callLLM). Passing a single
+// provider (the common case) behaves exactly as before. llms may be empty
+// — genuinely optional, not a placeholder-required case — for an agent
+// that will never use the default nativeLoop at all (see SetLoop); callLLM
+// only gets called from nativeLoop.Run, so an agent backed by a different
+// AgentLoop never touches a.LLMs regardless of how many are configured.
 func NewAgent(id, name, description, identityPrompt string, llms ...llm.LLM) *Agent {
-	if len(llms) == 0 {
-		panic("agent: NewAgent requires at least one LLM provider")
-	}
 	a := &Agent{
 		Id:             id,
 		Name:           name,
@@ -805,7 +908,7 @@ const maxBareMemoryMessages = 20
 // AddMessenger can be called any time after NewAgent.
 //
 // Used by both RunLoop's real-conversation path (and a workflow running as
-// part of one) and runDelegatedTask — a delegated call routes send_message
+// part of one) and RunDelegatedTask — a delegated call routes send_message
 // and any messenger tools through whatever ConversationRef it inherited via
 // ctx from the delegating call, using its own (the delegate's) registered
 // messenger. See messengerTools for the caveat that implies.
@@ -1094,7 +1197,7 @@ func (a *Agent) resolveSendTarget(ctx context.Context, platform string) (messagi
 // own identity — rather than resolveSendTarget's ambient-ctx-preferring
 // logic (what send_message uses): ctx can carry a ConversationRef
 // inherited from a completely different agent (e.g. mid-delegation — see
-// runDelegatedTask, which forwards its caller's ctx unchanged into its own
+// RunDelegatedTask, which forwards its caller's ctx unchanged into its own
 // nested loop), and resolveSendTarget would happily pair that foreign
 // ConversationRef with THIS agent's own messenger — posting an approval
 // prompt as the wrong bot into a channel it likely isn't even a member
@@ -1174,7 +1277,7 @@ func (a *Agent) DefaultConversation() (conv messaging.ConversationRef, ok bool) 
 }
 
 // SetMemoryKeyFunc overrides how this agent partitions memory across
-// RunLoop/runWorkflow/runDelegatedTask — see messaging.MemoryKeyFunc and
+// RunLoop/runWorkflow/RunDelegatedTask — see messaging.MemoryKeyFunc and
 // its presets (KeyByAgent, KeyByConversation, KeyByThread, KeyByWorkflow).
 // Defaults to messaging.KeyByAgent() (one shared thread for the entire
 // agent, regardless of platform/conversation/thread) if never called —
@@ -1531,7 +1634,7 @@ func (a *Agent) delegationBlock() string {
 // registered), every workflow as a tool, and every sibling agent as a
 // delegate_to_<id> tool — unconditionally, since this method is never used
 // for anything but a real conversation. The agent-to-agent counterpart is
-// runDelegatedTask, a genuinely separate method rather than a flagged
+// RunDelegatedTask, a genuinely separate method rather than a flagged
 // variant of this one.
 // ResolvedTools returns this agent's complete, merged toolset for a given
 // platform — base tools, every workflow as a tool, and every sibling agent
@@ -1559,7 +1662,10 @@ func (a *Agent) RunLoop(ctx context.Context, conv messaging.ConversationRef, use
 	messages = append(messages, llm.Message{Role: "user", Content: userPrompt})
 
 	toolset := a.ResolvedTools(conv.Platform)
-	loop := &nativeLoop{agent: a, maxIter: a.MaxIterations, maxDuplicateToolCalls: a.MaxDuplicateToolCallsPerResponse, maxToolCalls: a.MaxToolCallsPerResponse, maxSameToolCalls: maxSameToolCallsPerRun}
+	loop := a.loop
+	if loop == nil {
+		loop = &nativeLoop{agent: a, maxIter: a.MaxIterations, maxDuplicateToolCalls: a.MaxDuplicateToolCallsPerResponse, maxToolCalls: a.MaxToolCallsPerResponse, maxSameToolCalls: maxSameToolCallsPerRun}
+	}
 	result, final, err := loop.Run(ctx, messages, toolset)
 
 	if a.memory != nil {
@@ -1703,7 +1809,7 @@ func toolMapValues(m map[string]*tools.ToolSpec) []*tools.ToolSpec {
 // with tools that weren't meant for it. messagingTools is passed straight
 // through to each workflow's own nested run (see runWorkflow) — the
 // agent's real a.messagingTools() from RunLoop (a real conversation, where
-// replying to a human directly is legitimate), nil from runDelegatedTask
+// replying to a human directly is legitimate), nil from RunDelegatedTask
 // (a workflow triggered mid-delegation has no live, identity-matched
 // conversation to message into, same reasoning as the delegated call
 // itself).
@@ -1738,7 +1844,7 @@ const maxDelegationDepth = 4
 // incrementDelegationDepth reads the current hop count off ctx (0 if unset),
 // returns a context carrying count+1, and reports whether the NEW count is
 // still within maxDelegationDepth. Called at the top of both runWorkflow and
-// runDelegatedTask — the only two entry points that can lead to another
+// RunDelegatedTask — the only two entry points that can lead to another
 // delegate/workflow hop.
 func incrementDelegationDepth(ctx context.Context) (context.Context, int, bool) {
 	depth, _ := ctx.Value(delegationDepthKey{}).(int)
@@ -1753,7 +1859,7 @@ func incrementDelegationDepth(ctx context.Context) (context.Context, int, bool) 
 // (send_message and any messenger-contributed tools, see
 // Agent.messagingTools) is the only conditional piece, supplied by the
 // caller — nil for a run with no live, identity-matched conversation to
-// speak into as itself (see runDelegatedTask and the nested workflow-as-
+// speak into as itself (see RunDelegatedTask and the nested workflow-as-
 // tool calls it makes). Pulled out of runWorkflow so the composition
 // itself — specifically, that a.Tools can never end up excluded — is
 // directly testable without running an actual LLM loop.
@@ -1836,7 +1942,10 @@ func (a *Agent) runWorkflow(ctx context.Context, wf *workflow.Workflow, messagin
 	if maxToolCalls <= 0 {
 		maxToolCalls = a.MaxToolCallsPerResponse
 	}
-	loop := &nativeLoop{agent: a, maxIter: maxIter, maxDuplicateToolCalls: maxDuplicateToolCalls, maxToolCalls: maxToolCalls, maxSameToolCalls: maxIter}
+	loop := a.loop
+	if loop == nil {
+		loop = &nativeLoop{agent: a, maxIter: maxIter, maxDuplicateToolCalls: maxDuplicateToolCalls, maxToolCalls: maxToolCalls, maxSameToolCalls: maxIter}
+	}
 	result, final, err := loop.Run(ctx, messages, toolset)
 	if a.memory != nil {
 		newTurns := final[1+len(prior):]
@@ -1889,32 +1998,33 @@ func (a *Agent) delegateToolSpecs() []*tools.ToolSpec {
 		return nil
 	}
 	specs := make([]*tools.ToolSpec, 0)
-	for _, sibling := range a.directory.GetAgents() {
-		if sibling.Id == a.Id {
+	for _, target := range a.directory.DelegateTargets() {
+		if target.DelegateID() == a.Id {
 			continue
 		}
-		specs = append(specs, a.delegateToolSpec(sibling))
+		specs = append(specs, a.delegateToolSpec(target))
 	}
 	return specs
 }
 
-// delegateToolSpec wraps a single sibling agent as a tool. Its description
-// carries the sibling's name, description, and its own tools/workflows
-// (via capabilitiesSummary) so the calling LLM can judge what it's actually
-// good for, not just guess from a one-line blurb. Invoking it runs
-// target.runDelegatedTask — the agent-to-agent path, not RunLoop — so
+// delegateToolSpec wraps a single delegate target — a real sibling *Agent,
+// or a genuinely remote one reached over a network boundary — as a tool.
+// Its description carries the target's self-reported name, description,
+// and capabilities so the calling LLM can judge what it's actually good
+// for, not just guess from a one-line blurb. Invoking it runs
+// target.RunDelegatedTask — the agent-to-agent path, not RunLoop — so
 // there's no ConversationRef, no memory, and no send_message involved at
-// all; see runDelegatedTask for why.
-func (a *Agent) delegateToolSpec(target *Agent) *tools.ToolSpec {
+// all; see RunDelegatedTask for why.
+func (a *Agent) delegateToolSpec(target DelegateTarget) *tools.ToolSpec {
 	description := fmt.Sprintf(
 		"Delegate a task to %s: %s\nIts capabilities:\n%s",
-		target.Name, target.Description, target.capabilitiesSummary(),
+		target.DelegateName(), target.DelegateDescription(), target.DelegateCapabilities(),
 	)
-	return tools.NewToolBuilder("delegate_to_"+target.Id, description).
+	return tools.NewToolBuilder("delegate_to_"+target.DelegateID(), description).
 		Parameter("task", "string", "What you want this agent to do.", true).
 		Handler(func(ctx context.Context, args json.RawMessage) (any, error) {
 			if args == nil {
-				return nil, fmt.Errorf("delegate_to_%s: no arguments provided", target.Id)
+				return nil, fmt.Errorf("delegate_to_%s: no arguments provided", target.DelegateID())
 			}
 
 			var raw string
@@ -1930,14 +2040,14 @@ func (a *Agent) delegateToolSpec(target *Agent) *tools.ToolSpec {
 				return nil, err
 			}
 
-			log.Printf("🤝%s: delegating to %s: %q", a.Name, target.Name, input.Task)
-			recordDelegation(ctx, target)
-			result, err := target.runDelegatedTask(messaging.WithDelegator(ctx, a.Id), input.Task)
+			log.Printf("🤝%s: delegating to %s: %q", a.Name, target.DelegateName(), input.Task)
+			recordDelegation(ctx, target.DelegateName())
+			result, err := target.RunDelegatedTask(messaging.WithDelegator(ctx, a.Id), input.Task)
 			if err != nil {
 				return nil, err
 			}
-			log.Printf("🤝%s: %s finished (%s): %s", a.Name, target.Name, result.Status, result.Content)
-			return fmt.Sprintf("%s finished (%s): %s", target.Name, result.Status, result.Content), nil
+			log.Printf("🤝%s: %s finished (%s): %s", a.Name, target.DelegateName(), result.Status, result.Content)
+			return fmt.Sprintf("%s finished (%s): %s", target.DelegateName(), result.Status, result.Content), nil
 		}).Build()
 }
 
@@ -1964,7 +2074,7 @@ func ensureDelegationNotes(ctx context.Context) context.Context {
 
 // resetDelegationNotes always attaches a brand-new, empty notes collector
 // to ctx, discarding any inherited one. Used at the agent-to-agent boundary
-// (runDelegatedTask), unlike ensureDelegationNotes's reuse-if-present
+// (RunDelegatedTask), unlike ensureDelegationNotes's reuse-if-present
 // behavior: a delegate's own reply is a separate message from whatever the
 // delegating agent eventually sends, so a note recorded for the
 // delegator's own pending reply must never leak into — or be silently
@@ -1978,26 +2088,26 @@ func resetDelegationNotes(ctx context.Context) context.Context {
 	return context.WithValue(ctx, delegationNotesCtxKey{}, &[]string{})
 }
 
-// recordDelegation notes that this run handed a task to target, to be
-// folded into the single outgoing reply (see consumeDelegationNotes)
-// rather than sent as a message of its own — deliberately not left to the
-// delegating agent's own judgment on whether to mention it when it
-// eventually relays an answer. Models have already been observed, twice,
-// not reliably using an *optional* tool (a reaction, a direct
-// send_message) even when explicitly told they're allowed to — so this
-// bypasses the LLM entirely: it always fires from delegateToolSpec's
+// recordDelegation notes that this run handed a task to a target named
+// targetName, to be folded into the single outgoing reply (see
+// consumeDelegationNotes) rather than sent as a message of its own —
+// deliberately not left to the delegating agent's own judgment on whether
+// to mention it when it eventually relays an answer. Models have already
+// been observed, twice, not reliably using an *optional* tool (a reaction,
+// a direct send_message) even when explicitly told they're allowed to — so
+// this bypasses the LLM entirely: it always fires from delegateToolSpec's
 // handler, not something the model chooses to do. No-op if ctx was never
 // wrapped by ensureDelegationNotes (shouldn't happen on any real call
 // path, but a missing note beats a panic). The task itself is deliberately
 // left out of the note — it's already in the log line right above this
 // call, and repeating it here would just restate what the reply right
 // after it already shows.
-func recordDelegation(ctx context.Context, target *Agent) {
+func recordDelegation(ctx context.Context, targetName string) {
 	ptr, ok := ctx.Value(delegationNotesCtxKey{}).(*[]string)
 	if !ok {
 		return
 	}
-	*ptr = append(*ptr, fmt.Sprintf("🤝 Handed this off to %s", target.Name))
+	*ptr = append(*ptr, fmt.Sprintf("🤝 Handed this off to %s", targetName))
 }
 
 // consumeDelegationNotes returns any recorded delegation notes formatted
@@ -2016,7 +2126,7 @@ func consumeDelegationNotes(ctx context.Context) string {
 	return prefix
 }
 
-// runDelegatedTask is the agent-to-agent counterpart to RunLoop's
+// RunDelegatedTask is the agent-to-agent counterpart to RunLoop's
 // agent-to-user path — kept as a genuinely separate method rather than a
 // flagged variant of RunLoop, so the distinction is visible in the type
 // signature instead of hidden in context. Differences from RunLoop, each
@@ -2042,7 +2152,7 @@ func consumeDelegationNotes(ctx context.Context) string {
 //     (a nested workflow this delegate calls can still delegate further
 //     if it opts in via AllowDelegation; incrementDelegationDepth is
 //     what actually bounds that, not a blanket ban).
-func (a *Agent) runDelegatedTask(ctx context.Context, task string) (*LoopResult, error) {
+func (a *Agent) RunDelegatedTask(ctx context.Context, task string) (*LoopResult, error) {
 	var depth int
 	var withinLimit bool
 	ctx, depth, withinLimit = incrementDelegationDepth(ctx)
@@ -2073,7 +2183,10 @@ func (a *Agent) runDelegatedTask(ctx context.Context, task string) (*LoopResult,
 	toolset := mergeTools(a.defaultTools(), a.messengerTools(), a.workflowToolSpecs(nil))
 	toolset = filterToolsForPlatform(toolset, a.resolvePlatform(ctx))
 
-	loop := &nativeLoop{agent: a, maxIter: a.MaxIterations, maxDuplicateToolCalls: a.MaxDuplicateToolCallsPerResponse, maxToolCalls: a.MaxToolCallsPerResponse, maxSameToolCalls: maxSameToolCallsPerRun}
+	loop := a.loop
+	if loop == nil {
+		loop = &nativeLoop{agent: a, maxIter: a.MaxIterations, maxDuplicateToolCalls: a.MaxDuplicateToolCallsPerResponse, maxToolCalls: a.MaxToolCallsPerResponse, maxSameToolCalls: maxSameToolCallsPerRun}
+	}
 	result, final, err := loop.Run(ctx, messages, toolset)
 	if a.memory != nil {
 		newTurns := final[1+len(prior):]

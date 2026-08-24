@@ -8,15 +8,43 @@ import (
 	"github.com/unitz007/kael/human"
 	"log"
 	"net/http"
+	"sync"
 )
 
 // Runtime hosts a set of agents that share a single event bus, and launches
-// them all together.
+// them all together. It's also peer-aware: another Runtime can connect to
+// it (see peer.go), and once connected, that peer's own registered agents
+// become delegatable from any agent registered here, symmetrically — the
+// same Runtime type on both ends of the connection.
 type Runtime struct {
 	agentRegistry []*agent.Agent
-	EventBus      *events.EventBus
-	webhookMux    *http.ServeMux
-	human         human.Human
+	// peers holds every currently-connected Runtime — see peer.go. Never
+	// populated via RegisterAgent; a peer's agents are discovered live, on
+	// connect, not statically registered.
+	peers      []*Peer
+	peersMu    sync.RWMutex
+	EventBus   *events.EventBus
+	webhookMux *http.ServeMux
+	human      human.Human
+}
+
+// DelegateTargets satisfies agent.AgentDirectory — every locally-registered
+// agent, plus one DelegateTarget per agent any currently-connected peer has
+// announced it hosts. Computed fresh on each call: a peer's own registry
+// can change over time, and this always reflects what's live right now.
+func (r *Runtime) DelegateTargets() []agent.DelegateTarget {
+	out := make([]agent.DelegateTarget, 0, len(r.agentRegistry))
+	for _, a := range r.agentRegistry {
+		out = append(out, a)
+	}
+	r.peersMu.RLock()
+	defer r.peersMu.RUnlock()
+	for _, p := range r.peers {
+		for _, info := range p.RemoteAgents() {
+			out = append(out, &remoteDelegate{info: info, peer: p})
+		}
+	}
+	return out
 }
 
 // SetHuman wires h onto every currently-registered agent, and onto every
