@@ -27,6 +27,19 @@ const dispatchTimeout = 10 * time.Minute
 // dropped connection.
 const reconnectBackoff = 2 * time.Second
 
+// pingInterval/pongWait are the WebSocket-level keepalive: without this, a
+// connection that dies uncleanly on one side (network drop, laptop sleep —
+// anything that doesn't send a proper close frame) can sit registered on
+// the other side for a very long time, since the underlying OS TCP stack's
+// own dead-connection detection is far slower than this. pongWait must
+// exceed pingInterval by enough margin that one missed pong isn't treated
+// as dead — confirmed live: a real network blip left a peer "connected"
+// with no way to detect it short of this.
+const (
+	pingInterval = 20 * time.Second
+	pongWait     = 45 * time.Second
+)
+
 // PeerInfo is one delegate target a connected peer has announced it hosts.
 type PeerInfo struct {
 	AgentID, AgentName, AgentDescription, AgentCapabilities string
@@ -60,6 +73,7 @@ type Peer struct {
 	writeMu sync.Mutex
 	mu      sync.Mutex
 	pending map[string]chan peerFrame
+	done    chan struct{} // closed once, by readLoop's own cleanup, to stop pingLoop
 }
 
 // RemoteAgents reports every delegate target this peer announced it hosts
@@ -80,7 +94,7 @@ func (p *Peer) send(f peerFrame) error {
 // Handler) does that once it has a *Peer, so both can block on it the same
 // way regardless of which side established the connection.
 func newPeer(ctx context.Context, ws *websocket.Conn, local *Runtime) (*Peer, error) {
-	p := &Peer{ctx: ctx, ws: ws, local: local, pending: make(map[string]chan peerFrame)}
+	p := &Peer{ctx: ctx, ws: ws, local: local, pending: make(map[string]chan peerFrame), done: make(chan struct{})}
 
 	mine := make([]PeerInfo, 0, len(local.agentRegistry))
 	for _, a := range local.agentRegistry {
@@ -104,11 +118,42 @@ func newPeer(ctx context.Context, ws *websocket.Conn, local *Runtime) (*Peer, er
 	}
 	p.remote = f.Agents
 
+	// Keepalive: a periodic ping (pingLoop, started below) resets this
+	// deadline every time a pong actually arrives; if the connection is
+	// dead, no pong comes and ReadJSON in readLoop eventually fails with a
+	// timeout instead of blocking indefinitely.
+	ws.SetReadDeadline(time.Now().Add(pongWait))
+	ws.SetPongHandler(func(string) error {
+		ws.SetReadDeadline(time.Now().Add(pongWait))
+		return nil
+	})
+	go p.pingLoop()
+
 	local.peersMu.Lock()
-	local.peers = append(local.peers, p)
+	local.replacePeerLocked(p)
 	local.peersMu.Unlock()
 
 	return p, nil
+}
+
+// pingLoop sends a WebSocket ping every pingInterval until p.done closes —
+// see pingInterval/pongWait's own doc comment for why this exists at all.
+func (p *Peer) pingLoop() {
+	ticker := time.NewTicker(pingInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			p.writeMu.Lock()
+			err := p.ws.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second))
+			p.writeMu.Unlock()
+			if err != nil {
+				return // readLoop's own read deadline will notice the dead connection
+			}
+		case <-p.done:
+			return
+		}
+	}
 }
 
 // readLoop blocks reading frames until the connection dies — the read
@@ -127,6 +172,7 @@ func (p *Peer) readLoop() {
 			}
 		}
 		p.local.peersMu.Unlock()
+		close(p.done) // stops pingLoop
 		p.failAllPending(fmt.Errorf("runtime: peer connection lost"))
 		p.ws.Close()
 	}()
@@ -180,6 +226,17 @@ func (p *Peer) handleTask(f peerFrame) {
 	if err := p.send(out); err != nil {
 		log.Println("runtime: sending result frame:", err)
 	}
+}
+
+// evict force-closes p — called by replacePeerLocked when a fresh
+// connection has just superseded it. Deliberately doesn't touch p.local.peers
+// or p.done itself: closing p.ws unblocks p's own readLoop (still running
+// in its own goroutine), and *that* runs the usual deferred cleanup
+// (closing p.done, removing itself from peers — a no-op here, since
+// replacePeerLocked already filtered it out).
+func (p *Peer) evict() {
+	p.failAllPending(fmt.Errorf("runtime: superseded by a new connection"))
+	p.ws.Close()
 }
 
 func (p *Peer) failAllPending(err error) {

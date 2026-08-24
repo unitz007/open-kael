@@ -47,6 +47,62 @@ func (r *Runtime) DelegateTargets() []agent.DelegateTarget {
 	return out
 }
 
+// PeerConnected reports whether agentID is currently reachable through any
+// connected peer — the same check DelegateTargets() implicitly does while
+// building its list, exposed directly for a caller that wants a yes/no
+// answer about one specific ID without needing to scan the whole
+// DelegateTargets() result (and without that ID needing to be a real local
+// agent at all). Knows nothing about who agentID actually is; that's the
+// caller's concern.
+func (r *Runtime) PeerConnected(agentID string) bool {
+	r.peersMu.RLock()
+	defer r.peersMu.RUnlock()
+	for _, p := range r.peers {
+		for _, info := range p.RemoteAgents() {
+			if info.AgentID == agentID {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// replacePeerLocked evicts any existing peer that announced any of p's own
+// agent IDs, then appends p — a fresh connection under the same identity
+// supersedes whatever was there before, since the old one is presumably
+// already dead or on its way out (confirmed live: without this, a
+// reconnect left two entries for the same agent ID, and dispatch kept
+// routing to the stale one). Caller must hold peersMu.
+func (r *Runtime) replacePeerLocked(p *Peer) {
+	newIDs := make(map[string]bool, len(p.remote))
+	for _, info := range p.remote {
+		newIDs[info.AgentID] = true
+	}
+	kept := r.peers[:0]
+	for _, existing := range r.peers {
+		stale := false
+		for _, info := range existing.RemoteAgents() {
+			if newIDs[info.AgentID] {
+				stale = true
+				break
+			}
+		}
+		if stale {
+			// Failing pending + closing here (rather than waiting for its
+			// own readLoop to notice) means anything still waiting on the
+			// stale connection fails immediately instead of riding out
+			// dispatchTimeout or the keepalive window. Its own readLoop,
+			// once its blocked read finally errors, still runs its usual
+			// deferred cleanup — that's a harmless no-op here since this
+			// filtering has already dropped it from r.peers.
+			go existing.evict()
+		} else {
+			kept = append(kept, existing)
+		}
+	}
+	r.peers = append(kept, p)
+}
+
 // SetHuman wires h onto every currently-registered agent, and onto every
 // agent registered after this call — set once here rather than per agent,
 // the same way EventBus and the webhook mux are already shared through
