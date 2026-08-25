@@ -1738,6 +1738,7 @@ func (a *Agent) ResolvedTools(platform string) []*tools.ToolSpec {
 
 func (a *Agent) RunLoop(ctx context.Context, conv messaging.ConversationRef, userPrompt string) (*LoopResult, error) {
 	ctx = ensureDelegationNotes(ctx)
+	ctx = ensureDelegateRepliedFlag(ctx)
 	memKey := a.memoryKey(ctx, conv)
 
 	var prior []llm.Message
@@ -1772,10 +1773,12 @@ func (a *Agent) RunLoop(ctx context.Context, conv messaging.ConversationRef, use
 		// received. Best-effort notify instead, same "the user should
 		// always hear something back" reasoning as the guaranteed-delivery
 		// block below, just for the failure case it doesn't cover.
-		if m, ok := a.messengers[conv.Platform]; ok {
-			errNotice := consumeDelegationNotes(ctx) + "Sorry, I ran into an error and couldn't finish handling that. Please try again."
-			if _, sendErr := a.replyOrSend(ctx, m, conv, errNotice); sendErr != nil {
-				log.Println("failed to deliver error notice:", sendErr)
+		if !delegateReplied(ctx) {
+			if m, ok := a.messengers[conv.Platform]; ok {
+				errNotice := consumeDelegationNotes(ctx) + "Sorry, I ran into an error and couldn't finish handling that. Please try again."
+				if _, sendErr := a.replyOrSend(ctx, m, conv, errNotice); sendErr != nil {
+					log.Println("failed to deliver error notice:", sendErr)
+				}
 			}
 		}
 		return result, err
@@ -1786,8 +1789,12 @@ func (a *Agent) RunLoop(ctx context.Context, conv messaging.ConversationRef, use
 	// remembered to call send_message along the way — delivery is a
 	// structural consequence of the loop finishing, not something that
 	// depends on the model choosing the right tool. Skipped if send_message
-	// already succeeded this turn, so a model that DID use it to reply
-	// doesn't get its answer sent twice. Fires even when result.Content is
+	// already succeeded this turn (a model that DID use it to reply doesn't
+	// get its answer sent twice), or if a delegate this turn handed off to
+	// already replied directly under its own identity (delegateReplied —
+	// see markDelegateReplied/LoopResult.RepliedDirectly): a redundant
+	// secondhand relay from this agent would just be noise once the actual
+	// delegate has already spoken for itself. Fires even when result.Content is
 	// empty: confirmed live that a model can call end_loop with an empty
 	// final_message on a genuinely-completed turn (tool calls all
 	// succeeded, nothing more to do) — the old `result.Content != ""` guard
@@ -1795,13 +1802,7 @@ func (a *Agent) RunLoop(ctx context.Context, conv messaging.ConversationRef, use
 	// the user received nothing at all. A generic fallback beats silence,
 	// since the caller has no other signal the run ever happened.
 	if err == nil && result.Status == LLMStatusComplete {
-		alreadyReplied := false
-		for _, m := range final[1+len(prior):] {
-			if m.Role == "tool" && m.Name == "send_message" && !strings.HasPrefix(m.Content, "error:") {
-				alreadyReplied = true
-				break
-			}
-		}
+		alreadyReplied := hasSuccessfulSendMessage(final[1+len(prior):]) || delegateReplied(ctx)
 		if !alreadyReplied {
 			if m, ok := a.messengers[conv.Platform]; ok {
 				content := result.Content
@@ -2139,6 +2140,9 @@ func (a *Agent) delegateToolSpec(target DelegateTarget) *tools.ToolSpec {
 			if err != nil {
 				return nil, err
 			}
+			if result.RepliedDirectly {
+				markDelegateReplied(ctx)
+			}
 			log.Printf("🤝%s: %s finished (%s): %s", a.Name, target.DelegateName(), result.Status, result.Content)
 			return fmt.Sprintf("%s finished (%s): %s", target.DelegateName(), result.Status, result.Content), nil
 		}).Build()
@@ -2219,6 +2223,58 @@ func consumeDelegationNotes(ctx context.Context) string {
 	return prefix
 }
 
+// hasSuccessfulSendMessage reports whether messages contains a completed
+// (non-error) send_message tool result — shared by RunLoop's own
+// guaranteed-delivery check and RunDelegatedTask's RepliedDirectly
+// detection so the two can't drift apart.
+func hasSuccessfulSendMessage(messages []llm.Message) bool {
+	for _, m := range messages {
+		if m.Role == "tool" && m.Name == "send_message" && !strings.HasPrefix(m.Content, "error:") {
+			return true
+		}
+	}
+	return false
+}
+
+// delegateRepliedCtxKey is the context key for the mutable "did a
+// delegate reply directly this turn" flag — a sibling to
+// delegationNotesCtxKey, but with the opposite lifecycle: notes are
+// severed at the RunDelegatedTask boundary (resetDelegationNotes) so a
+// delegate's own notes never leak into its delegator's; this flag is the
+// reverse signal (delegate → delegator), so it's never attached to or
+// read from the delegate's own ctx at all — only LoopResult.RepliedDirectly
+// crosses that boundary (a return value, not ctx), and
+// delegateToolSpec's handler calls markDelegateReplied on the
+// delegator's own, untouched ctx after reading it. See RunLoop's
+// guaranteed-delivery fallback and error-notice path for where this is
+// actually read.
+type delegateRepliedCtxKey struct{}
+
+// ensureDelegateRepliedFlag attaches the flag to ctx if one isn't already
+// present — same reuse-if-present shape as ensureDelegationNotes, for the
+// same reason (a nested workflow-as-tool call within one agent's run
+// shares one flag, not its own).
+func ensureDelegateRepliedFlag(ctx context.Context) context.Context {
+	if _, ok := ctx.Value(delegateRepliedCtxKey{}).(*bool); ok {
+		return ctx
+	}
+	return context.WithValue(ctx, delegateRepliedCtxKey{}, new(bool))
+}
+
+// markDelegateReplied records that some delegate replied directly into
+// the live conversation during this call. No-op if ctx was never wrapped.
+func markDelegateReplied(ctx context.Context) {
+	if ptr, ok := ctx.Value(delegateRepliedCtxKey{}).(*bool); ok {
+		*ptr = true
+	}
+}
+
+// delegateReplied reports whether markDelegateReplied was called on ctx.
+func delegateReplied(ctx context.Context) bool {
+	ptr, ok := ctx.Value(delegateRepliedCtxKey{}).(*bool)
+	return ok && *ptr
+}
+
 // RunDelegatedTask is the agent-to-agent counterpart to RunLoop's
 // agent-to-user path — kept as a genuinely separate method rather than a
 // flagged variant of RunLoop, so the distinction is visible in the type
@@ -2232,15 +2288,19 @@ func consumeDelegationNotes(ctx context.Context) string {
 //     context, in its own memory store, so e.g. a delegation traced back to
 //     a specific workflow gets its own accumulating history on the
 //     delegate's side too, distinct from a plain one-off delegated call.
-//   - Its toolset is defaultTools() + messengerTools() +
+//   - Its toolset is defaultTools() + messagingTools() +
 //     workflowToolSpecs(nil) — everything a normal conversational run
-//     gets EXCEPT send_message itself: a delegate has no live,
-//     identity-matched conversation to post into as its own bot (see
-//     Agent.messagingTools) — its one guaranteed way back is
-//     end_loop's final_message, relayed by the delegator. add_reaction
-//     (or another messenger-contributed tool) stays available, since the
-//     system prompt below offers it as a lightweight status signal, not
-//     a reply mechanism. No delegateToolSpecs() either, so no further
+//     gets, INCLUDING send_message: for a locally-hosted delegate, ctx
+//     still carries the delegator's own live ConversationRef/ThreadID
+//     (see handleMessage/RunLoop — nothing strips it crossing the
+//     delegation boundary), so resolveSendTarget/replyOrSend already
+//     resolve to "reply into that same thread, using MY OWN registered
+//     messenger" with no further wiring — the delegate can reply under
+//     its own bot identity instead of only being relayed secondhand.
+//     end_loop's final_message is still always required regardless: the
+//     delegator reads it either way, and it's the only channel that
+//     exists when there's no live conversation to reply into (e.g. a
+//     cron/webhook-triggered delegation). No delegateToolSpecs() either, so no further
 //     delegation from this agent's own direct turn — preventing a cycle
 //     (a nested workflow this delegate calls can still delegate further
 //     if it opts in via AllowDelegation; incrementDelegationDepth is
@@ -2268,16 +2328,16 @@ func (a *Agent) RunDelegatedTask(ctx context.Context, task string) (*LoopResult,
 
 	systemContent := a.systemPrompt()
 	if a.loop == nil {
-		// end_loop/reaction-tool framing — meaningless for anything not
-		// running through nativeLoop's own protocol.
-		systemContent += "\n\nThis task was delegated to you by another agent, not requested directly by a human. Always call end_loop with your final_message when done — it is relayed back to the delegating agent automatically, and is the one guaranteed way your answer gets through, so the delegating agent can pass it on itself. If a reaction tool (e.g. add_reaction) is available, you may use it on the conversation/message that triggered this delegation as a lightweight status signal — not a replacement for final_message."
+		// end_loop/send_message/reaction-tool framing — meaningless for
+		// anything not running through nativeLoop's own protocol.
+		systemContent += "\n\nThis task was delegated to you by another agent, not requested directly by a human. If there's a live conversation to reply into, you may call send_message to reply directly, under your own identity — the person on the other end will see that you, not the delegating agent, answered. Always call end_loop with your final_message when done regardless of whether you also called send_message — it is relayed back to the delegating agent either way, and is the only channel that exists when there's no live conversation to reply into. If a reaction tool (e.g. add_reaction) is available, you may use it on the conversation/message that triggered this delegation as a lightweight status signal — not a replacement for final_message."
 	}
 
 	messages := make([]llm.Message, 0, len(prior)+2)
 	messages = append(messages, llm.Message{Role: "system", Content: systemContent})
 	messages = append(messages, prior...)
 	messages = append(messages, llm.Message{Role: "user", Content: task})
-	toolset := mergeTools(a.defaultTools(), a.messengerTools(), a.workflowToolSpecs(nil))
+	toolset := mergeTools(a.defaultTools(), a.messagingTools(), a.workflowToolSpecs(nil))
 	toolset = filterToolsForPlatform(toolset, a.resolvePlatform(ctx))
 
 	loop := a.loop
@@ -2289,6 +2349,9 @@ func (a *Agent) RunDelegatedTask(ctx context.Context, task string) (*LoopResult,
 		newTurns := final[1+len(prior):]
 		a.memory.Append(ctx, memKey, newTurns...)
 	}
+	if result != nil {
+		result.RepliedDirectly = hasSuccessfulSendMessage(final[1+len(prior):])
+	}
 	return result, err
 }
 
@@ -2296,4 +2359,11 @@ type LoopResult struct {
 	Iteration int       `json:"iteration"`
 	Status    LLMStatus `json:"status"`
 	Content   string    `json:"content,omitempty"`
+	// RepliedDirectly is set only by RunDelegatedTask — true if this run
+	// itself successfully called send_message, meaning it already replied
+	// under its own identity into whatever live conversation it inherited
+	// from its delegator. delegateToolSpec's handler reads this to tell
+	// the delegator's own RunLoop not to also send a redundant relay — see
+	// markDelegateReplied/delegateReplied.
+	RepliedDirectly bool `json:"replied_directly,omitempty"`
 }
