@@ -2243,6 +2243,73 @@ func (a *Agent) messageAgentTool() *tools.ToolSpec {
 		}).Build()
 }
 
+// NewExternalAgentTool builds a tool for delegating to any of targets by
+// name — a specialist reached outside kael-platform's own Runtime/
+// AgentDirectory entirely (a third-party agent satisfying DelegateTarget's
+// contract, but never a real sibling in the shared agent directory).
+// Unlike message_agent, this tool only ever sees the explicit list it's
+// built from — attach it to an *Agent via AddTool to make exactly those
+// targets, and no others, delegatable from that agent; nothing here
+// touches the shared directory or any other agent's own tools. Sync-only:
+// blocks until the target's RunDelegatedTask returns. ctx is passed
+// through as-is — a target that needs delegator attribution (e.g. for
+// offline queuing under the right origin) wraps it itself, since this
+// helper has no caller identity of its own.
+func NewExternalAgentTool(targets []DelegateTarget) *tools.ToolSpec {
+	var b strings.Builder
+	b.WriteString("Delegate a task to an external specialist agent by name. Available:\n")
+	for _, t := range targets {
+		fmt.Fprintf(&b, "- %q (id: %s): %s\n  Capabilities: %s\n",
+			t.DelegateName(), t.DelegateID(), t.DelegateDescription(), t.DelegateCapabilities())
+	}
+	b.WriteString("\nBlocks until the specialist finishes — which can take several minutes for a real task — and returns exactly what it reported.")
+
+	return tools.NewToolBuilder("delegate_to_external_agent", b.String()).
+		Parameter("agent", "string", "Which external agent to delegate to — its id or display name, from the list above.", true).
+		Parameter("task", "string", "The complete task description.", true).
+		Handler(func(ctx context.Context, args json.RawMessage) (any, error) {
+			if args == nil {
+				return nil, fmt.Errorf("delegate_to_external_agent: no arguments provided")
+			}
+
+			var raw string
+			if err := json.Unmarshal(args, &raw); err != nil {
+				return nil, err
+			}
+
+			var input struct {
+				Agent string `json:"agent"`
+				Task  string `json:"task"`
+			}
+			if err := json.Unmarshal([]byte(raw), &input); err != nil {
+				return nil, err
+			}
+			if input.Task == "" {
+				return nil, fmt.Errorf("delegate_to_external_agent: task is required")
+			}
+
+			var target DelegateTarget
+			var names []string
+			for _, t := range targets {
+				names = append(names, fmt.Sprintf("%s (%s)", t.DelegateID(), t.DelegateName()))
+				if t.DelegateID() == input.Agent || strings.EqualFold(t.DelegateName(), input.Agent) {
+					target = t
+				}
+			}
+			if target == nil {
+				return nil, fmt.Errorf("delegate_to_external_agent: %q isn't a known external agent — available: %s", input.Agent, strings.Join(names, ", "))
+			}
+
+			log.Printf("🔌delegating to external agent %s: %q", target.DelegateName(), input.Task)
+			result, err := target.RunDelegatedTask(ctx, input.Task)
+			if err != nil {
+				return nil, err
+			}
+			log.Printf("🔌external agent %s finished (%s): %s", target.DelegateName(), result.Status, result.Content)
+			return fmt.Sprintf("%s finished (%s): %s", target.DelegateName(), result.Status, result.Content), nil
+		}).Build()
+}
+
 // hasSuccessfulSendMessage reports whether messages contains a completed
 // (non-error) reply tool result — shared by RunLoop's own
 // guaranteed-delivery check and RunDelegatedTask's RepliedDirectly
