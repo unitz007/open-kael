@@ -1166,7 +1166,7 @@ func (a *Agent) messengerTools() []*tools.ToolSpec {
 // memory intact — see message_agent's own doc comment for the case that
 // doesn't need a live shared conversation at all.
 func (a *Agent) replyTool() *tools.ToolSpec {
-	return tools.NewToolBuilder("reply", "Sends a message into the current conversation — to the human by default, or add mention_agent to address a sibling agent visibly instead (their own reply appears under their own identity, in this same conversation, for the human to see). Always fire-and-forget: this returns immediately, and you do NOT get the other party's reply as part of this turn. If you need an agent's answer to continue, ask them to mention you back in your message — their reply wakes you with a fresh turn in this same thread, and your memory carries over. Use message_agent instead whenever you need a sibling agent's result synchronously, within your current turn, or when there's no live shared conversation to post into at all.").
+	return tools.NewToolBuilder("reply", "Sends a message into the current conversation — to the human by default, or add mention_agent to address a sibling agent visibly instead (their own reply appears under their own identity, in this same conversation, for the human to see). Prefer this over message_agent whenever a human is in the conversation and should see the hand-off — even for something that takes a while: your own turn can end now, and their real answer arriving later (or mentioning you back if they need something from you) is normal, not a failure to finish. Always fire-and-forget: this returns immediately, and you do NOT get the other party's reply as part of this turn. If you need an agent's answer to continue, ask them to mention you back in your message — their reply wakes you with a fresh turn in this same thread, and your memory carries over. Use message_agent instead only when your own very next action depends on their answer, or when there's no live shared conversation to post into at all.").
 		Parameter("message", "string", "The message to send", true).
 		Parameter("mention_agent", "string", "Optional. Name of a sibling agent to address visibly in this same conversation, instead of replying to the human.", false).
 		Parameter("platform", "string", "Optional. Send through a specific registered platform instead of the current conversation — e.g. \"email\" to email the owner instead of replying here. Only use this when the user explicitly asks to be reached a different way (\"send that to my email\"); leave unset for a normal reply. Fails if that platform isn't registered for this agent.", false).
@@ -2171,9 +2171,17 @@ func (a *Agent) visibleDelegateTargets() []DelegateTarget {
 // wait_for_reply=true runs target.RunDelegatedTask synchronously and
 // returns its result in this turn — the old delegate_to_<id> behavior,
 // unchanged, including RunDelegatedTask's own up-to-10-minute network
-// dispatch timeout for a live remote target. wait_for_reply=false (the
-// default) fires the same call in a goroutine and, once it completes,
-// relays the real outcome back into this same conversation via
+// dispatch timeout for a live remote target. Never announced visibly (see
+// announceVisibly's own doc comment for why: a posted mention would
+// trigger the target's own independent turn racing the direct call this
+// makes, processing the same request twice).
+//
+// wait_for_reply=false (the default) tries announceVisibly first — a real
+// mention, letting the target's own Listen pick it up like any other
+// message, no backstage call at all. Only when that's not possible (no
+// live conversation, or the target/messenger doesn't support it) does it
+// fall back to firing the call in a goroutine and, once it completes,
+// relaying the real outcome back into this same conversation via
 // EnqueueMessage as a fresh turn — unless the delegate already replied
 // directly itself (RepliedDirectly) or the fast return was only a
 // placeholder for a still-pending offline dispatch (Deferred, set by
@@ -2186,10 +2194,14 @@ func (a *Agent) messageAgentTool() *tools.ToolSpec {
 		fmt.Fprintf(&b, "- %q (id: %s): %s\n  Capabilities: %s\n",
 			target.DelegateName(), target.DelegateID(), target.DelegateDescription(), target.DelegateCapabilities())
 	}
-	b.WriteString("\nSet wait_for_reply=true to block and get their result back directly in this turn — use " +
-		"whenever your very next action depends on their answer. Leave it unset/false (the default) for " +
-		"fire-and-forget: this call returns immediately with a placeholder, and the real result arrives later " +
-		"as a fresh turn in this same conversation, in your own words.")
+	b.WriteString("\nSet wait_for_reply=true ONLY when your own very next action depends on their answer — e.g. " +
+		"deciding what to do next based on what they report back. Do NOT set it just to relay their answer to a " +
+		"human yourself instead of letting them speak for themselves — if there's a live conversation with a " +
+		"human and you don't need the answer for your own next step, leave wait_for_reply unset/false: this " +
+		"tags them for real, visibly, in this same conversation when possible, and their own reply appears under " +
+		"their own identity — you don't need to relay it. When a visible tag isn't possible (no live " +
+		"conversation, or they're not reachable that way), this falls back to a placeholder now and a real " +
+		"follow-up in your own words once they're done.")
 
 	return tools.NewToolBuilder("message_agent", b.String()).
 		Parameter("agent", "string", "Which agent to message — its id or display name, from the list above.", true).
@@ -2244,6 +2256,22 @@ func (a *Agent) messageAgentTool() *tools.ToolSpec {
 				return fmt.Sprintf("%s finished (%s): %s", target.DelegateName(), result.Status, result.Content), nil
 			}
 
+			// Fire-and-forget can be made genuinely visible where
+			// wait_for_reply=true never safely can: since nothing here
+			// blocks for the target's answer, there's no direct
+			// RunDelegatedTask call running in parallel with a posted
+			// mention that could double-process the same request. If the
+			// target is reachable through a live conversation this way,
+			// just post the mention and stop — the target's own Listen
+			// picks it up as an ordinary turn, same as replyTool's
+			// mention_agent, and any reply-back reaches this agent the
+			// same mention-back way. Falls through to the backstage relay
+			// below only when that's not possible (no live conversation,
+			// or the messenger/target doesn't support it) — never both.
+			if a.announceVisibly(ctx, target.DelegateName(), input.Message) {
+				return fmt.Sprintf("Mentioned %s in this conversation — they'll reply here once it's done, or mention you back if they need anything.", target.DelegateName()), nil
+			}
+
 			log.Printf("📨%s: messaging %s (fire-and-forget): %q", a.Name, target.DelegateName(), input.Message)
 			conv, hasConv := messaging.ConversationFromContext(ctx)
 			if !hasConv {
@@ -2273,6 +2301,39 @@ func (a *Agent) messageAgentTool() *tools.ToolSpec {
 			}()
 			return fmt.Sprintf("Asked %s — you'll get the result as a follow-up once it's done.", target.DelegateName()), nil
 		}).Build()
+}
+
+// announceVisibly posts a real, visible mention of targetName into the
+// current live conversation — replyTool's own mention_agent mechanism,
+// reused here so message_agent's fire-and-forget path can prefer a real
+// tag over its backstage relay whenever one is possible. Returns false
+// (posts nothing) when there's no live conversation, the resolved
+// messenger doesn't implement AgentMessenger, or targetName isn't
+// addressable through it — callers fall back to their own backstage path
+// in that case. Deliberately NOT used by the synchronous
+// (wait_for_reply=true) path: posting a visible mention there would
+// trigger the target's own independent turn at the same time as the
+// direct RunDelegatedTask call that path makes — the same request
+// processed twice, concurrently, with neither side aware of the other.
+func (a *Agent) announceVisibly(ctx context.Context, targetName, message string) bool {
+	target, messenger, err := a.resolveSendTarget(ctx, "")
+	if err != nil {
+		return false
+	}
+	am, ok := messenger.(messaging.AgentMessenger)
+	if !ok {
+		return false
+	}
+	mention, ok := am.MentionFor(targetName)
+	if !ok {
+		return false
+	}
+	if _, err := a.replyOrSend(ctx, messenger, target, mention+" "+message); err != nil {
+		log.Printf("%s: failed to announce delegation to %s: %v", a.Name, targetName, err)
+		return false
+	}
+	log.Printf("📨%s: announced delegation to %s visibly: %q", a.Name, targetName, message)
+	return true
 }
 
 // NewExternalAgentTool builds a tool for delegating to any of targets by
