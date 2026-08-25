@@ -784,8 +784,8 @@ func (a *Agent) AddRetriever(name, description string, r rag.Retriever) {
 // before Start(): Enqueue just buffers on the channel regardless of whether
 // a listener is attached yet. InBox/MessageQueue stay internal; callers
 // never need to touch them directly.
-func (a *Agent) EnqueueMessage(conv messaging.ConversationRef, text, messageID, threadID, workflowID string) {
-	a.inBox.Enqueue(InBox{Conversation: conv, Payload: text, MessageID: messageID, ThreadID: threadID, WorkflowID: workflowID})
+func (a *Agent) EnqueueMessage(conv messaging.ConversationRef, text, messageID, threadID, workflowID, fromAgent string) {
+	a.inBox.Enqueue(InBox{Conversation: conv, Payload: text, MessageID: messageID, ThreadID: threadID, WorkflowID: workflowID, FromAgent: fromAgent})
 }
 
 // endLoopResult carries the two things end_loop captures: a bookkeeping
@@ -964,7 +964,14 @@ func (a *Agent) messagingTools() []*tools.ToolSpec {
 	if len(a.messengers) == 0 {
 		return nil
 	}
-	return append([]*tools.ToolSpec{a.sendMessageTool()}, a.messengerTools()...)
+	out := append([]*tools.ToolSpec{a.sendMessageTool()}, a.messengerTools()...)
+	for _, m := range a.messengers {
+		if _, ok := m.(messaging.AgentMessenger); ok {
+			out = append(out, a.messageAgentTool())
+			break
+		}
+	}
+	return out
 }
 
 // retrieverToolSpecs turns every registered rag.Retriever into a callable
@@ -1170,6 +1177,59 @@ func (a *Agent) sendMessageTool() *tools.ToolSpec {
 				return nil, err
 			}
 			return "Message sent successfully", nil
+		}).Build()
+}
+
+// messageAgentTool lets this agent address a sibling agent directly
+// through the messenger itself — a real, visible message (a mention, a
+// tag, whatever the resolved Messenger's own AgentMessenger
+// implementation uses) rather than an in-process delegate_to_<id> call.
+// Only offered when at least one registered messenger implements
+// messaging.AgentMessenger (see messagingTools); a call still resolves
+// against whichever messenger the CURRENT conversation is actually on
+// (resolveSendTarget), so it errors plainly — rather than silently doing
+// nothing — if that happens to be a platform without the capability.
+func (a *Agent) messageAgentTool() *tools.ToolSpec {
+	return tools.NewToolBuilder("message_agent", "Sends a real, visible message to a sibling agent through the messenger itself — the other agent's own reply appears under its own identity, in this same conversation, for the human to see. Fire-and-forget: this call returns immediately, and you do NOT receive the other agent's reply as part of this turn. If you need their answer to continue (a clarification, a completion notice), say so in your message and ask them to mention you back — their reply then wakes you with a fresh turn in this same thread, and your own memory of this conversation carries over, so you pick up where you left off. Reply without mentioning anyone back to end an exchange cleanly — do not mention someone just to acknowledge their reply. Use delegate_to_<id> instead whenever you need the result synchronously, within your current turn.").
+		Parameter("agent", "string", "The name of the agent to message.", true).
+		Parameter("message", "string", "What to say to them.", true).
+		Handler(func(ctx context.Context, args json.RawMessage) (any, error) {
+			if args == nil {
+				return nil, fmt.Errorf("message_agent: no arguments provided")
+			}
+
+			var raw string
+			if err := json.Unmarshal(args, &raw); err != nil {
+				return nil, err
+			}
+
+			var input struct {
+				Agent   string `json:"agent"`
+				Message string `json:"message"`
+			}
+			if err := json.Unmarshal([]byte(raw), &input); err != nil {
+				return nil, err
+			}
+
+			target, messenger, err := a.resolveSendTarget(ctx, "")
+			if err != nil {
+				return nil, err
+			}
+			am, ok := messenger.(messaging.AgentMessenger)
+			if !ok {
+				return nil, fmt.Errorf("message_agent: %s doesn't support addressing other agents", messenger.Platform())
+			}
+			mention, ok := am.MentionFor(input.Agent)
+			if !ok {
+				return nil, fmt.Errorf("message_agent: %q isn't addressable here — available: %s", input.Agent, strings.Join(am.AddressableAgents(), ", "))
+			}
+
+			log.Printf("📨%s: messaging %s: %q", a.Name, input.Agent, input.Message)
+			if _, err := a.replyOrSend(ctx, messenger, target, mention+" "+input.Message); err != nil {
+				log.Println("message_agent: failed to send:", err)
+				return nil, err
+			}
+			return "Sent.", nil
 		}).Build()
 }
 
@@ -1431,7 +1491,7 @@ func (a *Agent) Start(ctx context.Context) error {
 		go func(m messaging.Messenger) {
 			defer recoverFromPanic(a.Name, "messenger "+m.Platform()+" listen loop")
 			if err := m.Listen(ctx, func(msg messaging.InboundMessage) {
-				a.EnqueueMessage(msg.Conversation, msg.Text, msg.MessageID, msg.ThreadID, msg.WorkflowID)
+				a.EnqueueMessage(msg.Conversation, msg.Text, msg.MessageID, msg.ThreadID, msg.WorkflowID, msg.FromAgent)
 			}); err != nil {
 				log.Printf("messenger %s listen error: %v", m.Platform(), err)
 			}
@@ -1827,7 +1887,16 @@ func (a *Agent) handleMessage(msg InBox) error {
 	ctx = messaging.WithMessageID(ctx, msg.MessageID)
 	ctx = messaging.WithThreadID(ctx, msg.ThreadID)
 	ctx = messaging.WithWorkflowID(ctx, msg.WorkflowID)
-	result, err := a.RunLoop(ctx, msg.Conversation, msg.Payload)
+
+	prompt := msg.Payload
+	if msg.FromAgent != "" {
+		// A sibling agent addressed us (see messaging.AgentMessenger), not
+		// the human — say so up front rather than letting the model assume
+		// its usual human correspondent, since the right response (tone,
+		// what's worth explaining) can genuinely differ.
+		prompt = fmt.Sprintf("[message from agent: %s]\n%s", msg.FromAgent, msg.Payload)
+	}
+	result, err := a.RunLoop(ctx, msg.Conversation, prompt)
 	if err != nil {
 		return err
 	}

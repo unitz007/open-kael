@@ -2,10 +2,11 @@ package agent
 
 import (
 	"context"
-	"github.com/unitz007/kael/messaging"
 	"log"
 	"runtime/debug"
 	"sync"
+
+	"github.com/unitz007/kael/messaging"
 )
 
 // InBox represents an item in the queue.
@@ -16,6 +17,7 @@ type InBox struct {
 	MessageID    string // the platform's own id for this message, if any — see messaging.InboundMessage.MessageID
 	ThreadID     string // the thread this message belongs to, if any — see messaging.InboundMessage.ThreadID
 	WorkflowID   string // the workflow this message traces back to, if any — see messaging.InboundMessage.WorkflowID
+	FromAgent    string // the sibling agent this message came from, if any — see messaging.InboundMessage.FromAgent
 }
 
 // MessageQueue is a simple in-memory message queue backed by a buffered channel.
@@ -82,25 +84,3 @@ func (q *MessageQueue) Listen(ctx context.Context, handler func(box InBox)) {
 func (q *MessageQueue) Wait() {
 	q.wg.Wait()
 }
-
-//func main() {
-//queue := NewQueue(10)
-//
-//ctx, cancel := context.WithCancel(context.Background())
-//defer cancel()
-//
-//// Start one listener. Call queue.Listen(...) again with a different
-//// goroutine to get concurrent worker processing of the same queue.
-//queue.Listen(ctx, func(msg Message) {
-//	fmt.Printf("received message %d: %s\n", msg.ID, msg.Payload)
-//})
-//
-//// Producer: send some messages.
-//for i := 1; i <= 5; i++ {
-//	queue.Enqueue(Message{ID: i, Payload: fmt.Sprintf("hello %d", i)})
-//	time.Sleep(100 * time.Millisecond)
-//}
-//
-//queue.Close() // no more messages coming
-//queue.Wait()  // wait for the listener to finish draining
-//}

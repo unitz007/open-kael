@@ -41,6 +41,11 @@ type InboundMessage struct {
 	// metadata; see KeyByWorkflow). Empty for ordinary chat, and empty on
 	// platforms with no equivalent tagging mechanism.
 	WorkflowID string
+	// FromAgent is set only when the Messenger can determine this message
+	// was itself sent by a sibling agent (via AgentMessenger's mention
+	// mechanism) rather than a human — empty otherwise, including on any
+	// platform with no equivalent way to tell. See AgentMessenger.
+	FromAgent string
 }
 
 // MessengerResponse is what Send/Reply return once a message is actually
@@ -129,6 +134,36 @@ type ToolProvider interface {
 // silent bypass.
 type ApprovalMessenger interface {
 	RequestApproval(ctx context.Context, conv ConversationRef, text string) (approved bool, err error)
+}
+
+// AgentMessenger is an optional capability a Messenger can implement when
+// its platform supports addressing a specific agent inside a message (a
+// mention, a tag — whatever the platform's own native construct is).
+// Optional, same pattern as ToolProvider/ApprovalMessenger: ships no
+// implementation — a Messenger that doesn't implement this simply never
+// offers message_agent (see Agent.messagingTools). A Messenger that does
+// implement it takes on two obligations of its own, enforced entirely on
+// its own side (Agent.baseTools/Listen have no visibility into this):
+//   - deliver an agent-originated inbound message to Listen's onMessage
+//     ONLY when it explicitly addresses the receiving agent — an ordinary
+//     reply from one agent must stay invisible to every other agent. This
+//     structural rule is the first layer of loop prevention: a chain can
+//     only continue if every hop deliberately re-addresses the next agent.
+//   - bound how many agent-originated messages it will process within one
+//     conversation/thread, so a runaway back-and-forth terminates even if
+//     every model involved behaves maximally badly.
+type AgentMessenger interface {
+	Messenger
+	// MentionFor returns the platform-native token that addresses agentName
+	// inside a message (e.g. Slack's "<@U0…>"), and whether agentName is
+	// currently addressable at all (a sibling agent with no messenger
+	// registered on this platform, or one this Messenger hasn't resolved an
+	// address for yet, reports false).
+	MentionFor(agentName string) (mention string, ok bool)
+	// AddressableAgents lists every agent name MentionFor can currently
+	// resolve — for a tool handler to report back to the model when it asks
+	// for an agent that isn't addressable.
+	AddressableAgents() []string
 }
 
 type conversationCtxKey struct{}
