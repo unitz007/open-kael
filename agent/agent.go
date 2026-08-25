@@ -146,7 +146,7 @@ type Agent struct {
 // own complete loop to produce a result — a real in-process *Agent, or a
 // genuinely external agent (Claude Code on the owner's laptop, or any
 // networked peer) reached over a network boundary. Both satisfy this
-// identically; delegateToolSpecs/delegateToolSpec never distinguish between
+// identically; messageAgentTool never distinguishes between
 // them — "being delegatable" is exactly this contract (hand off a task, get
 // back a result), nothing tied to kael-platform internals like memory or
 // the LLM interface required to satisfy it.
@@ -717,9 +717,10 @@ func (a *Agent) SetEventBus(eventBus EventPublisher) {
 }
 
 // SetDirectory wires this agent into a shared registry of sibling agents
-// (e.g. a Runtime), so delegateToolSpecs has agents to expose as tools.
-// Optional — a nil directory (the default) just means no delegate tools
-// show up, same as an agent with no workflows gets no workflow tools.
+// (e.g. a Runtime), so messageAgentToolset has agents to expose via the
+// message_agent tool. Optional — a nil directory (the default) just means
+// no message_agent tool shows up, same as an agent with no workflows gets
+// no workflow tools.
 func (a *Agent) SetDirectory(d AgentDirectory) {
 	a.directory = d
 }
@@ -919,13 +920,13 @@ func (m *bareMemory) Append(ctx context.Context, id string, messages ...llm.Mess
 // plain trim-the-oldest window, not summarization.
 const maxBareMemoryMessages = 20
 
-// baseTools returns this agent's own tools, plus send_message and whatever
+// baseTools returns this agent's own tools, plus reply and whatever
 // extra tools each registered messenger contributes via messengerTools —
 // but only once a messenger is actually registered (AddMessenger). An
 // agent with no messenger at all (e.g. ResearchSpecialistAgent) has nowhere
-// for send_message to route to, so offering it just invites a
+// for reply to route to, so offering it just invites a
 // guaranteed-to-fail call ("no messenger registered for platform ...").
-// Computed fresh each call (like workflowToolSpecs/delegateToolSpecs) since
+// Computed fresh each call (like workflowToolSpecs/messageAgentToolset) since
 // AddMessenger can be called any time after NewAgent.
 //
 // Used by both RunLoop's real-conversation path (and a workflow running as
@@ -964,14 +965,7 @@ func (a *Agent) messagingTools() []*tools.ToolSpec {
 	if len(a.messengers) == 0 {
 		return nil
 	}
-	out := append([]*tools.ToolSpec{a.sendMessageTool()}, a.messengerTools()...)
-	for _, m := range a.messengers {
-		if _, ok := m.(messaging.AgentMessenger); ok {
-			out = append(out, a.messageAgentTool())
-			break
-		}
-	}
-	return out
+	return append([]*tools.ToolSpec{a.replyTool()}, a.messengerTools()...)
 }
 
 // retrieverToolSpecs turns every registered rag.Retriever into a callable
@@ -1138,17 +1132,29 @@ func (a *Agent) messengerTools() []*tools.ToolSpec {
 	return out
 }
 
-// sendMessageTool is built into every agent, same as end_loop — always
-// present, works the instant any messenger is registered via AddMessenger.
-// No messenger, no workflow, no external constructor owns this anymore;
+// replyTool is built into every agent, same as end_loop — always present,
+// works the instant any messenger is registered via AddMessenger. No
+// messenger, no workflow, no external constructor owns this anymore;
 // routing to the right platform is intrinsically the agent's own job.
-func (a *Agent) sendMessageTool() *tools.ToolSpec {
-	return tools.NewToolBuilder("send_message", "Sends a message back to the user in the current conversation.").
+// Folds in what used to be a separate message_agent tool's visible-mention
+// behavior: mention_agent unset is a plain reply to whoever's on the other
+// end of the current conversation; set, it addresses a sibling agent
+// visibly in that same conversation instead. Both are the same
+// primitive — post into the current conversation — differing only in
+// whether the text carries a mention prefix, so they don't need to be two
+// tools. Always fire-and-forget: there's no reply-waiting mode here. If a
+// mentioned agent needs to continue a conversation, they mention back —
+// that wakes the original sender with a fresh turn in this same thread,
+// memory intact — see message_agent's own doc comment for the case that
+// doesn't need a live shared conversation at all.
+func (a *Agent) replyTool() *tools.ToolSpec {
+	return tools.NewToolBuilder("reply", "Sends a message into the current conversation — to the human by default, or add mention_agent to address a sibling agent visibly instead (their own reply appears under their own identity, in this same conversation, for the human to see). Always fire-and-forget: this returns immediately, and you do NOT get the other party's reply as part of this turn. If you need an agent's answer to continue, ask them to mention you back in your message — their reply wakes you with a fresh turn in this same thread, and your memory carries over. Use message_agent instead whenever you need a sibling agent's result synchronously, within your current turn, or when there's no live shared conversation to post into at all.").
 		Parameter("message", "string", "The message to send", true).
+		Parameter("mention_agent", "string", "Optional. Name of a sibling agent to address visibly in this same conversation, instead of replying to the human.", false).
 		Parameter("platform", "string", "Optional. Send through a specific registered platform instead of the current conversation — e.g. \"email\" to email the owner instead of replying here. Only use this when the user explicitly asks to be reached a different way (\"send that to my email\"); leave unset for a normal reply. Fails if that platform isn't registered for this agent.", false).
 		Handler(func(ctx context.Context, args json.RawMessage) (any, error) {
 			if args == nil {
-				return nil, fmt.Errorf("send_message: no arguments provided")
+				return nil, fmt.Errorf("reply: no arguments provided")
 			}
 
 			var raw string
@@ -1157,8 +1163,9 @@ func (a *Agent) sendMessageTool() *tools.ToolSpec {
 			}
 
 			var input struct {
-				Message  string `json:"message"`
-				Platform string `json:"platform"`
+				Message      string `json:"message"`
+				MentionAgent string `json:"mention_agent"`
+				Platform     string `json:"platform"`
 			}
 			if err := json.Unmarshal([]byte(raw), &input); err != nil {
 				return nil, err
@@ -1166,70 +1173,31 @@ func (a *Agent) sendMessageTool() *tools.ToolSpec {
 
 			target, messenger, err := a.resolveSendTarget(ctx, input.Platform)
 			if err != nil {
-				log.Println("send_message: could not resolve a target:", err)
+				log.Println("reply: could not resolve a target:", err)
 				return nil, err
 			}
-			log.Printf("📤%s: routing send_message to %s/%s", a.Name, target.Platform, target.ChatID)
 
-			input.Message = consumeDelegationNotes(ctx) + input.Message
-			if _, err := a.replyOrSend(ctx, messenger, target, input.Message); err != nil {
-				log.Println("Error sending message:", err)
+			message := input.Message
+			if input.MentionAgent != "" {
+				am, ok := messenger.(messaging.AgentMessenger)
+				if !ok {
+					return nil, fmt.Errorf("reply: %s doesn't support addressing other agents", messenger.Platform())
+				}
+				mention, ok := am.MentionFor(input.MentionAgent)
+				if !ok {
+					return nil, fmt.Errorf("reply: %q isn't addressable here — available: %s", input.MentionAgent, strings.Join(am.AddressableAgents(), ", "))
+				}
+				message = mention + " " + message
+				log.Printf("📨%s: messaging %s: %q", a.Name, input.MentionAgent, input.Message)
+			} else {
+				log.Printf("📤%s: routing reply to %s/%s", a.Name, target.Platform, target.ChatID)
+			}
+
+			if _, err := a.replyOrSend(ctx, messenger, target, message); err != nil {
+				log.Println("reply: failed to send:", err)
 				return nil, err
 			}
 			return "Message sent successfully", nil
-		}).Build()
-}
-
-// messageAgentTool lets this agent address a sibling agent directly
-// through the messenger itself — a real, visible message (a mention, a
-// tag, whatever the resolved Messenger's own AgentMessenger
-// implementation uses) rather than an in-process delegate_to_<id> call.
-// Only offered when at least one registered messenger implements
-// messaging.AgentMessenger (see messagingTools); a call still resolves
-// against whichever messenger the CURRENT conversation is actually on
-// (resolveSendTarget), so it errors plainly — rather than silently doing
-// nothing — if that happens to be a platform without the capability.
-func (a *Agent) messageAgentTool() *tools.ToolSpec {
-	return tools.NewToolBuilder("message_agent", "Sends a real, visible message to a sibling agent through the messenger itself — the other agent's own reply appears under its own identity, in this same conversation, for the human to see. Fire-and-forget: this call returns immediately, and you do NOT receive the other agent's reply as part of this turn. If you need their answer to continue (a clarification, a completion notice), say so in your message and ask them to mention you back — their reply then wakes you with a fresh turn in this same thread, and your own memory of this conversation carries over, so you pick up where you left off. Reply without mentioning anyone back to end an exchange cleanly — do not mention someone just to acknowledge their reply. Use delegate_to_<id> instead whenever you need the result synchronously, within your current turn.").
-		Parameter("agent", "string", "The name of the agent to message.", true).
-		Parameter("message", "string", "What to say to them.", true).
-		Handler(func(ctx context.Context, args json.RawMessage) (any, error) {
-			if args == nil {
-				return nil, fmt.Errorf("message_agent: no arguments provided")
-			}
-
-			var raw string
-			if err := json.Unmarshal(args, &raw); err != nil {
-				return nil, err
-			}
-
-			var input struct {
-				Agent   string `json:"agent"`
-				Message string `json:"message"`
-			}
-			if err := json.Unmarshal([]byte(raw), &input); err != nil {
-				return nil, err
-			}
-
-			target, messenger, err := a.resolveSendTarget(ctx, "")
-			if err != nil {
-				return nil, err
-			}
-			am, ok := messenger.(messaging.AgentMessenger)
-			if !ok {
-				return nil, fmt.Errorf("message_agent: %s doesn't support addressing other agents", messenger.Platform())
-			}
-			mention, ok := am.MentionFor(input.Agent)
-			if !ok {
-				return nil, fmt.Errorf("message_agent: %q isn't addressable here — available: %s", input.Agent, strings.Join(am.AddressableAgents(), ", "))
-			}
-
-			log.Printf("📨%s: messaging %s: %q", a.Name, input.Agent, input.Message)
-			if _, err := a.replyOrSend(ctx, messenger, target, mention+" "+input.Message); err != nil {
-				log.Println("message_agent: failed to send:", err)
-				return nil, err
-			}
-			return "Sent.", nil
 		}).Build()
 }
 
@@ -1690,7 +1658,7 @@ func (a *Agent) registerWebhook(wf *workflow.Workflow, src webhook.Source) {
 // capabilitiesSummary lists this agent's tools and workflows, one per line,
 // with no framing around them — shared between this agent's own system
 // prompt (capabilitiesBlock) and how it's described to a sibling agent
-// deciding whether to delegate to it (delegateToolSpec).
+// deciding whether to message/delegate to it (messageAgentTool).
 func (a *Agent) capabilitiesSummary() string {
 	var b strings.Builder
 	for _, t := range a.baseTools() {
@@ -1749,28 +1717,18 @@ func (a *Agent) humanBlock() string {
 	return "These are the human's details: " + details + "\n"
 }
 
-// delegationBlock lists sibling agents available via delegateToolSpecs, so
-// the message-handling path's system prompt actually mentions delegation as
-// an option — without it, capabilitiesBlock's "strictly based on tools and
-// workflows listed above" instruction leads the model to disclaim a
-// delegate tool it technically has schema access to but was never told
-// about in prose. Kept separate from capabilitiesSummary (used by
-// delegateToolSpec to describe an agent to its siblings) rather than folded
-// into it: capabilitiesSummary must stay a leaf computation — if it also
-// listed delegates, two agents that can delegate to each other would each
-// build the other's tool description by calling back into their own,
-// recursing forever.
+// delegationBlock points the message-handling path's system prompt at the
+// message_agent tool, so capabilitiesBlock's "strictly based on tools and
+// workflows listed above" instruction doesn't lead the model to disclaim a
+// tool it technically has schema access to but was never told about in
+// prose. Just a pointer, not an enumeration — message_agent's own
+// description already lists every current target with its capabilities,
+// so repeating that here would just drift out of sync with it.
 func (a *Agent) delegationBlock() string {
-	delegates := a.delegateToolSpecs()
-	if len(delegates) == 0 {
+	if len(a.messageAgentToolset()) == 0 {
 		return ""
 	}
-	var b strings.Builder
-	b.WriteString("\nYou can also delegate to these other agents when a request fits their capabilities better than your own:\n")
-	for _, d := range delegates {
-		_, _ = fmt.Fprintf(&b, "- %s\n", d.Description)
-	}
-	return b.String()
+	return "\nYou also have a message_agent tool for messaging or delegating to sibling agents when a request fits their capabilities better than your own — its own description lists who's currently available and what each can do."
 }
 
 // RunLoop is the agent-to-user entry point: the only way a real
@@ -1779,25 +1737,24 @@ func (a *Agent) delegationBlock() string {
 // conversation's prior turns (if a.memory is set, keyed by the agent's
 // configured MemoryKeyFunc — see SetMemoryKeyFunc) and persists the new
 // turns back afterward, so the agent remembers earlier messages under that
-// same key. Its toolset always includes send_message (if a messenger's
-// registered), every workflow as a tool, and every sibling agent as a
-// delegate_to_<id> tool — unconditionally, since this method is never used
+// same key. Its toolset always includes reply (if a messenger's
+// registered), every workflow as a tool, and message_agent for addressing
+// any sibling agent — unconditionally, since this method is never used
 // for anything but a real conversation. The agent-to-agent counterpart is
 // RunDelegatedTask, a genuinely separate method rather than a flagged
 // variant of this one.
 // ResolvedTools returns this agent's complete, merged toolset for a given
-// platform — base tools, every workflow as a tool, and every sibling agent
-// as a delegate_to_<id> tool — the same assembly RunLoop feeds its own LLM
-// call, exposed as a reusable method so something outside the loop (e.g. an
-// MCP server bridging this agent's tools to an external caller) can get the
-// exact same list without duplicating the merge/filter logic.
+// platform — base tools, every workflow as a tool, and message_agent for
+// addressing any sibling agent — the same assembly RunLoop feeds its own
+// LLM call, exposed as a reusable method so something outside the loop
+// (e.g. an MCP server bridging this agent's tools to an external caller)
+// can get the exact same list without duplicating the merge/filter logic.
 func (a *Agent) ResolvedTools(platform string) []*tools.ToolSpec {
-	toolset := mergeTools(a.baseTools(), a.workflowToolSpecs(a.messagingTools()), a.delegateToolSpecs())
+	toolset := mergeTools(a.baseTools(), a.workflowToolSpecs(a.messagingTools()), a.messageAgentToolset())
 	return filterToolsForPlatform(toolset, platform)
 }
 
 func (a *Agent) RunLoop(ctx context.Context, conv messaging.ConversationRef, userPrompt string) (*LoopResult, error) {
-	ctx = ensureDelegationNotes(ctx)
 	ctx = ensureDelegateRepliedFlag(ctx)
 	memKey := a.memoryKey(ctx, conv)
 
@@ -1835,7 +1792,7 @@ func (a *Agent) RunLoop(ctx context.Context, conv messaging.ConversationRef, use
 		// block below, just for the failure case it doesn't cover.
 		if !delegateReplied(ctx) {
 			if m, ok := a.messengers[conv.Platform]; ok {
-				errNotice := consumeDelegationNotes(ctx) + "Sorry, I ran into an error and couldn't finish handling that. Please try again."
+				errNotice := "Sorry, I ran into an error and couldn't finish handling that. Please try again."
 				if _, sendErr := a.replyOrSend(ctx, m, conv, errNotice); sendErr != nil {
 					log.Println("failed to deliver error notice:", sendErr)
 				}
@@ -1846,9 +1803,9 @@ func (a *Agent) RunLoop(ctx context.Context, conv messaging.ConversationRef, use
 
 	// Guarantee delivery: the final answer always reaches the user once the
 	// loop completes successfully, regardless of whether the model
-	// remembered to call send_message along the way — delivery is a
+	// remembered to call reply along the way — delivery is a
 	// structural consequence of the loop finishing, not something that
-	// depends on the model choosing the right tool. Skipped if send_message
+	// depends on the model choosing the right tool. Skipped if reply
 	// already succeeded this turn (a model that DID use it to reply doesn't
 	// get its answer sent twice), or if a delegate this turn handed off to
 	// already replied directly under its own identity (delegateReplied —
@@ -1869,8 +1826,7 @@ func (a *Agent) RunLoop(ctx context.Context, conv messaging.ConversationRef, use
 				if content == "" {
 					content = "Done — the task completed, but I didn't leave a summary. Let me know if you'd like more detail."
 				}
-				finalContent := consumeDelegationNotes(ctx) + content
-				if _, sendErr := a.replyOrSend(ctx, m, conv, finalContent); sendErr != nil {
+				if _, sendErr := a.replyOrSend(ctx, m, conv, content); sendErr != nil {
 					log.Println("failed to deliver final answer:", sendErr)
 				}
 			}
@@ -2026,7 +1982,7 @@ func (a *Agent) workflowToolset(wf *workflow.Workflow, messagingTools []*tools.T
 	base := append(a.defaultTools(), messagingTools...)
 	toolset := mergeTools(base, toolMapValues(wf.Tools))
 	if wf.AllowDelegation {
-		toolset = mergeTools(toolset, a.delegateToolSpecs())
+		toolset = mergeTools(toolset, a.messageAgentToolset())
 	}
 	return toolset
 }
@@ -2047,7 +2003,6 @@ func (a *Agent) runWorkflow(ctx context.Context, wf *workflow.Workflow, messagin
 	// fan out over" before the run even starts.
 	ctx = identity.WithIdentities(ctx, a.identities)
 	ctx = rag.WithRetrievers(ctx, a.retrievers)
-	ctx = ensureDelegationNotes(ctx)
 	ctx = messaging.WithWorkflowID(ctx, wf.ID)
 
 	// conv: cron/webhook triggers pass context.Background(), so there's no
@@ -2150,44 +2105,69 @@ func (a *Agent) workflowToolSpec(wf *workflow.Workflow, messagingTools []*tools.
 		}).Build()
 }
 
-// delegateToolSpecs turns every sibling agent visible through a.directory
-// into a callable tool, so a chat loop can hand off a task instead of
-// attempting it with tools that weren't meant for it. Nil directory (no
-// Runtime wired in — the common case for a single standalone agent) yields
-// no delegate tools, same as an agent with zero workflows gets none of
-// those either.
-func (a *Agent) delegateToolSpecs() []*tools.ToolSpec {
+// messageAgentToolset returns this agent's single message_agent tool as a
+// slice (nil if there's no one to address) — kept as a slice purely so
+// ResolvedTools/workflowToolset/delegationBlock's mergeTools(...) call
+// sites don't need special-casing versus the old one-tool-per-target
+// delegateToolSpecs shape. Nil directory (no Runtime wired in — the common
+// case for a single standalone agent) yields no tool, same as an agent
+// with zero workflows gets none of those either.
+func (a *Agent) messageAgentToolset() []*tools.ToolSpec {
 	if a.directory == nil {
 		return nil
 	}
-	specs := make([]*tools.ToolSpec, 0)
+	for _, t := range a.directory.DelegateTargets() {
+		if t.DelegateID() != a.Id {
+			return []*tools.ToolSpec{a.messageAgentTool()}
+		}
+	}
+	return nil
+}
+
+// messageAgentTool is the single tool for addressing a sibling agent
+// directly — by name, not through a live shared conversation (see
+// replyTool's mention_agent for that case). Its description enumerates
+// every current target with its self-reported name, description, and
+// capabilities so the calling LLM can judge what each is actually good
+// for, not just guess from a one-line blurb; recomputed on every call
+// against a.directory.DelegateTargets(), so it reflects who's reachable
+// right now (a real sibling *Agent, a live network peer, or — with a
+// TaskQueue configured — a known-but-currently-offline one) exactly like
+// the old per-target delegate_to_<id> tools did.
+//
+// wait_for_reply=true runs target.RunDelegatedTask synchronously and
+// returns its result in this turn — the old delegate_to_<id> behavior,
+// unchanged, including RunDelegatedTask's own up-to-10-minute network
+// dispatch timeout for a live remote target. wait_for_reply=false (the
+// default) fires the same call in a goroutine and, once it completes,
+// relays the real outcome back into this same conversation via
+// EnqueueMessage as a fresh turn — unless the delegate already replied
+// directly itself (RepliedDirectly) or the fast return was only a
+// placeholder for a still-pending offline dispatch (Deferred, set by
+// runtime's queuedDelegate) — either of those means a real relay is
+// already covered some other way, so relaying here too would double up.
+func (a *Agent) messageAgentTool() *tools.ToolSpec {
+	var b strings.Builder
+	b.WriteString("Message or delegate a task to a sibling agent by name. Available agents:\n")
 	for _, target := range a.directory.DelegateTargets() {
 		if target.DelegateID() == a.Id {
 			continue
 		}
-		specs = append(specs, a.delegateToolSpec(target))
+		fmt.Fprintf(&b, "- %q (id: %s): %s\n  Capabilities: %s\n",
+			target.DelegateName(), target.DelegateID(), target.DelegateDescription(), target.DelegateCapabilities())
 	}
-	return specs
-}
+	b.WriteString("\nSet wait_for_reply=true to block and get their result back directly in this turn — use " +
+		"whenever your very next action depends on their answer. Leave it unset/false (the default) for " +
+		"fire-and-forget: this call returns immediately with a placeholder, and the real result arrives later " +
+		"as a fresh turn in this same conversation, in your own words.")
 
-// delegateToolSpec wraps a single delegate target — a real sibling *Agent,
-// or a genuinely remote one reached over a network boundary — as a tool.
-// Its description carries the target's self-reported name, description,
-// and capabilities so the calling LLM can judge what it's actually good
-// for, not just guess from a one-line blurb. Invoking it runs
-// target.RunDelegatedTask — the agent-to-agent path, not RunLoop — so
-// there's no ConversationRef, no memory, and no send_message involved at
-// all; see RunDelegatedTask for why.
-func (a *Agent) delegateToolSpec(target DelegateTarget) *tools.ToolSpec {
-	description := fmt.Sprintf(
-		"Delegate a task to %s: %s\nIts capabilities:\n%s",
-		target.DelegateName(), target.DelegateDescription(), target.DelegateCapabilities(),
-	)
-	return tools.NewToolBuilder("delegate_to_"+target.DelegateID(), description).
-		Parameter("task", "string", "What you want this agent to do.", true).
+	return tools.NewToolBuilder("message_agent", b.String()).
+		Parameter("agent", "string", "Which agent to message — its id or display name, from the list above.", true).
+		Parameter("message", "string", "What you want them to do, or want to tell them.", true).
+		Parameter("wait_for_reply", "boolean", "Block and return their result in this turn instead of fire-and-forget. Defaults to false.", false).
 		Handler(func(ctx context.Context, args json.RawMessage) (any, error) {
 			if args == nil {
-				return nil, fmt.Errorf("delegate_to_%s: no arguments provided", target.DelegateID())
+				return nil, fmt.Errorf("message_agent: no arguments provided")
 			}
 
 			var raw string
@@ -2196,109 +2176,80 @@ func (a *Agent) delegateToolSpec(target DelegateTarget) *tools.ToolSpec {
 			}
 
 			var input struct {
-				Task string `json:"task"`
+				Agent        string `json:"agent"`
+				Message      string `json:"message"`
+				WaitForReply bool   `json:"wait_for_reply"`
 			}
-
 			if err := json.Unmarshal([]byte(raw), &input); err != nil {
 				return nil, err
 			}
 
-			log.Printf("🤝%s: delegating to %s: %q", a.Name, target.DelegateName(), input.Task)
-			recordDelegation(ctx, target.DelegateName())
-			result, err := target.RunDelegatedTask(messaging.WithDelegator(ctx, a.Id), input.Task)
-			if err != nil {
-				return nil, err
+			var target DelegateTarget
+			var names []string
+			for _, t := range a.directory.DelegateTargets() {
+				if t.DelegateID() == a.Id {
+					continue
+				}
+				names = append(names, fmt.Sprintf("%s (%s)", t.DelegateID(), t.DelegateName()))
+				if t.DelegateID() == input.Agent || strings.EqualFold(t.DelegateName(), input.Agent) {
+					target = t
+				}
 			}
-			if result.RepliedDirectly {
-				markDelegateReplied(ctx)
+			if target == nil {
+				return nil, fmt.Errorf("message_agent: %q isn't a known agent — available: %s", input.Agent, strings.Join(names, ", "))
 			}
-			log.Printf("🤝%s: %s finished (%s): %s", a.Name, target.DelegateName(), result.Status, result.Content)
-			return fmt.Sprintf("%s finished (%s): %s", target.DelegateName(), result.Status, result.Content), nil
+
+			if input.WaitForReply {
+				log.Printf("🤝%s: messaging %s (waiting): %q", a.Name, target.DelegateName(), input.Message)
+				result, err := target.RunDelegatedTask(messaging.WithDelegator(ctx, a.Id), input.Message)
+				if err != nil {
+					return nil, err
+				}
+				if result.RepliedDirectly {
+					markDelegateReplied(ctx)
+				}
+				log.Printf("🤝%s: %s finished (%s): %s", a.Name, target.DelegateName(), result.Status, result.Content)
+				return fmt.Sprintf("%s finished (%s): %s", target.DelegateName(), result.Status, result.Content), nil
+			}
+
+			log.Printf("📨%s: messaging %s (fire-and-forget): %q", a.Name, target.DelegateName(), input.Message)
+			conv, hasConv := messaging.ConversationFromContext(ctx)
+			if !hasConv {
+				conv, hasConv = a.DefaultConversation()
+			}
+			msgID, _ := messaging.MessageIDFromContext(ctx)
+			threadID, _ := messaging.ThreadIDFromContext(ctx)
+			workflowID, _ := messaging.WorkflowIDFromContext(ctx)
+			delegatorCtx := messaging.WithDelegator(ctx, a.Id)
+			go func() {
+				defer recoverFromPanic(a.Name, "async message_agent to "+target.DelegateName())
+				result, err := target.RunDelegatedTask(delegatorCtx, input.Message)
+				if !hasConv {
+					log.Printf("⚠️%s: async message_agent to %s finished with nowhere to relay the result", a.Name, target.DelegateName())
+					return
+				}
+				if err != nil {
+					prompt := fmt.Sprintf("You previously asked %s to do this: %q. It failed: %v. Relay this to the user now, in your own words.", target.DelegateName(), input.Message, err)
+					a.EnqueueMessage(conv, prompt, msgID, threadID, workflowID, "")
+					return
+				}
+				if result.RepliedDirectly || result.Deferred {
+					return
+				}
+				prompt := fmt.Sprintf("You previously asked %s to do this: %q. It finished (%s): %s. Relay this to the user now, in your own words.", target.DelegateName(), input.Message, result.Status, result.Content)
+				a.EnqueueMessage(conv, prompt, msgID, threadID, workflowID, "")
+			}()
+			return fmt.Sprintf("Asked %s — you'll get the result as a follow-up once it's done.", target.DelegateName()), nil
 		}).Build()
 }
 
-// delegationNotesCtxKey is the context key for the mutable notes collector
-// ensureDelegationNotes/recordDelegation/consumeDelegationNotes share.
-type delegationNotesCtxKey struct{}
-
-// ensureDelegationNotes attaches a mutable delegation-notes collector to
-// ctx if one isn't already present, so delegateToolSpec's handler (deep
-// inside nativeLoop.Run, possibly several nested workflow-as-tool calls down)
-// has somewhere to record what it delegated. Idempotent by design: a
-// nested runWorkflow call (workflow-as-tool from within an outer RunLoop)
-// reuses the outer collector rather than shadowing it with its own, so a
-// delegation made deep inside a nested workflow still surfaces in the
-// outer conversation's one reply. Only for same-agent nesting — see
-// resetDelegationNotes for the agent-to-agent boundary, which must NOT
-// reuse the caller's collector.
-func ensureDelegationNotes(ctx context.Context) context.Context {
-	if _, ok := ctx.Value(delegationNotesCtxKey{}).(*[]string); ok {
-		return ctx
-	}
-	return context.WithValue(ctx, delegationNotesCtxKey{}, &[]string{})
-}
-
-// resetDelegationNotes always attaches a brand-new, empty notes collector
-// to ctx, discarding any inherited one. Used at the agent-to-agent boundary
-// (RunDelegatedTask), unlike ensureDelegationNotes's reuse-if-present
-// behavior: a delegate's own reply is a separate message from whatever the
-// delegating agent eventually sends, so a note recorded for the
-// delegator's own pending reply must never leak into — or be silently
-// consumed by — the delegate's own optional send_message call. Without
-// this, ctx (and the collector it carries) flows straight from
-// delegateToolSpec's handler into the delegate's own nativeLoop.Run, and the
-// delegate's optional direct send_message ends up eating the note meant
-// for the delegator's final relay, leaving the delegator's own message
-// with no note at all.
-func resetDelegationNotes(ctx context.Context) context.Context {
-	return context.WithValue(ctx, delegationNotesCtxKey{}, &[]string{})
-}
-
-// recordDelegation notes that this run handed a task to a target named
-// targetName, to be folded into the single outgoing reply (see
-// consumeDelegationNotes) rather than sent as a message of its own —
-// deliberately not left to the delegating agent's own judgment on whether
-// to mention it when it eventually relays an answer. Models have already
-// been observed, twice, not reliably using an *optional* tool (a reaction,
-// a direct send_message) even when explicitly told they're allowed to — so
-// this bypasses the LLM entirely: it always fires from delegateToolSpec's
-// handler, not something the model chooses to do. No-op if ctx was never
-// wrapped by ensureDelegationNotes (shouldn't happen on any real call
-// path, but a missing note beats a panic). The task itself is deliberately
-// left out of the note — it's already in the log line right above this
-// call, and repeating it here would just restate what the reply right
-// after it already shows.
-func recordDelegation(ctx context.Context, targetName string) {
-	ptr, ok := ctx.Value(delegationNotesCtxKey{}).(*[]string)
-	if !ok {
-		return
-	}
-	*ptr = append(*ptr, fmt.Sprintf("🤝 Handed this off to %s", targetName))
-}
-
-// consumeDelegationNotes returns any recorded delegation notes formatted
-// as a prefix for the outgoing reply, and clears them. Called by every
-// path that can actually deliver a reply (send_message's handler and
-// RunLoop's guaranteed-delivery fallback) so the note appears exactly
-// once, attached to whichever message ends up being the real answer,
-// instead of as a separate message of its own.
-func consumeDelegationNotes(ctx context.Context) string {
-	ptr, ok := ctx.Value(delegationNotesCtxKey{}).(*[]string)
-	if !ok || len(*ptr) == 0 {
-		return ""
-	}
-	prefix := strings.Join(*ptr, "\n") + "\n\n"
-	*ptr = (*ptr)[:0]
-	return prefix
-}
-
 // hasSuccessfulSendMessage reports whether messages contains a completed
-// (non-error) send_message tool result — shared by RunLoop's own
+// (non-error) reply tool result — shared by RunLoop's own
 // guaranteed-delivery check and RunDelegatedTask's RepliedDirectly
 // detection so the two can't drift apart.
 func hasSuccessfulSendMessage(messages []llm.Message) bool {
 	for _, m := range messages {
-		if m.Role == "tool" && m.Name == "send_message" && !strings.HasPrefix(m.Content, "error:") {
+		if m.Role == "tool" && m.Name == "reply" && !strings.HasPrefix(m.Content, "error:") {
 			return true
 		}
 	}
@@ -2306,23 +2257,17 @@ func hasSuccessfulSendMessage(messages []llm.Message) bool {
 }
 
 // delegateRepliedCtxKey is the context key for the mutable "did a
-// delegate reply directly this turn" flag — a sibling to
-// delegationNotesCtxKey, but with the opposite lifecycle: notes are
-// severed at the RunDelegatedTask boundary (resetDelegationNotes) so a
-// delegate's own notes never leak into its delegator's; this flag is the
-// reverse signal (delegate → delegator), so it's never attached to or
-// read from the delegate's own ctx at all — only LoopResult.RepliedDirectly
-// crosses that boundary (a return value, not ctx), and
-// delegateToolSpec's handler calls markDelegateReplied on the
-// delegator's own, untouched ctx after reading it. See RunLoop's
-// guaranteed-delivery fallback and error-notice path for where this is
-// actually read.
+// delegate reply directly this turn" flag. Never attached to or read from
+// the delegate's own ctx at all — only LoopResult.RepliedDirectly crosses
+// the RunDelegatedTask boundary (a return value, not ctx), and
+// message_agent's handler calls markDelegateReplied on the delegator's
+// own, untouched ctx after reading it. See RunLoop's guaranteed-delivery
+// fallback and error-notice path for where this is actually read.
 type delegateRepliedCtxKey struct{}
 
 // ensureDelegateRepliedFlag attaches the flag to ctx if one isn't already
-// present — same reuse-if-present shape as ensureDelegationNotes, for the
-// same reason (a nested workflow-as-tool call within one agent's run
-// shares one flag, not its own).
+// present, so a nested workflow-as-tool call within one agent's run
+// shares one flag, not its own.
 func ensureDelegateRepliedFlag(ctx context.Context) context.Context {
 	if _, ok := ctx.Value(delegateRepliedCtxKey{}).(*bool); ok {
 		return ctx
@@ -2369,7 +2314,7 @@ func delegateReplied(ctx context.Context) bool {
 //     end_loop's final_message is still always required regardless: the
 //     delegator reads it either way, and it's the only channel that
 //     exists when there's no live conversation to reply into (e.g. a
-//     cron/webhook-triggered delegation). No delegateToolSpecs() either, so no further
+//     cron/webhook-triggered delegation). No messageAgentToolset() either, so no further
 //     delegation from this agent's own direct turn — preventing a cycle
 //     (a nested workflow this delegate calls can still delegate further
 //     if it opts in via AllowDelegation; incrementDelegationDepth is
@@ -2381,8 +2326,6 @@ func (a *Agent) RunDelegatedTask(ctx context.Context, task string) (*LoopResult,
 	if !withinLimit {
 		return nil, fmt.Errorf("%s: delegation depth exceeded (%d > %d) — likely a delegation cycle across workflows", a.Name, depth, maxDelegationDepth)
 	}
-	ctx = resetDelegationNotes(ctx)
-
 	// conv: inherited from whoever delegated to us (the delegator's own
 	// ConversationRef, or nothing if the delegator itself had none — see
 	// runWorkflow's fallback to DefaultConversation, which this then
@@ -2397,9 +2340,9 @@ func (a *Agent) RunDelegatedTask(ctx context.Context, task string) (*LoopResult,
 
 	systemContent := a.systemPrompt()
 	if a.loop == nil {
-		// end_loop/send_message/reaction-tool framing — meaningless for
+		// end_loop/reply/reaction-tool framing — meaningless for
 		// anything not running through nativeLoop's own protocol.
-		systemContent += "\n\nThis task was delegated to you by another agent, not requested directly by a human. If there's a live conversation to reply into, you may call send_message to reply directly, under your own identity — the person on the other end will see that you, not the delegating agent, answered. Always call end_loop with your final_message when done regardless of whether you also called send_message — it is relayed back to the delegating agent either way, and is the only channel that exists when there's no live conversation to reply into. If a reaction tool (e.g. add_reaction) is available, you may use it on the conversation/message that triggered this delegation as a lightweight status signal — not a replacement for final_message."
+		systemContent += "\n\nThis task was delegated to you by another agent, not requested directly by a human. If there's a live conversation to reply into, you may call reply directly, under your own identity — the person on the other end will see that you, not the delegating agent, answered. Always call end_loop with your final_message when done regardless of whether you also called reply — it is relayed back to the delegating agent either way, and is the only channel that exists when there's no live conversation to reply into. If a reaction tool (e.g. add_reaction) is available, you may use it on the conversation/message that triggered this delegation as a lightweight status signal — not a replacement for final_message."
 	}
 
 	messages := make([]llm.Message, 0, len(prior)+2)
@@ -2429,10 +2372,18 @@ type LoopResult struct {
 	Status    LLMStatus `json:"status"`
 	Content   string    `json:"content,omitempty"`
 	// RepliedDirectly is set only by RunDelegatedTask — true if this run
-	// itself successfully called send_message, meaning it already replied
+	// itself successfully called reply, meaning it already replied
 	// under its own identity into whatever live conversation it inherited
-	// from its delegator. delegateToolSpec's handler reads this to tell
-	// the delegator's own RunLoop not to also send a redundant relay — see
-	// markDelegateReplied/delegateReplied.
+	// from its delegator. message_agent's handler reads this to tell
+	// the delegator's own RunLoop (and its own async relay) not to also
+	// send a redundant relay — see markDelegateReplied/delegateReplied.
 	RepliedDirectly bool `json:"replied_directly,omitempty"`
+	// Deferred is set only by a DelegateTarget whose fast return is a
+	// placeholder, not a real answer (runtime's queuedDelegate — an
+	// offline peer's task was enqueued, not run). The real result arrives
+	// later through whatever separate mechanism that target's caller wired
+	// up (e.g. Runtime.OnQueueDrained). Consulted only by message_agent's
+	// async (wait_for_reply=false) path, so it doesn't also relay the
+	// placeholder as if it were the real outcome.
+	Deferred bool `json:"deferred,omitempty"`
 }

@@ -47,8 +47,8 @@ type Workflow struct {
 	// workflow's actual job.
 	MaxDuplicateToolCallsPerResponseFunc func(ctx context.Context) (int, error) `json:"-"`
 	MaxToolCallsPerResponseFunc          func(ctx context.Context) (int, error) `json:"-"`
-	// AllowDelegation opts this specific workflow into having
-	// delegate_to_<sibling> tools in its nested toolset — off by default.
+	// AllowDelegation opts this specific workflow into having the
+	// message_agent tool in its nested toolset — off by default.
 	// A workflow is meant to be a bounded, single-purpose loop; turn this
 	// on only for one whose entire job is deciding what to hand off to
 	// which agent (e.g. an issue-triage workflow). Agent.runWorkflow

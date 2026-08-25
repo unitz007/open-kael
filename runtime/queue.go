@@ -53,9 +53,9 @@ func (q *queuedDelegate) DelegateDescription() string  { return q.info.AgentDesc
 func (q *queuedDelegate) DelegateCapabilities() string { return q.info.AgentCapabilities }
 
 // RunDelegatedTask reads whatever conversation/thread/delegator context the
-// calling agent's own delegateToolSpec already set on ctx (WithDelegator,
+// calling agent's own message_agent tool already set on ctx (WithDelegator,
 // WithConversation/WithThreadID/WithMessageID — see agent.go's
-// delegateToolSpec and RunLoop/handleMessage) so nothing new needs to be
+// messageAgentTool and RunLoop/handleMessage) so nothing new needs to be
 // plumbed through just to support queuing — it's already there for any
 // live-conversation delegation, and simply absent (zero values) for a
 // cron/webhook-triggered one, exactly like every other context read this
@@ -80,7 +80,8 @@ func (q *queuedDelegate) RunDelegatedTask(ctx context.Context, task string) (*ag
 		return nil, err
 	}
 	return &agent.LoopResult{
-		Status:  agent.LLMStatusComplete,
-		Content: "Queued for " + q.info.AgentName + " — will run once it reconnects.",
+		Status:   agent.LLMStatusComplete,
+		Content:  "Queued for " + q.info.AgentName + " — will run once it reconnects.",
+		Deferred: true,
 	}, nil
 }
