@@ -48,11 +48,11 @@ type Runtime struct {
 	// OnQueueDrained, when set, is called once per task after a
 	// newly-(re)connected peer's queued tasks have been re-dispatched (see
 	// peer.go's drainQueueFor) — result/err reflect that re-dispatch.
-	// Delivering the result back to wherever the task originally came from
-	// (PendingTask.Ref/ThreadID/MessageID) is deliberately left to this
-	// callback rather than hardcoded here: that's app-level policy (see
-	// Agent.DeliverResult), the same way this package leaves memory/identity
-	// storage to the consuming app.
+	// Deciding what to do with the outcome (deliver it, log it, feed it
+	// back through an agent's own EnqueueMessage for a real LLM turn to
+	// phrase, or ignore it) is deliberately left to this callback rather
+	// than hardcoded here — that's app-level policy, the same way this
+	// package leaves memory/identity storage to the consuming app.
 	OnQueueDrained func(ctx context.Context, task PendingTask, result string, err error)
 }
 

@@ -1297,31 +1297,6 @@ func (a *Agent) DefaultConversation() (conv messaging.ConversationRef, ok bool) 
 	return a.primaryMessenger.DefaultConversation(), true
 }
 
-// DeliverResult sends text back to whatever conversation ctx carries (via
-// replyOrSend, threading into the original message when ctx actually came
-// from one — the same resolution any other tool result already gets),
-// falling back to DefaultConversation() when ctx carries none at all (a
-// queued task that had no live conversation to begin with — e.g. a
-// missed-workflow catch-up). Exists so an external caller with no direct
-// access to a.messengers/replyOrSend — a Runtime's TaskQueue drain callback
-// (see runtime.Runtime.OnQueueDrained) — can still deliver a result back to
-// wherever it originally came from.
-func (a *Agent) DeliverResult(ctx context.Context, text string) error {
-	conv, ok := messaging.ConversationFromContext(ctx)
-	if !ok {
-		conv, ok = a.DefaultConversation()
-		if !ok {
-			return fmt.Errorf("%s: no conversation to deliver to", a.Name)
-		}
-	}
-	m, ok := a.messengers[conv.Platform]
-	if !ok {
-		return fmt.Errorf("%s: no messenger registered for platform %q", a.Name, conv.Platform)
-	}
-	_, err := a.replyOrSend(ctx, m, conv, text)
-	return err
-}
-
 // SetMemoryKeyFunc overrides how this agent partitions memory across
 // RunLoop/runWorkflow/RunDelegatedTask — see messaging.MemoryKeyFunc and
 // its presets (KeyByAgent, KeyByConversation, KeyByThread, KeyByWorkflow).
