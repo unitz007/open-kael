@@ -2168,25 +2168,33 @@ func (a *Agent) visibleDelegateTargets() []DelegateTarget {
 // TaskQueue configured — a known-but-currently-offline one) exactly like
 // the old per-target delegate_to_<id> tools did.
 //
-// wait_for_reply=true runs target.RunDelegatedTask synchronously and
-// returns its result in this turn — the old delegate_to_<id> behavior,
-// unchanged, including RunDelegatedTask's own up-to-10-minute network
-// dispatch timeout for a live remote target. Never announced visibly (see
-// announceVisibly's own doc comment for why: a posted mention would
-// trigger the target's own independent turn racing the direct call this
-// makes, processing the same request twice).
+// wait_for_reply=true is a request, not a guarantee: if ctx carries a live
+// conversation, it's structurally overridden — this call is redirected
+// through announceVisibly exactly like the fire-and-forget path below,
+// because a model asked to judge "does a human need to see this hand-off"
+// has proven unreliable in practice (observed live, twice, with explicit
+// tool-description guidance already in place: a fast lookup answered by
+// silently relaying a sibling's data instead of letting them answer under
+// their own identity). Only when there's no live conversation to make
+// visible in the first place (a cron job, a webhook run) does
+// wait_for_reply=true do what it says — call target.RunDelegatedTask
+// synchronously and return its result in this turn, the old
+// delegate_to_<id> behavior, including RunDelegatedTask's own
+// up-to-10-minute network dispatch timeout for a live remote target. If a
+// live conversation exists but the target isn't reachable by a visible
+// mention (messenger doesn't implement AgentMessenger, e.g.), this falls
+// back to the same synchronous call rather than silently doing nothing.
 //
-// wait_for_reply=false (the default) tries announceVisibly first — a real
-// mention, letting the target's own Listen pick it up like any other
-// message, no backstage call at all. Only when that's not possible (no
-// live conversation, or the target/messenger doesn't support it) does it
-// fall back to firing the call in a goroutine and, once it completes,
-// relaying the real outcome back into this same conversation via
-// EnqueueMessage as a fresh turn — unless the delegate already replied
-// directly itself (RepliedDirectly) or the fast return was only a
-// placeholder for a still-pending offline dispatch (Deferred, set by
-// runtime's queuedDelegate) — either of those means a real relay is
-// already covered some other way, so relaying here too would double up.
+// wait_for_reply=false (the default) also tries announceVisibly first,
+// for the same reason. Only when that's not possible (no live
+// conversation, or the target/messenger doesn't support it) does it fall
+// back to firing the call in a goroutine and, once it completes, relaying
+// the real outcome back into this same conversation via EnqueueMessage as
+// a fresh turn — unless the delegate already replied directly itself
+// (RepliedDirectly) or the fast return was only a placeholder for a
+// still-pending offline dispatch (Deferred, set by runtime's
+// queuedDelegate) — either of those means a real relay is already covered
+// some other way, so relaying here too would double up.
 func (a *Agent) messageAgentTool() *tools.ToolSpec {
 	var b strings.Builder
 	b.WriteString("Message or delegate a task to a sibling agent by name. Available agents:\n")
@@ -2194,15 +2202,12 @@ func (a *Agent) messageAgentTool() *tools.ToolSpec {
 		fmt.Fprintf(&b, "- %q (id: %s): %s\n  Capabilities: %s\n",
 			target.DelegateName(), target.DelegateID(), target.DelegateDescription(), target.DelegateCapabilities())
 	}
-	b.WriteString("\nSet wait_for_reply=true ONLY when your own very next action depends on their answer — " +
-		"deciding what YOU do next, not just composing an answer for a human. If the real answer belongs to a " +
-		"sibling agent's own domain — their own data, their own expertise — use reply's mention_agent instead " +
-		"and let them answer under their own identity; a human should see their real voice on their own " +
-		"information, not your paraphrase of it, even if fetching it yourself would only take a few seconds. " +
-		"Ownership decides this, not speed. Leave wait_for_reply unset/false here only for something that's " +
-		"genuinely yours to relay but where a visible tag isn't possible (no live conversation, or they're not " +
-		"reachable that way) — this then falls back to a placeholder now and a real follow-up in your own words " +
-		"once they're done.")
+	b.WriteString("\nIf there's a live conversation right now, this always addresses them visibly — a real " +
+		"mention, their own reply appears under their own identity — regardless of wait_for_reply; you will NOT " +
+		"get their answer back in this turn, so don't rely on it for your own next step here. wait_for_reply only " +
+		"takes effect in a background run with no live conversation (a cron job, a webhook): =true blocks and " +
+		"hands you their real result directly, in this turn — use this when your own very next action depends on " +
+		"their answer. =false (the default) relays the result later, in your own words, once it's done.")
 
 	return tools.NewToolBuilder("message_agent", b.String()).
 		Parameter("agent", "string", "Which agent to message — its id or display name, from the list above.", true).
@@ -2244,6 +2249,33 @@ func (a *Agent) messageAgentTool() *tools.ToolSpec {
 				return nil, fmt.Errorf("message_agent: %q isn't a known agent — available: %s", input.Agent, strings.Join(names, ", "))
 			}
 
+			// Tried first, regardless of wait_for_reply, but ONLY when ctx
+			// carries a genuine, inbound-derived conversation (checked
+			// directly here, not through resolveSendTarget's own
+			// DefaultConversation fallback inside announceVisibly — that
+			// fallback would make a cron/webhook run with no live
+			// conversation "succeed" at announcing into the agent's
+			// default channel too, silently handing reactToIssueCommentWorkflow/
+			// manageIssuesWorkflow a placeholder instead of the real
+			// synchronous answer their own branching logic depends on).
+			// When a live conversation genuinely exists, a visible mention
+			// always wins over a backstage call — the model's own
+			// judgment on "does a human need to see this" has proven
+			// unreliable in practice (observed live, twice, with explicit
+			// tool-description guidance already in place). Since nothing
+			// here blocks for the target's answer, there's no direct
+			// RunDelegatedTask call running in parallel with the posted
+			// mention that could double-process the same request — the
+			// target's own Listen just picks it up as an ordinary turn,
+			// same as replyTool's mention_agent, and any reply-back
+			// reaches this agent the same mention-back way. Only falls
+			// through to the paths below when there's no live
+			// conversation, or the messenger/target doesn't support a
+			// visible mention — never both.
+			if _, hasLiveConv := messaging.ConversationFromContext(ctx); hasLiveConv && a.announceVisibly(ctx, target.DelegateName(), input.Message) {
+				return fmt.Sprintf("Mentioned %s in this conversation — they'll reply here once it's done, or mention you back if they need anything.", target.DelegateName()), nil
+			}
+
 			if input.WaitForReply {
 				log.Printf("🤝%s: messaging %s (waiting): %q", a.Name, target.DelegateName(), input.Message)
 				result, err := target.RunDelegatedTask(messaging.WithDelegator(ctx, a.Id), input.Message)
@@ -2255,22 +2287,6 @@ func (a *Agent) messageAgentTool() *tools.ToolSpec {
 				}
 				log.Printf("🤝%s: %s finished (%s): %s", a.Name, target.DelegateName(), result.Status, result.Content)
 				return fmt.Sprintf("%s finished (%s): %s", target.DelegateName(), result.Status, result.Content), nil
-			}
-
-			// Fire-and-forget can be made genuinely visible where
-			// wait_for_reply=true never safely can: since nothing here
-			// blocks for the target's answer, there's no direct
-			// RunDelegatedTask call running in parallel with a posted
-			// mention that could double-process the same request. If the
-			// target is reachable through a live conversation this way,
-			// just post the mention and stop — the target's own Listen
-			// picks it up as an ordinary turn, same as replyTool's
-			// mention_agent, and any reply-back reaches this agent the
-			// same mention-back way. Falls through to the backstage relay
-			// below only when that's not possible (no live conversation,
-			// or the messenger/target doesn't support it) — never both.
-			if a.announceVisibly(ctx, target.DelegateName(), input.Message) {
-				return fmt.Sprintf("Mentioned %s in this conversation — they'll reply here once it's done, or mention you back if they need anything.", target.DelegateName()), nil
 			}
 
 			log.Printf("📨%s: messaging %s (fire-and-forget): %q", a.Name, target.DelegateName(), input.Message)
