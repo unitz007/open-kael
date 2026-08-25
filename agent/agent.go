@@ -72,7 +72,15 @@ type Agent struct {
 	// not insertion order.
 	primaryMessenger      messaging.Messenger
 	directory             AgentDirectory
-	webhookMux            *http.ServeMux
+	// hiddenDelegateIDs holds delegate ids the directory reports but that
+	// must never surface through THIS agent's own message_agent tool —
+	// for a target meant to be reachable only via some other,
+	// purpose-built tool (e.g. an external specialist behind
+	// NewExternalAgentTool that still rides the shared peer transport).
+	// Set via SetHiddenDelegateIDs; nil (the default) means every
+	// directory target is visible, today's behavior.
+	hiddenDelegateIDs map[string]bool
+	webhookMux        *http.ServeMux
 	identities            map[string]identity.Identity
 	retrievers            map[string]rag.Retriever
 	retrieverDescriptions map[string]string
@@ -190,6 +198,16 @@ func (a *Agent) SetLoop(l AgentLoop) {
 // agent's loop isn't nativeLoop.
 func (a *Agent) SetDelegateCapabilities(s string) {
 	a.capabilities = s
+}
+
+// SetHiddenDelegateIDs marks delegate ids the directory reports but that
+// must never surface through this agent's own message_agent tool — see
+// Agent.hiddenDelegateIDs' own doc comment. Replaces any previous set.
+func (a *Agent) SetHiddenDelegateIDs(ids ...string) {
+	a.hiddenDelegateIDs = make(map[string]bool, len(ids))
+	for _, id := range ids {
+		a.hiddenDelegateIDs[id] = true
+	}
 }
 
 // SetTriggerState wires t onto this agent — see Agent.triggerState's own
@@ -2116,12 +2134,27 @@ func (a *Agent) messageAgentToolset() []*tools.ToolSpec {
 	if a.directory == nil {
 		return nil
 	}
-	for _, t := range a.directory.DelegateTargets() {
-		if t.DelegateID() != a.Id {
-			return []*tools.ToolSpec{a.messageAgentTool()}
-		}
+	if len(a.visibleDelegateTargets()) > 0 {
+		return []*tools.ToolSpec{a.messageAgentTool()}
 	}
 	return nil
+}
+
+// visibleDelegateTargets is a.directory.DelegateTargets() minus this agent
+// itself and anything in a.hiddenDelegateIDs — the single place
+// messageAgentToolset/messageAgentTool decide who's addressable through
+// message_agent, applied consistently to the tool's existence, its
+// listing, and what its handler can resolve.
+func (a *Agent) visibleDelegateTargets() []DelegateTarget {
+	all := a.directory.DelegateTargets()
+	out := make([]DelegateTarget, 0, len(all))
+	for _, t := range all {
+		if t.DelegateID() == a.Id || a.hiddenDelegateIDs[t.DelegateID()] {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out
 }
 
 // messageAgentTool is the single tool for addressing a sibling agent
@@ -2149,10 +2182,7 @@ func (a *Agent) messageAgentToolset() []*tools.ToolSpec {
 func (a *Agent) messageAgentTool() *tools.ToolSpec {
 	var b strings.Builder
 	b.WriteString("Message or delegate a task to a sibling agent by name. Available agents:\n")
-	for _, target := range a.directory.DelegateTargets() {
-		if target.DelegateID() == a.Id {
-			continue
-		}
+	for _, target := range a.visibleDelegateTargets() {
 		fmt.Fprintf(&b, "- %q (id: %s): %s\n  Capabilities: %s\n",
 			target.DelegateName(), target.DelegateID(), target.DelegateDescription(), target.DelegateCapabilities())
 	}
@@ -2186,12 +2216,14 @@ func (a *Agent) messageAgentTool() *tools.ToolSpec {
 
 			var target DelegateTarget
 			var names []string
-			for _, t := range a.directory.DelegateTargets() {
-				if t.DelegateID() == a.Id {
-					continue
-				}
+			// First match wins, deliberately: DelegateTargets() orders
+			// locally-registered agents before live peers before offline
+			// queue stand-ins, so on a (never-intended, but observed live)
+			// duplicate id, the real local agent is resolved rather than
+			// being shadowed by a stale remote entry.
+			for _, t := range a.visibleDelegateTargets() {
 				names = append(names, fmt.Sprintf("%s (%s)", t.DelegateID(), t.DelegateName()))
-				if t.DelegateID() == input.Agent || strings.EqualFold(t.DelegateName(), input.Agent) {
+				if target == nil && (t.DelegateID() == input.Agent || strings.EqualFold(t.DelegateName(), input.Agent)) {
 					target = t
 				}
 			}
