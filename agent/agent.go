@@ -1773,7 +1773,7 @@ func (a *Agent) ResolvedTools(platform string) []*tools.ToolSpec {
 }
 
 func (a *Agent) RunLoop(ctx context.Context, conv messaging.ConversationRef, userPrompt string) (*LoopResult, error) {
-	ctx = ensureDelegateRepliedFlag(ctx)
+	ctx = ensureTurnDeliveredFlag(ctx)
 	memKey := a.memoryKey(ctx, conv)
 
 	var prior []llm.Message
@@ -1808,7 +1808,7 @@ func (a *Agent) RunLoop(ctx context.Context, conv messaging.ConversationRef, use
 		// received. Best-effort notify instead, same "the user should
 		// always hear something back" reasoning as the guaranteed-delivery
 		// block below, just for the failure case it doesn't cover.
-		if !delegateReplied(ctx) {
+		if !turnDelivered(ctx) {
 			if m, ok := a.messengers[conv.Platform]; ok {
 				errNotice := "Sorry, I ran into an error and couldn't finish handling that. Please try again."
 				if _, sendErr := a.replyOrSend(ctx, m, conv, errNotice); sendErr != nil {
@@ -1825,11 +1825,13 @@ func (a *Agent) RunLoop(ctx context.Context, conv messaging.ConversationRef, use
 	// structural consequence of the loop finishing, not something that
 	// depends on the model choosing the right tool. Skipped if reply
 	// already succeeded this turn (a model that DID use it to reply doesn't
-	// get its answer sent twice), or if a delegate this turn handed off to
-	// already replied directly under its own identity (delegateReplied —
-	// see markDelegateReplied/LoopResult.RepliedDirectly): a redundant
-	// secondhand relay from this agent would just be noise once the actual
-	// delegate has already spoken for itself. Fires even when result.Content is
+	// get its answer sent twice), or if something else already reached the
+	// human this turn outside that tool (turnDelivered — see
+	// markTurnDelivered/LoopResult.RepliedDirectly): a delegate that
+	// replied directly under its own identity, or message_agent's own
+	// announceVisibly already posting a real mention — either way, a
+	// redundant secondhand relay from this agent would just be noise.
+	// Fires even when result.Content is
 	// empty: confirmed live that a model can call end_loop with an empty
 	// final_message on a genuinely-completed turn (tool calls all
 	// succeeded, nothing more to do) — the old `result.Content != ""` guard
@@ -1837,7 +1839,7 @@ func (a *Agent) RunLoop(ctx context.Context, conv messaging.ConversationRef, use
 	// the user received nothing at all. A generic fallback beats silence,
 	// since the caller has no other signal the run ever happened.
 	if err == nil && result.Status == LLMStatusComplete {
-		alreadyReplied := hasSuccessfulSendMessage(final[1+len(prior):]) || delegateReplied(ctx)
+		alreadyReplied := hasSuccessfulSendMessage(final[1+len(prior):]) || turnDelivered(ctx)
 		if !alreadyReplied {
 			if m, ok := a.messengers[conv.Platform]; ok {
 				content := result.Content
@@ -2273,6 +2275,13 @@ func (a *Agent) messageAgentTool() *tools.ToolSpec {
 			// conversation, or the messenger/target doesn't support a
 			// visible mention — never both.
 			if _, hasLiveConv := messaging.ConversationFromContext(ctx); hasLiveConv && a.announceVisibly(ctx, target.DelegateName(), input.Message) {
+				// The mention itself already reached the human — nothing
+				// else needs to be said this turn. Without this, RunLoop's
+				// guaranteed-delivery fallback (this call isn't a "reply"
+				// tool call, so hasSuccessfulSendMessage can't see it) would
+				// still post its own redundant "I've asked X, waiting on
+				// their response" follow-up right after the real mention.
+				markTurnDelivered(ctx)
 				return fmt.Sprintf("Mentioned %s in this conversation — they'll reply here once it's done, or mention you back if they need anything.", target.DelegateName()), nil
 			}
 
@@ -2283,7 +2292,7 @@ func (a *Agent) messageAgentTool() *tools.ToolSpec {
 					return nil, err
 				}
 				if result.RepliedDirectly {
-					markDelegateReplied(ctx)
+					markTurnDelivered(ctx)
 				}
 				log.Printf("🤝%s: %s finished (%s): %s", a.Name, target.DelegateName(), result.Status, result.Content)
 				return fmt.Sprintf("%s finished (%s): %s", target.DelegateName(), result.Status, result.Content), nil
@@ -2433,36 +2442,43 @@ func hasSuccessfulSendMessage(messages []llm.Message) bool {
 	return false
 }
 
-// delegateRepliedCtxKey is the context key for the mutable "did a
-// delegate reply directly this turn" flag. Never attached to or read from
-// the delegate's own ctx at all — only LoopResult.RepliedDirectly crosses
-// the RunDelegatedTask boundary (a return value, not ctx), and
-// message_agent's handler calls markDelegateReplied on the delegator's
-// own, untouched ctx after reading it. See RunLoop's guaranteed-delivery
-// fallback and error-notice path for where this is actually read.
-type delegateRepliedCtxKey struct{}
+// turnDeliveredCtxKey is the context key for the mutable "has something
+// already reached the human this turn, outside the ordinary reply tool"
+// flag — originally just "did a delegate reply directly," broadened to
+// also cover message_agent's own announceVisibly posting a real mention:
+// both mean RunLoop's guaranteed-delivery fallback has nothing left to
+// do. Never attached to or read from a delegate's own ctx at all — only
+// LoopResult.RepliedDirectly crosses the RunDelegatedTask boundary (a
+// return value, not ctx), and message_agent's handler calls
+// markTurnDelivered on the calling agent's own, untouched ctx after
+// reading it (or right after announceVisibly succeeds). See RunLoop's
+// guaranteed-delivery fallback and error-notice path for where this is
+// actually read.
+type turnDeliveredCtxKey struct{}
 
-// ensureDelegateRepliedFlag attaches the flag to ctx if one isn't already
+// ensureTurnDeliveredFlag attaches the flag to ctx if one isn't already
 // present, so a nested workflow-as-tool call within one agent's run
 // shares one flag, not its own.
-func ensureDelegateRepliedFlag(ctx context.Context) context.Context {
-	if _, ok := ctx.Value(delegateRepliedCtxKey{}).(*bool); ok {
+func ensureTurnDeliveredFlag(ctx context.Context) context.Context {
+	if _, ok := ctx.Value(turnDeliveredCtxKey{}).(*bool); ok {
 		return ctx
 	}
-	return context.WithValue(ctx, delegateRepliedCtxKey{}, new(bool))
+	return context.WithValue(ctx, turnDeliveredCtxKey{}, new(bool))
 }
 
-// markDelegateReplied records that some delegate replied directly into
-// the live conversation during this call. No-op if ctx was never wrapped.
-func markDelegateReplied(ctx context.Context) {
-	if ptr, ok := ctx.Value(delegateRepliedCtxKey{}).(*bool); ok {
+// markTurnDelivered records that the human already got something real
+// this turn — a delegate replying directly, or a visible mention already
+// posted — outside of an ordinary reply tool call. No-op if ctx was never
+// wrapped.
+func markTurnDelivered(ctx context.Context) {
+	if ptr, ok := ctx.Value(turnDeliveredCtxKey{}).(*bool); ok {
 		*ptr = true
 	}
 }
 
-// delegateReplied reports whether markDelegateReplied was called on ctx.
-func delegateReplied(ctx context.Context) bool {
-	ptr, ok := ctx.Value(delegateRepliedCtxKey{}).(*bool)
+// turnDelivered reports whether markTurnDelivered was called on ctx.
+func turnDelivered(ctx context.Context) bool {
+	ptr, ok := ctx.Value(turnDeliveredCtxKey{}).(*bool)
 	return ok && *ptr
 }
 
@@ -2553,7 +2569,7 @@ type LoopResult struct {
 	// under its own identity into whatever live conversation it inherited
 	// from its delegator. message_agent's handler reads this to tell
 	// the delegator's own RunLoop (and its own async relay) not to also
-	// send a redundant relay — see markDelegateReplied/delegateReplied.
+	// send a redundant relay — see markTurnDelivered/turnDelivered.
 	RepliedDirectly bool `json:"replied_directly,omitempty"`
 	// Deferred is set only by a DelegateTarget whose fast return is a
 	// placeholder, not a real answer (runtime's queuedDelegate — an
