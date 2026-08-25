@@ -133,7 +133,54 @@ func newPeer(ctx context.Context, ws *websocket.Conn, local *Runtime) (*Peer, er
 	local.replacePeerLocked(p)
 	local.peersMu.Unlock()
 
+	local.rememberRemotes(p.remote)
+	local.drainQueueFor(p)
+
 	return p, nil
+}
+
+// rememberRemotes records every agent id in infos into knownRemotes,
+// keeping the newest-seen PeerInfo for each — this is what lets
+// DelegateTargets keep offering a queued delegate tool for an id that has
+// disconnected, using its most recently announced name/description/
+// capabilities rather than nothing at all.
+func (r *Runtime) rememberRemotes(infos []PeerInfo) {
+	r.knownRemotesMu.Lock()
+	defer r.knownRemotesMu.Unlock()
+	if r.knownRemotes == nil {
+		r.knownRemotes = make(map[string]PeerInfo, len(infos))
+	}
+	for _, info := range infos {
+		r.knownRemotes[info.AgentID] = info
+	}
+}
+
+// drainQueueFor re-dispatches every task queued for each agent id p just
+// announced — called right after p becomes live for delegation (see
+// newPeer), so a task queued while that id was offline runs as soon as
+// it's reachable again, with no separate poll or retry loop needed. No-op
+// if no TaskQueue is configured. Each task's re-dispatch runs in its own
+// goroutine so one slow task can't hold up draining the rest, or block
+// newPeer's own caller (Dial/Handler) from moving on to readLoop.
+func (r *Runtime) drainQueueFor(p *Peer) {
+	if r.queue == nil {
+		return
+	}
+	for _, info := range p.remote {
+		tasks, err := r.queue.Drain(p.ctx, info.AgentID)
+		if err != nil {
+			log.Printf("runtime: draining queued tasks for %s: %v", info.AgentID, err)
+			continue
+		}
+		for _, task := range tasks {
+			go func(task PendingTask) {
+				result, err := p.dispatch(task.TargetID, task.ID, task.Task)
+				if r.OnQueueDrained != nil {
+					r.OnQueueDrained(p.ctx, task, result, err)
+				}
+			}(task)
+		}
+	}
 }
 
 // pingLoop sends a WebSocket ping every pingInterval until p.done closes —

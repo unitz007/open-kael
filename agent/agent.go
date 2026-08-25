@@ -132,6 +132,14 @@ type Agent struct {
 	// agent whose real capabilities live entirely on the other side of its
 	// loop.
 	capabilities string
+
+	// triggerState, when set via SetTriggerState (normally propagated by
+	// Runtime.SetTriggerState/RegisterAgent, not called directly), lets
+	// Start detect a cron-triggered workflow that missed its scheduled
+	// occurrence while this process was down, and catch up on it — see
+	// TriggerState's own doc comment. nil means today's behavior: a missed
+	// run is only ever logged (warnIfCronRunLikelyMissed), never caught up.
+	triggerState TriggerState
 }
 
 // DelegateTarget is anything that can receive a delegated task and run its
@@ -182,6 +190,14 @@ func (a *Agent) SetLoop(l AgentLoop) {
 // agent's loop isn't nativeLoop.
 func (a *Agent) SetDelegateCapabilities(s string) {
 	a.capabilities = s
+}
+
+// SetTriggerState wires t onto this agent — see Agent.triggerState's own
+// doc comment. Normally called once by Runtime.SetTriggerState/
+// RegisterAgent on every registered agent, not per agent directly; exposed
+// here so an agent used standalone (no Runtime) can still opt in.
+func (a *Agent) SetTriggerState(t TriggerState) {
+	a.triggerState = t
 }
 
 // AgentDirectory lets an agent see its siblings under a shared host, so it
@@ -1281,6 +1297,31 @@ func (a *Agent) DefaultConversation() (conv messaging.ConversationRef, ok bool) 
 	return a.primaryMessenger.DefaultConversation(), true
 }
 
+// DeliverResult sends text back to whatever conversation ctx carries (via
+// replyOrSend, threading into the original message when ctx actually came
+// from one — the same resolution any other tool result already gets),
+// falling back to DefaultConversation() when ctx carries none at all (a
+// queued task that had no live conversation to begin with — e.g. a
+// missed-workflow catch-up). Exists so an external caller with no direct
+// access to a.messengers/replyOrSend — a Runtime's TaskQueue drain callback
+// (see runtime.Runtime.OnQueueDrained) — can still deliver a result back to
+// wherever it originally came from.
+func (a *Agent) DeliverResult(ctx context.Context, text string) error {
+	conv, ok := messaging.ConversationFromContext(ctx)
+	if !ok {
+		conv, ok = a.DefaultConversation()
+		if !ok {
+			return fmt.Errorf("%s: no conversation to deliver to", a.Name)
+		}
+	}
+	m, ok := a.messengers[conv.Platform]
+	if !ok {
+		return fmt.Errorf("%s: no messenger registered for platform %q", a.Name, conv.Platform)
+	}
+	_, err := a.replyOrSend(ctx, m, conv, text)
+	return err
+}
+
 // SetMemoryKeyFunc overrides how this agent partitions memory across
 // RunLoop/runWorkflow/RunDelegatedTask — see messaging.MemoryKeyFunc and
 // its presets (KeyByAgent, KeyByConversation, KeyByThread, KeyByWorkflow).
@@ -1368,6 +1409,39 @@ func warnIfCronRunLikelyMissed(agentName, workflowName, cronExpr string) {
 	}
 }
 
+// checkMissedCronRun compares cronExpr's most recent past occurrence
+// against workflowID's last recorded fire (from a.triggerState) to decide
+// whether a scheduled run was actually missed — unlike
+// warnIfCronRunLikelyMissed's fixed missedCronWindow around process start,
+// this can tell "offline for three days, missed three runs" from "fired
+// five minutes ago, nothing missed" as long as RecordFired has been kept up
+// to date. Returns the missed occurrence's time and true only when there's
+// both a recorded last-fire baseline and a genuinely later scheduled
+// occurrence than it; false (with no baseline) on a brand new workflow —
+// deliberately not treated as "missed everything back to install," since
+// there's nothing to compare against yet.
+func (a *Agent) checkMissedCronRun(ctx context.Context, workflowID, cronExpr string) (time.Time, bool) {
+	last, found, err := a.triggerState.LastFired(ctx, workflowID)
+	if err != nil {
+		log.Printf("⚠️%s: workflow %q: reading trigger state: %v", a.Name, workflowID, err)
+		return time.Time{}, false
+	}
+	if !found {
+		return time.Time{}, false
+	}
+
+	sched, err := cron.ParseStandard(cronExpr)
+	if err != nil {
+		return time.Time{}, false // cronExpr's own validity is checked separately, at actual schedule time
+	}
+
+	next := sched.Next(last)
+	if next.After(time.Now()) {
+		return time.Time{}, false // nothing missed — last fire covers every occurrence up to now
+	}
+	return next, true
+}
+
 func (a *Agent) Start(ctx context.Context) error {
 
 	if a.inBox != nil {
@@ -1399,6 +1473,23 @@ func (a *Agent) Start(ctx context.Context) error {
 				continue
 			}
 			warnIfCronRunLikelyMissed(a.Name, wf.Name, cronExpr)
+			if a.triggerState != nil {
+				if missedAt, missed := a.checkMissedCronRun(ctx, wf.ID, cronExpr); missed {
+					log.Printf("🧨%s: workflow %q missed its scheduled run at %s — catching up now", a.Name, wf.Name, missedAt.Format(time.RFC3339))
+					go func(wf *workflow.Workflow) {
+						defer recoverFromPanic(a.Name, "missed-run catch-up for "+wf.Name)
+						result, err := a.runWorkflow(context.Background(), wf, a.messagingTools(), "You were offline when this was last due — catching up now.")
+						if err != nil {
+							log.Printf("⚠️%s: missed-run catch-up for workflow %q failed: %v", a.Name, wf.Name, err)
+							return
+						}
+						log.Printf("🧨%s: missed-run catch-up for workflow %q finished (%s): %s", a.Name, wf.Name, result.Status, result.Content)
+						if err := a.triggerState.RecordFired(context.Background(), wf.ID, time.Now()); err != nil {
+							log.Printf("⚠️%s: workflow %q: recording catch-up fire: %v", a.Name, wf.Name, err)
+						}
+					}(wf)
+				}
+			}
 			s, _ := gocron.NewScheduler()
 			cronJob := gocron.CronJob(cronExpr, false)
 			task := gocron.NewTask(func() {
@@ -1428,6 +1519,11 @@ func (a *Agent) Start(ctx context.Context) error {
 				log.Printf("🧨%s: cron-triggered workflow %q finished (%s): %s", a.Name, wf.Name, result.Status, result.Content)
 				if a.eventBus != nil {
 					a.eventBus.PublishEvent("workflow.completed", a.Name, wf.Name, fmt.Sprintf("status=%s", result.Status), nil, nil)
+				}
+				if a.triggerState != nil {
+					if err := a.triggerState.RecordFired(context.Background(), wf.ID, time.Now()); err != nil {
+						log.Printf("⚠️%s: workflow %q: recording fire: %v", a.Name, wf.Name, err)
+					}
 				}
 			})
 			job, err := s.NewJob(cronJob, task)

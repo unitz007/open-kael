@@ -26,25 +26,88 @@ type Runtime struct {
 	EventBus   *events.EventBus
 	webhookMux *http.ServeMux
 	human      human.Human
+	// queue, when set via SetTaskQueue, is what lets a delegate_to_<id> tool
+	// keep working (deferred, not gone) once that id's peer disconnects —
+	// see DelegateTargets and queuedDelegate. nil means today's behavior:
+	// an offline id's delegate tool simply isn't offered at all.
+	queue TaskQueue
+	// knownRemotes is every remote agent id this Runtime has seen a peer
+	// announce at least once, for the lifetime of this process — unlike
+	// peers, entries here are never removed on disconnect. This is what
+	// lets DelegateTargets keep offering a delegate tool (backed by
+	// queuedDelegate) for an id that's currently offline but has connected
+	// before, rather than the tool only existing while the peer is live.
+	knownRemotes   map[string]PeerInfo
+	knownRemotesMu sync.RWMutex
+	// triggerState, when set via SetTriggerState, is propagated to every
+	// registered agent (present and future) so Agent.Start can detect and
+	// catch up on a missed cron occurrence — see agent.TriggerState's own
+	// doc comment. nil means today's behavior: a missed run is only ever
+	// logged (warnIfCronRunLikelyMissed), never caught up.
+	triggerState agent.TriggerState
+	// OnQueueDrained, when set, is called once per task after a
+	// newly-(re)connected peer's queued tasks have been re-dispatched (see
+	// peer.go's drainQueueFor) — result/err reflect that re-dispatch.
+	// Delivering the result back to wherever the task originally came from
+	// (PendingTask.Ref/ThreadID/MessageID) is deliberately left to this
+	// callback rather than hardcoded here: that's app-level policy (see
+	// Agent.DeliverResult), the same way this package leaves memory/identity
+	// storage to the consuming app.
+	OnQueueDrained func(ctx context.Context, task PendingTask, result string, err error)
 }
 
 // DelegateTargets satisfies agent.AgentDirectory — every locally-registered
-// agent, plus one DelegateTarget per agent any currently-connected peer has
-// announced it hosts. Computed fresh on each call: a peer's own registry
-// can change over time, and this always reflects what's live right now.
+// agent, one DelegateTarget per agent any currently-connected peer has
+// announced it hosts, and (only when a TaskQueue is configured) one
+// queue-backed DelegateTarget per known-but-currently-offline remote agent
+// id, so delegate_to_<id> stays offered even while its peer is
+// disconnected. Computed fresh on each call: a peer's own registry can
+// change over time, and this always reflects what's live right now.
 func (r *Runtime) DelegateTargets() []agent.DelegateTarget {
 	out := make([]agent.DelegateTarget, 0, len(r.agentRegistry))
 	for _, a := range r.agentRegistry {
 		out = append(out, a)
 	}
+
 	r.peersMu.RLock()
-	defer r.peersMu.RUnlock()
+	live := make(map[string]bool)
 	for _, p := range r.peers {
 		for _, info := range p.RemoteAgents() {
 			out = append(out, &remoteDelegate{info: info, peer: p})
+			live[info.AgentID] = true
 		}
 	}
+	r.peersMu.RUnlock()
+
+	if r.queue != nil {
+		r.knownRemotesMu.RLock()
+		for id, info := range r.knownRemotes {
+			if !live[id] {
+				out = append(out, &queuedDelegate{info: info, queue: r.queue})
+			}
+		}
+		r.knownRemotesMu.RUnlock()
+	}
+
 	return out
+}
+
+// SetTaskQueue wires q onto this Runtime — see Runtime.queue's own doc
+// comment. Optional: nil (the default) means an offline peer's delegate
+// tools simply aren't offered, exactly like before this existed.
+func (r *Runtime) SetTaskQueue(q TaskQueue) {
+	r.queue = q
+}
+
+// SetTriggerState wires t onto every currently-registered agent, and onto
+// every agent registered after this call — same propagation shape as
+// SetHuman, since a workflow-missed-run check is equally agent-agnostic
+// shared state, not something configured per agent individually.
+func (r *Runtime) SetTriggerState(t agent.TriggerState) {
+	r.triggerState = t
+	for _, a := range r.agentRegistry {
+		a.SetTriggerState(t)
+	}
 }
 
 // PeerConnected reports whether agentID is currently reachable through any
@@ -147,6 +210,9 @@ func (r *Runtime) RegisterAgent(a *agent.Agent) {
 	a.SetWebhookMux(r.webhookMux)
 	if r.human != nil {
 		a.SetHuman(r.human)
+	}
+	if r.triggerState != nil {
+		a.SetTriggerState(r.triggerState)
 	}
 	r.agentRegistry = append(r.agentRegistry, a)
 
