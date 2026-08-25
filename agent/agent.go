@@ -1166,7 +1166,7 @@ func (a *Agent) messengerTools() []*tools.ToolSpec {
 // memory intact — see message_agent's own doc comment for the case that
 // doesn't need a live shared conversation at all.
 func (a *Agent) replyTool() *tools.ToolSpec {
-	return tools.NewToolBuilder("reply", "Sends a message into the current conversation — to the human by default, or add mention_agent to address a sibling agent visibly instead (their own reply appears under their own identity, in this same conversation, for the human to see). Prefer this over message_agent whenever a human is in the conversation and should see the hand-off — even for something that takes a while: your own turn can end now, and their real answer arriving later (or mentioning you back if they need something from you) is normal, not a failure to finish. Always fire-and-forget: this returns immediately, and you do NOT get the other party's reply as part of this turn. If you need an agent's answer to continue, ask them to mention you back in your message — their reply wakes you with a fresh turn in this same thread, and your memory carries over. Use message_agent instead only when your own very next action depends on their answer, or when there's no live shared conversation to post into at all.").
+	return tools.NewToolBuilder("reply", "Sends a message into the current conversation — to the human by default, or add mention_agent to address a sibling agent visibly instead (their own reply appears under their own identity, in this same conversation, for the human to see). Prefer this over message_agent whenever the real answer belongs to a sibling agent's own domain — their own data, their own expertise — even if fetching and relaying it yourself would only take a few seconds: a human should see their real voice on their own information, not your paraphrase of it. Speed isn't what decides this, ownership is. Always fire-and-forget: this returns immediately, and you do NOT get the other party's reply as part of this turn. If you need an agent's answer to continue, ask them to mention you back in your message — their reply wakes you with a fresh turn in this same thread, and your memory carries over. Use message_agent instead only when your own very next action genuinely depends on their answer — deciding what YOU do next, not just what you'll tell the human — or when there's no live shared conversation to post into at all.").
 		Parameter("message", "string", "The message to send", true).
 		Parameter("mention_agent", "string", "Optional. Name of a sibling agent to address visibly in this same conversation, instead of replying to the human.", false).
 		Parameter("platform", "string", "Optional. Send through a specific registered platform instead of the current conversation — e.g. \"email\" to email the owner instead of replying here. Only use this when the user explicitly asks to be reached a different way (\"send that to my email\"); leave unset for a normal reply. Fails if that platform isn't registered for this agent.", false).
@@ -2194,14 +2194,15 @@ func (a *Agent) messageAgentTool() *tools.ToolSpec {
 		fmt.Fprintf(&b, "- %q (id: %s): %s\n  Capabilities: %s\n",
 			target.DelegateName(), target.DelegateID(), target.DelegateDescription(), target.DelegateCapabilities())
 	}
-	b.WriteString("\nSet wait_for_reply=true ONLY when your own very next action depends on their answer — e.g. " +
-		"deciding what to do next based on what they report back. Do NOT set it just to relay their answer to a " +
-		"human yourself instead of letting them speak for themselves — if there's a live conversation with a " +
-		"human and you don't need the answer for your own next step, leave wait_for_reply unset/false: this " +
-		"tags them for real, visibly, in this same conversation when possible, and their own reply appears under " +
-		"their own identity — you don't need to relay it. When a visible tag isn't possible (no live " +
-		"conversation, or they're not reachable that way), this falls back to a placeholder now and a real " +
-		"follow-up in your own words once they're done.")
+	b.WriteString("\nSet wait_for_reply=true ONLY when your own very next action depends on their answer — " +
+		"deciding what YOU do next, not just composing an answer for a human. If the real answer belongs to a " +
+		"sibling agent's own domain — their own data, their own expertise — use reply's mention_agent instead " +
+		"and let them answer under their own identity; a human should see their real voice on their own " +
+		"information, not your paraphrase of it, even if fetching it yourself would only take a few seconds. " +
+		"Ownership decides this, not speed. Leave wait_for_reply unset/false here only for something that's " +
+		"genuinely yours to relay but where a visible tag isn't possible (no live conversation, or they're not " +
+		"reachable that way) — this then falls back to a placeholder now and a real follow-up in your own words " +
+		"once they're done.")
 
 	return tools.NewToolBuilder("message_agent", b.String()).
 		Parameter("agent", "string", "Which agent to message — its id or display name, from the list above.", true).
