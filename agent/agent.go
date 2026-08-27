@@ -1699,29 +1699,6 @@ func (a *Agent) capabilitiesBlock() string {
 	return b.String()
 }
 
-// messengerContextBlock collects durable, messenger-owned context from any
-// registered platform adapter that opts in. This lets a messenger describe its
-// own configured identity (for example, which email address it sends from)
-// without hardcoding platform details into every agent's IdentityPrompt.
-func (a *Agent) messengerContextBlock() string {
-	var parts []string
-	for _, m := range a.messengers {
-		cp, ok := m.(messaging.ContextProvider)
-		if !ok {
-			continue
-		}
-		context := strings.TrimSpace(cp.Context())
-		if context == "" {
-			continue
-		}
-		parts = append(parts, context)
-	}
-	if len(parts) == 0 {
-		return ""
-	}
-	return "These are your registered messenger identities:\n" + strings.Join(parts, "\n") + "\n"
-}
-
 // systemPrompt builds the system message for a plain conversational turn
 // (RunLoop) or a delegated call (RunDelegatedTask). loopProtocolInstructions
 // and capabilitiesBlock() — end_loop, "describe your capabilities strictly
@@ -1734,9 +1711,9 @@ func (a *Agent) messengerContextBlock() string {
 // can actually do.
 func (a *Agent) systemPrompt() string {
 	if a.loop != nil {
-		return a.IdentityPrompt + "\n" + a.humanBlock() + a.messengerContextBlock()
+		return a.IdentityPrompt + "\n" + a.humanBlock()
 	}
-	return a.IdentityPrompt + "\n" + loopProtocolInstructions + "\n" + a.humanBlock() + a.messengerContextBlock() + a.capabilitiesBlock()
+	return a.IdentityPrompt + "\n" + loopProtocolInstructions + "\n" + a.humanBlock() + a.capabilitiesBlock()
 }
 
 // humanBlock describes the person this agent serves, when a Human is
@@ -2066,7 +2043,7 @@ func (a *Agent) runWorkflow(ctx context.Context, wf *workflow.Workflow, messagin
 		prior = a.memory.History(ctx, memKey)
 	}
 
-	sysContent := a.humanBlock() + a.messengerContextBlock() + wf.SystemPrompt
+	sysContent := a.humanBlock() + wf.SystemPrompt
 	if a.loop == nil {
 		sysContent += " " + loopProtocolInstructions
 	}
