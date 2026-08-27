@@ -70,8 +70,8 @@ type Agent struct {
 	// messenger registered. Ranging over messengers itself for this would
 	// pick effectively at random: Go map iteration order is randomized,
 	// not insertion order.
-	primaryMessenger      messaging.Messenger
-	directory             AgentDirectory
+	primaryMessenger messaging.Messenger
+	directory        AgentDirectory
 	// hiddenDelegateIDs holds delegate ids the directory reports but that
 	// must never surface through THIS agent's own message_agent tool —
 	// for a target meant to be reachable only via some other,
@@ -79,8 +79,8 @@ type Agent struct {
 	// NewExternalAgentTool that still rides the shared peer transport).
 	// Set via SetHiddenDelegateIDs; nil (the default) means every
 	// directory target is visible, today's behavior.
-	hiddenDelegateIDs map[string]bool
-	webhookMux        *http.ServeMux
+	hiddenDelegateIDs     map[string]bool
+	webhookMux            *http.ServeMux
 	identities            map[string]identity.Identity
 	retrievers            map[string]rag.Retriever
 	retrieverDescriptions map[string]string
@@ -1699,6 +1699,29 @@ func (a *Agent) capabilitiesBlock() string {
 	return b.String()
 }
 
+// messengerContextBlock collects durable, messenger-owned context from any
+// registered platform adapter that opts in. This lets a messenger describe its
+// own configured identity (for example, which email address it sends from)
+// without hardcoding platform details into every agent's IdentityPrompt.
+func (a *Agent) messengerContextBlock() string {
+	var parts []string
+	for _, m := range a.messengers {
+		cp, ok := m.(messaging.ContextProvider)
+		if !ok {
+			continue
+		}
+		context := strings.TrimSpace(cp.Context())
+		if context == "" {
+			continue
+		}
+		parts = append(parts, context)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "These are your registered messenger identities:\n" + strings.Join(parts, "\n") + "\n"
+}
+
 // systemPrompt builds the system message for a plain conversational turn
 // (RunLoop) or a delegated call (RunDelegatedTask). loopProtocolInstructions
 // and capabilitiesBlock() — end_loop, "describe your capabilities strictly
@@ -1711,9 +1734,9 @@ func (a *Agent) capabilitiesBlock() string {
 // can actually do.
 func (a *Agent) systemPrompt() string {
 	if a.loop != nil {
-		return a.IdentityPrompt + "\n" + a.humanBlock()
+		return a.IdentityPrompt + "\n" + a.humanBlock() + a.messengerContextBlock()
 	}
-	return a.IdentityPrompt + "\n" + loopProtocolInstructions + "\n" + a.humanBlock() + a.capabilitiesBlock()
+	return a.IdentityPrompt + "\n" + loopProtocolInstructions + "\n" + a.humanBlock() + a.messengerContextBlock() + a.capabilitiesBlock()
 }
 
 // humanBlock describes the person this agent serves, when a Human is
@@ -2043,7 +2066,7 @@ func (a *Agent) runWorkflow(ctx context.Context, wf *workflow.Workflow, messagin
 		prior = a.memory.History(ctx, memKey)
 	}
 
-	sysContent := a.humanBlock() + wf.SystemPrompt
+	sysContent := a.humanBlock() + a.messengerContextBlock() + wf.SystemPrompt
 	if a.loop == nil {
 		sysContent += " " + loopProtocolInstructions
 	}

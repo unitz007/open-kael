@@ -125,6 +125,14 @@ type ToolProvider interface {
 	Tools() []*tools.ToolSpec
 }
 
+// ContextProvider is implemented by a Messenger that needs to tell the model
+// how its platform identity behaves. Keep this to durable facts derived from
+// the messenger's own configuration (addresses, reply semantics, routing), not
+// broad agent behavior that belongs in an agent or workflow prompt.
+type ContextProvider interface {
+	Context() string
+}
+
 // ApprovalMessenger is implemented by a Messenger that can gate an action
 // behind an interactive approve/reject prompt — used by a ToolSpec marked
 // RequiresApproval (see tools.ToolSpecBuilder.RequireApproval). Optional,
