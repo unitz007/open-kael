@@ -1259,33 +1259,28 @@ func (a *Agent) resolveSendTarget(ctx context.Context, platform string) (messagi
 
 // callTool runs tool.Handler, first enforcing RequiresApproval if the tool
 // declares it (see ToolSpec.RequiresApproval's own doc comment — the tool
-// only says approval is needed, never how to obtain it). Deliberately
-// resolves the approval target via a.DefaultConversation() — this agent's
-// own identity — rather than resolveSendTarget's ambient-ctx-preferring
-// logic (what send_message uses): ctx can carry a ConversationRef
-// inherited from a completely different agent (e.g. mid-delegation — see
-// RunDelegatedTask, which forwards its caller's ctx unchanged into its own
-// nested loop), and resolveSendTarget would happily pair that foreign
-// ConversationRef with THIS agent's own messenger — posting an approval
-// prompt as the wrong bot into a channel it likely isn't even a member
-// of. An approval prompt is always something this agent originates on its
-// own behalf, never a reply within someone else's conversation, so it
-// should never inherit one. Requires the resolved messenger to implement
-// messaging.ApprovalMessenger; one that doesn't is refused outright rather
-// than treated as "no approval needed" — never a silent bypass. A human
-// decline or an unanswered prompt both come back as a normal, non-error
-// result (Handler never runs) so the model sees "not approved" like any
-// other tool outcome, not a failure to retry.
+// only says approval is needed, never how to obtain it). Approval prompts use
+// the active conversation when this is a direct human/workflow turn for one of
+// this agent's own messengers, so platform implementations can keep the prompt
+// in the same thread. Delegated calls deliberately fall back to this agent's
+// DefaultConversation: ctx can carry a ConversationRef inherited from a
+// completely different agent (see RunDelegatedTask), and pairing that foreign
+// conversation with THIS agent's own messenger would post an approval prompt as
+// the wrong bot into a channel it likely isn't even a member of. Requires the
+// resolved messenger to implement messaging.ApprovalMessenger; one that doesn't
+// is refused outright rather than treated as "no approval needed" — never a
+// silent bypass. A human decline or an unanswered prompt both come back as a
+// normal, non-error result (Handler never runs) so the model sees "not
+// approved" like any other tool outcome, not a failure to retry.
 func (a *Agent) callTool(ctx context.Context, tool *tools.ToolSpec, args json.RawMessage) (any, error) {
 	if !tool.RequiresApproval {
 		return tool.Handler(ctx, args)
 	}
 
-	conv, ok := a.DefaultConversation()
-	if !ok {
-		return nil, fmt.Errorf("%s requires approval but no messenger is available", tool.Name)
+	conv, m, err := a.resolveApprovalTarget(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("%s requires approval but %w", tool.Name, err)
 	}
-	m := a.messengers[conv.Platform]
 	am, ok := m.(messaging.ApprovalMessenger)
 	if !ok {
 		return nil, fmt.Errorf("%s requires approval, but %s doesn't support interactive approval — refusing to run rather than executing unapproved", tool.Name, m.Platform())
@@ -1305,6 +1300,26 @@ func (a *Agent) callTool(ctx context.Context, tool *tools.ToolSpec, args json.Ra
 		return "Not approved within the timeout — action not taken.", nil
 	}
 	return tool.Handler(ctx, args)
+}
+
+func (a *Agent) resolveApprovalTarget(ctx context.Context) (messaging.ConversationRef, messaging.Messenger, error) {
+	if _, delegated := messaging.DelegatorFromContext(ctx); !delegated {
+		if conv, ok := messaging.ConversationFromContext(ctx); ok {
+			if m, ok := a.messengers[conv.Platform]; ok {
+				return conv, m, nil
+			}
+		}
+	}
+
+	conv, ok := a.DefaultConversation()
+	if !ok {
+		return messaging.ConversationRef{}, nil, fmt.Errorf("no messenger is available")
+	}
+	m, ok := a.messengers[conv.Platform]
+	if !ok {
+		return messaging.ConversationRef{}, nil, fmt.Errorf("no messenger registered for platform %q", conv.Platform)
+	}
+	return conv, m, nil
 }
 
 // replyOrSend delivers text to conv via m, addressed back to the
