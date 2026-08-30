@@ -1,8 +1,13 @@
-# Kael
+# Kael Platform
 
-Kael is a Go library providing the runtime for LLM agents: a tool-calling loop, multi-agent delegation, scheduled and webhook-triggered workflows, and a mechanism for holding a sensitive tool call behind a human's approval before it runs. It defines the interfaces for messaging, memory, and identity, but ships no implementations — those are left to the application.
+Kael is a Go framework for building tool-using LLM agents. It provides the
+runtime pieces that are useful across applications: agent loops, tool schemas,
+workflow execution, delegation, messaging interfaces, identities, memory,
+retrieval hooks, webhooks, approval gates, peer connections, and task queues.
 
-This repo is just the platform — no application code, no specific agents. Copyable reference implementations (`Identity`, `Memory`, `Messenger`, `webhook.Source`, and an OpenAI-compatible LLM client) live under `examples/` — see [`examples/starter`](examples/starter) for identity, memory, a cron workflow, a webhook workflow, and a messenger all together in one agent. Copy what fits, or bring your own; you build agents, tools, and identities by importing this module.
+This repository is the platform only. It does not ship Charles' personal agents
+or production integrations. Those live in the sibling `Kael` app repository,
+which imports this module as `github.com/unitz007/kael`.
 
 ## Install
 
@@ -10,211 +15,384 @@ This repo is just the platform — no application code, no specific agents. Copy
 go get github.com/unitz007/kael
 ```
 
-## Quickstart
-
-```bash
-cd examples/basic
-export LLM_API_KEY="your-key"
-export LLM_BASE_URL="https://openrouter.ai"
-go run .
-```
-
-This registers two agents on a `Runtime` and launches it: an assistant and a research specialist reachable only via delegation. See [examples/basic/main.go](examples/basic/main.go) and [examples/researchspecialist/agent.go](examples/researchspecialist/agent.go).
-
-For a single agent showing every piece together — a custom `Identity`, a cron-triggered workflow, a webhook-triggered workflow, and a `Messenger` — see [`examples/starter`](examples/starter) instead. It's meant to be copied wholesale as the starting point for a real project.
-
-## Building an agent
+## Minimal Agent
 
 ```go
-a := agent.NewAgent(id, name, description, identityPrompt, llmClient)
-a.AddTool(myTool)
-a.AddWorkflow(myWorkflow)
-a.AddMessenger(myMessenger)
-a.IdentifyAs(myIdentity)
+package main
 
-rt := runtime.NewRuntime()
-rt.RegisterAgent(a)
-rt.Launch(ctx) // blocks until ctx is cancelled
-```
+import (
+    "context"
 
-Registration on a `Runtime` is what makes agents visible to each other — an agent built but never registered has no delegation siblings, since `delegate_to_<id>` tools are generated from the registry, not from anything the agent holds itself.
+    "github.com/unitz007/kael/agent"
+    "github.com/unitz007/kael/runtime"
+)
 
-## The loop, and what sits around it
+func main() {
+    llm := newLLMClient()
 
-At the center of an agent is `runLoopFrom`: given a transcript and a toolset, it calls the LLM with `tool_choice: "required"` (every response must call something — no plain-content replies), executes whatever tool comes back, and repeats, up to a fixed iteration cap, until something calls `end_loop`. A few things about that loop are true regardless of who's calling it:
+    assistant := agent.NewAgent(
+        "assistant",
+        "Assistant",
+        "General-purpose assistant",
+        "You are a careful assistant. Use tools when needed.",
+        llm,
+    )
 
-- A tool-less response doesn't get accepted as an answer. It gets nudged — "that had no tool call, try again" — because silently accepting freeform text is exactly how an *unverified* answer (a fact the model invented instead of actually looking up) would sail straight through.
-- A response full of *repeated* (identical name+arguments) tool calls gets discarded wholesale as a decoding glitch some models fall into — dozens of copies of the same call in one shot — rather than executed. A same-size response where every call is actually distinct (e.g. one call per item in a list your tools are iterating over) isn't this pattern and goes through normally, up to a much higher hard ceiling. Both thresholds (`Agent.MaxDuplicateToolCallsPerResponse`, default 10; `Agent.MaxToolCallsPerResponse`, default 50) are yours to raise or lower — set them directly if your own tools/workflows have a different natural batch size. A specific workflow can override either one for just its own nested run (`Workflow.MaxDuplicateToolCallsPerResponse`/`Workflow.MaxToolCallsPerResponse`, 0 = falls back to the agent's value) — same reasoning `Workflow.Iteration` already overrides `Agent.MaxIterations`. For a cap that depends on live data (e.g. the workflow fans out one call per item from a list whose size isn't known ahead of time — installed repos, open tickets, whatever), `Workflow.MaxToolCallsPerResponseFunc`/`Workflow.MaxDuplicateToolCallsPerResponseFunc` (`func(ctx context.Context) (int, error)`) take priority over the plain int fields and are called once at the start of each run — `ctx` carries this agent's identities/retrievers exactly like a tool handler's does, so the func can call `identity.FromContext`/`rag.FromContext` to look the real number up. An error just logs and falls back to the plain field (then the agent's default) rather than failing the whole run over a safety-margin lookup.
-- A tool already called once with the same arguments can't be called again — stops a model from re-sending, re-triggering, or re-delegating something that already succeeded.
+    assistant.AddTool(newExampleTool())
 
-None of that logic knows or cares whether it's running a real conversation, a workflow, or a delegated task. What *does* differ by caller is the transcript and toolset handed in — and that's decided by which of two entry points is used.
-
-### Two ways into the loop, not one with a flag
-
-**`RunLoop(ctx, conv, userPrompt)`** is for actual conversations. It loads that conversation's prior turns from memory, builds a toolset via `baseTools()` — the agent's own tools, `send_message` and any messenger-contributed extras (see [Talking to the outside world](#talking-to-the-outside-world)) once a messenger's registered — plus every workflow the agent owns and a `delegate_to_<id>` tool for every sibling agent on the same `Runtime`. Once the loop finishes, it delivers the answer itself — `end_loop`'s final message goes to the messenger automatically, so a reply doesn't depend on the model remembering to call `send_message` along the way. (It still can, for something like an interim "still working on it" — the auto-delivery just backs off if `send_message` already succeeded, so nothing goes out twice.)
-
-**`runDelegatedTask(ctx, task)`** is for when one agent hands work to another. It's not `RunLoop` with something disabled — it's a separate method with its own toolset: `baseTools()` (same as above — send_message and messenger tools included) plus the agent's own workflows, minus `delegate_to_<id>`. No `ConversationRef` parameter, because delegation isn't a conversation — but `ctx` still carries whatever `ConversationRef`/message id the delegating call itself inherited, so `send_message`/`add_reaction` route through the *delegate's own* registered messenger against that same conversation if it chooses to use them (the delegate's system prompt makes clear this is optional, alongside — never instead of — its `end_loop` answer, which is what's actually relayed back to the delegator). No memory, because a delegated call is a one-off subroutine invocation, not a thread with history. No further delegation, because a delegated agent handing the task off again is how you get a cycle two agents' prompts could walk into on their own — enforced by a hard depth cap (`maxDelegationDepth`), not just by omission. `delegate_to_<id>` calls this directly and blocks until it returns, folding the result straight into the delegator's own transcript.
-
-A workflow, wherever it's triggered from, runs the same way: a *fresh* transcript scoped to that workflow's own system prompt, nested one level into the same `runLoopFrom` engine, with no access to other workflows. It gets `delegate_to_<id>` tools too, but only if it opts in via `Workflow.AllowDelegation` — off by default, since most workflows are meant to be a bounded, single-purpose loop, not a dispatcher.
-
-## Talking to the outside world
-
-`messaging.Messenger` is the interface a platform adapter implements — `Send`, `Listen`, `Platform`, `DefaultConversation`. This module ships no implementations — [`examples/messenger`](examples/messenger) is a working Slack/Telegram reference to copy into your own project and edit; wire up additional ones (a CLI, Discord, whatever) against the same interface and pass them to `AddMessenger`. An agent only gets `send_message` in its toolset once something's actually been registered — no messenger, no tool, rather than a tool that's guaranteed to fail the moment it's called.
-
-A `Messenger` can optionally also implement `messaging.ToolProvider` (one method: `Tools() []*tools.ToolSpec`) to contribute platform-specific tools beyond `send_message` — `SlackBot` does this for `add_reaction`/`search_emoji`, since reactions have no cross-platform equivalent and don't belong on the `Messenger` interface itself. `Agent.baseTools()` checks every registered messenger for this and merges in whatever it returns, so any agent that registers a `SlackBot` inherits those tools automatically, with no per-agent wiring.
-
-`ConversationRef{Platform, ChatID}` is how a reply gets routed back to the right place; `messaging.WithConversation`/`ConversationFromContext` thread the active one through `ctx` so a tool handler built with no knowledge of any specific conversation (or even of its own agent, in a workflow's case) can still find out where to reply.
-
-## Triggers — cron, webhook, or event
-
-`triggers.Trigger{Type, Value}` is deliberately typed with `Value any` rather than a named field per `TriggerType`, so a new trigger kind doesn't need a schema change: `Agent.Start()`'s type switch does the assertion per `TriggerType` constant.
-
-- **`triggers.CronTriggerType`** — `Value` is a cron expression string. `Start()` schedules it with `gocron` and, on fire, runs the workflow through `runWorkflow` for real (not just an event publish) — `send_message` falls back to the messenger's `DefaultConversation()` since there's no active conversation to reply into. The scheduled task recovers from a panic (logged, not propagated) rather than taking down every other agent sharing the process — see [Reliability](#reliability-one-agents-bug-cant-take-down-the-others).
-- **`triggers.WebhookTriggerType`** — `Value` is a `webhook.Source` (package `webhook`), the webhook counterpart to `messaging.Messenger`: `Path()`, `Verify(body, header) bool`, `Decode(body, header) (userTrigger string, ok bool, err error)`. This module ships no implementations — GitHub, Stripe, or whatever else sends you a webhook each has its own payload shape and signature scheme; use `webhook.VerifyHMACSHA256` as the shared constant-time HMAC building block. `Start()` registers the source's `Path()` on the `Runtime`'s shared `http.ServeMux` (`Runtime.WebhookHandler()` — mount it on your own server), verifies and decodes each incoming request, and runs the matching workflow in a goroutine on success.
-- **`triggers.EventTriggerType`** — reserved, not yet implemented.
-
-## Delegation across workflows
-
-`Workflow.AllowDelegation` opts a specific workflow into having `delegate_to_<sibling>` tools in its nested toolset — e.g. an issue-triage workflow whose whole job is deciding what to hand off to which agent. `Agent.runWorkflow` and `runDelegatedTask` both enforce a hard depth cap (`maxDelegationDepth`) regardless of this flag, so a misconfigured delegation cycle across multiple agents' workflows fails loudly with a depth-exceeded error rather than recursing forever.
-
-## Identity — acting as someone on an external system
-
-`identity.Identity` is deliberately bare:
-
-```go
-type Identity interface {
-    Provider() string                         // "github", "aws", ...
-    ActingAs() string                          // the account/username/role this identity presents as
-    Token(ctx context.Context) (string, error) // a currently-valid credential, refreshed internally if needed
+    rt := runtime.NewRuntime()
+    rt.RegisterAgent(assistant)
+    rt.Launch(context.Background())
 }
 ```
 
-Unlike `Messenger`, there's no common action shape across arbitrary providers — opening a GitHub PR and deploying to AWS share nothing — so `Identity` doesn't define any actions itself; its only job is declaring who an agent is and handing back a currently-valid credential. `Token` is a method, not a field, so an implementation can transparently mint/refresh short-lived credentials instead of a caller ever reading a value that's gone stale.
+Registering an agent on a `Runtime` is what makes it visible to sibling agents
+for delegation. An agent can also be used on its own, but it will not discover
+other agents unless a directory is wired in.
 
-`agent.IdentifyAs(id)` registers one, keyed by `Provider()`. Tools that need it call `identity.FromContext(ctx, "github")` — resolved through `ctx`, the same way `ConversationRef` is, since a workflow's own tools are built before the agent that will eventually own them even exists. A delegated call correctly resolves against the *target* agent's identities, not the delegator's, because identities are threaded onto `ctx` once, at the top of `runLoopFrom`.
+## Core Concepts
 
-## Retrieval — pulling indexed context into a run
+### Agent
 
-`rag.Retriever`/`rag.Indexer` are the retrieval half of RAG: how a tool pulls relevant context (codebase snippets, docs, whatever's been indexed) into a run without it already being in the transcript. Same shape as `Identity` — this module defines the interface, ships no embedding model or vector store:
+`agent.Agent` owns:
+
+- an ID, name, description, and identity prompt
+- one or more LLM providers, tried in priority order
+- tools
+- workflows
+- messengers
+- identities
+- retrievers
+- memory
+- loop guardrails
+
+The main constructor is:
+
+```go
+agent.NewAgent(id, name, description, identityPrompt string, llms ...llm.LLM)
+```
+
+### Tools
+
+Tools are defined with `tools.ToolSpec` or the builder:
+
+```go
+tool := tools.NewToolBuilder("get_weather", "Gets weather for a city").
+    Parameter("city", "string", "City name", true).
+    Handler(func(ctx context.Context, args json.RawMessage) (any, error) {
+        return weatherResult, nil
+    }).
+    Build()
+```
+
+Handlers receive a `context.Context` that can carry the active conversation,
+agent identities, retrievers, human details, and other runtime-scoped values.
+
+### The Loop
+
+The native agent loop receives a transcript and a toolset, calls the LLM, runs
+tool calls, appends tool results, and repeats until `end_loop` is called or a
+configured iteration limit is reached.
+
+Important guardrails:
+
+- Tool calls are required for each LLM response when the provider supports it.
+- Tool-less responses are nudged instead of silently accepted.
+- Repeated identical tool calls in one response are treated as likely decoding
+  glitches and blocked past a threshold.
+- Very large tool-call batches are capped.
+- A tool already called with the same arguments in the same run is not called
+  again.
+- Panics inside agent work are recovered and logged at runtime goroutine
+  boundaries.
+
+### Workflows
+
+A workflow is a named, tool-backed routine owned by an agent:
+
+```go
+workflow.Workflow{
+    ID:           "daily_briefing",
+    Name:         "Daily Briefing",
+    Description:  "Prepares a morning update",
+    SystemPrompt: "Prepare a concise briefing.",
+    Trigger:      triggers.Trigger{Type: triggers.CronTriggerType, Value: "0 7 * * *"},
+    Tools:        map[string]*tools.ToolSpec{...},
+}
+```
+
+Workflows can be called by the owning agent as tools, or fired by triggers. A
+workflow runs in a fresh nested transcript with its own system prompt and
+workflow-specific toolset.
+
+Delegation from workflows is opt-in:
+
+```go
+wf.AllowDelegation = true
+```
+
+### Triggers
+
+The platform currently supports:
+
+- `triggers.CronTriggerType`: cron expression string
+- `triggers.WebhookTriggerType`: a `webhook.Source`
+- `triggers.EventTriggerType`: reserved for future use
+
+Cron workflows are scheduled by the agent. Webhook workflows register their
+source path on the runtime's shared webhook mux.
+
+### Webhooks
+
+`webhook.Source` describes a webhook producer:
+
+```go
+type Source interface {
+    Path() string
+    Verify(body []byte, header http.Header) bool
+    Decode(body []byte, header http.Header) (userTrigger string, ok bool, err error)
+}
+```
+
+Mount runtime webhooks in your own HTTP server:
+
+```go
+mux.Handle("/webhooks/", rt.WebhookHandler())
+```
+
+Use `webhook.VerifyHMACSHA256` for constant-time HMAC verification when the
+upstream service supports signed payloads.
+
+### Messaging
+
+The platform defines messaging interfaces but does not own any concrete
+messenger account:
+
+```go
+type Messenger interface {
+    Send(ctx context.Context, conv ConversationRef, text string) error
+    Listen(ctx context.Context, handler Handler) error
+    Platform() string
+    DefaultConversation() ConversationRef
+}
+```
+
+Register a messenger with:
+
+```go
+a.AddMessenger(myMessenger)
+```
+
+Once an agent has a messenger, the platform adds `send_message` to its toolset.
+`end_loop` also auto-delivers the final answer for real conversations, so a
+normal reply does not depend on the model remembering to call `send_message`.
+
+`messaging.ConversationRef{Platform, ChatID}` and context helpers route replies
+without hardcoding a platform into tool handlers.
+
+### Messenger Tools
+
+A messenger can implement `messaging.ToolProvider` to add platform-specific
+tools. For example, a Slack implementation can contribute `add_reaction`
+without forcing reactions onto every messenger interface.
+
+### Approvals
+
+Any tool can require human approval before its handler runs:
+
+```go
+tool := tools.NewToolBuilder("place_trade", "Places a real trade").
+    RequireApproval(func(ctx context.Context, args json.RawMessage) string {
+        return "Approve this trade?"
+    }, 3*time.Minute).
+    Handler(placeTrade).
+    Build()
+```
+
+Approval is enforced in the agent's tool-call path. If the active messenger
+does not implement `messaging.ApprovalMessenger`, the call fails rather than
+running without approval.
+
+### Delegation
+
+Agents registered on the same runtime can delegate to one another through
+generated `delegate_to_<agent_id>` tools.
+
+A delegated task is not a normal conversation:
+
+- it has no conversation history
+- it cannot delegate again
+- it returns its result to the delegating agent
+- it may still use the target agent's messenger tools if the inherited context
+  contains a conversation
+
+The platform also supports external delegate targets through the
+`agent.DelegateTarget` interface, so a runtime can hand work to a process that is
+not a native in-process Kael agent.
+
+### Peer Runtime
+
+`runtime.Peer` lets two runtimes connect over a websocket and expose their agents
+to each other as delegate targets. This is useful when one agent must live in a
+different trust boundary, machine, or working directory.
+
+If a `runtime.TaskQueue` is configured, tasks for a known-but-offline peer can
+be queued and drained when that peer reconnects.
+
+### Identity
+
+Identities answer one question: who is this agent acting as for a provider?
+
+```go
+type Identity interface {
+    Provider() string
+    ActingAs() string
+    Token(ctx context.Context) (string, error)
+}
+```
+
+Register one with:
+
+```go
+a.IdentifyAs(githubIdentity)
+```
+
+Tools resolve identities from context:
+
+```go
+id, ok := identity.FromContext(ctx, "github")
+```
+
+`Token` is a method so implementations can refresh short-lived credentials
+internally.
+
+### Retrieval
+
+The RAG interfaces are intentionally storage/model agnostic:
 
 ```go
 type Retriever interface {
     Query(ctx context.Context, query string, topK int) ([]Result, error)
 }
+
 type Indexer interface {
     Index(ctx context.Context, docs []Document) error
     Delete(ctx context.Context, ids []string) error
 }
 ```
 
-Retriever and Indexer are kept separate (unlike `Memory`, which combines read/write) because they have a different trust boundary: almost anything that can query an index should be able to, but only a controlled ingestion path — not an arbitrary LLM tool call — should usually be able to add or remove what's in it.
+Register retrievers on the agent and resolve them from tool contexts with
+`rag.FromContext`.
 
-`agent.AddRetriever(name, r)` registers one; tools call `rag.FromContext(ctx, name)`, threaded through `ctx` the same way identities are, for the same reason (a workflow's tools are built before the owning agent exists).
+### Memory
 
-## Memory
+The memory interface is small:
 
 ```go
-// package memory
 type Memory interface {
     History(ctx context.Context, id string) []llm.Message
     Append(ctx context.Context, id string, messages ...llm.Message)
 }
 ```
 
-No implementations ship here — same reasoning as `identity`/`webhook`/`rag`. `NewAgent`'s own zero-config default is a bare, unexported, process-local implementation (just enough to make an agent usable without calling `SetMemory` first); for anything that needs to survive a restart, see `examples/starter`'s `InMemoryHistory` (process-local, explicit) and `FileHistory` (JSON-file-backed, atomic write-then-rename) as copyable references, or bring your own database-backed one. What `id` means is entirely up to the caller — nothing here assumes it's a conversation, a user, or anything else.
+The platform has a process-local default so simple agents work immediately. Use
+your own database-backed memory for production systems that need durable
+conversation history.
 
-## Workflows
+### Human Details
 
-```go
-type Workflow struct {
-    ID, Name, Description, SystemPrompt string
-    Iteration                            int              // loop cap for this workflow's own nested run; 0 = agent's default
-    Trigger                              triggers.Trigger // cron, webhook, or event — see Triggers above
-    Tools                                map[string]*tools.ToolSpec
-    AllowDelegation                      bool // opt in to delegate_to_<sibling> tools — see Delegation above
-    MaxDuplicateToolCallsPerResponse      int  // 0 = agent's default — see the loop guardrails above
-    MaxToolCallsPerResponse              int  // 0 = agent's default — see the loop guardrails above
-    // dynamic alternatives to the two fields above — see the loop guardrails section
-    MaxDuplicateToolCallsPerResponseFunc func(ctx context.Context) (int, error)
-    MaxToolCallsPerResponseFunc          func(ctx context.Context) (int, error)
-}
-```
+`human.Human` carries owner details such as name, location, timezone, and notes.
+`runtime.SetHuman` propagates those details to registered agents. `human.FromEnv`
+can load:
 
-A workflow is exposed to its owning agent as a single tool the model can call — `run_<id>` — which runs the workflow's own toolset through a fresh, nested loop and folds the result back into the caller's transcript.
+- `HUMAN_NAME`
+- `HUMAN_LOCATION`
+- `HUMAN_TIMEZONE`
+- `HUMAN_NOTES`
 
-## Tools
+## Runtime
 
-```go
-tool := tools.NewToolBuilder("get_now_playing", "Gets movies currently in theaters").
-    Parameter("region", "string", "ISO country code", false).
-    Handler(func(ctx context.Context, args json.RawMessage) (any, error) {
-        return myClient.NowPlaying(), nil
-    }).
-    Build()
+`runtime.Runtime` owns:
 
-a.AddTool(tool)
-```
+- local agent registry
+- shared event bus
+- shared webhook mux
+- peer connections
+- optional task queue
+- optional trigger state
+- optional human details
 
-### Requiring approval before a tool runs
-
-A tool can declare that it needs a human's sign-off before its handler actually executes — the tool itself says so, not the calling agent or the loop:
+Typical setup:
 
 ```go
-tool := tools.NewToolBuilder("place_trade", "Places a real trade").
-    Parameter("symbol", "string", "...", true).
-    RequireApproval(func(ctx context.Context, args json.RawMessage) string {
-        return "About to place a trade — approve?" // rendered as the approval prompt's text
-    }, 3*time.Minute). // timeout — an unanswered prompt is treated as a reject, never as "keep waiting"
-    Handler(func(ctx context.Context, args json.RawMessage) (any, error) {
-        return broker.PlaceTrade(...), nil // never runs unless approved
-    }).
-    Build()
+rt := runtime.NewRuntime()
+rt.SetHuman(human.FromEnv())
+rt.SetTaskQueue(myQueue)
+rt.SetTriggerState(myTriggerState)
+rt.RegisterAgent(agentA)
+rt.RegisterAgent(agentB)
+rt.Launch(ctx)
 ```
 
-`Agent.callTool` is the single interception point every tool call — from a real conversation, a workflow, or a delegated task — passes through: if `!tool.RequiresApproval`, it calls `Handler` directly; otherwise it resolves the agent's own `DefaultConversation()` (never an ambient context conversation that might belong to a different agent mid-delegation — a real bug this was fixed after), requires the registered messenger to implement `messaging.ApprovalMessenger` (`RequestApproval(ctx, conv, text) (bool, error)`) — a messenger that doesn't implement it makes the call fail outright rather than silently skipping the gate — and blocks on that call up to `ApprovalTimeout` (default 10 minutes if unset). Declined or timed-out returns a normal "not approved" tool result; `Handler` simply never runs. `*messenger.SlackBot` in `examples/messenger` implements `ApprovalMessenger` as a thin wrapper over its own button-based `WaitForApproval`.
+`Runtime.Launch` starts registered agents. Your application still owns the HTTP
+server, process lifecycle, secrets, and concrete integrations.
 
-This is deliberately a tool-definition-level flag, not a separate messaging primitive or a wrapper the calling agent has to remember to apply — a tool that needs approval needs it everywhere it's reachable from (chat, a workflow, a delegated call) without three different call sites each having to know that.
-
-## The LLM client
-
-`llm.LLM` is a one-method interface (`Call(messages, tools) (*Response, error)`), so any chat-completions-shaped provider can back an agent. `examples/llm/openai` ships an OpenAI-compatible client:
-
-```go
-openai.NewClient(model string, enableReasoning bool) llm.LLM
-```
-
-`enableReasoning` exists because a reasoning-capable model was observed writing a completely correct plan into its `reasoning` output — "I need to call `get_secret_code`" — and then the response would just end (`finish_reason: "stop"`) without the tool call ever actually landing. Not truncation, not confusion about what to do — the handoff from reasoning to the actual structured tool-call output just didn't happen. Passing `false` requests the underlying `reasoning: {enabled: false}` parameter and sidesteps it; if it resurfaces anyway, the loop's retry logs the real `finish_reason` and `reasoning` content so it's diagnosable instead of a silent, empty response.
-
-## Reliability: one agent's bug can't take down the others
-
-A single process commonly hosts several independent agents (see `Runtime.RegisterAgent`). A panic anywhere in one agent's turn — a malformed upstream API response, a bug in a tool handler — is recovered and logged, not left to propagate and kill the whole process, at every goroutine entry point that runs agent-supplied logic: inbox message handling, cron-triggered workflows, webhook-triggered workflows, and messenger listen loops. This isn't a substitute for fixing the actual bug (`recoverFromPanic` logs a full stack trace specifically so the root cause is diagnosable) — it just means one agent's bad day doesn't reboot the other four's Slack connections, in-flight cron schedules, and Gmail watches along with it.
-
-## What's here
+## Package Map
 
 ```text
-agent/       the loop, RunLoop, runWorkflow, runDelegatedTask, callTool (approval gating), workflows-as-tools,
-             delegation + depth guard, built-in send_message/end_loop, panic recovery at every goroutine entry point
-runtime/     agent registry, shared event bus, shared webhook mux + WebhookHandler(), Launch
-messaging/   Messenger, ToolProvider, and ApprovalMessenger interfaces, ConversationRef, ctx helpers — no implementations
-webhook/     Source interface (the webhook counterpart to Messenger), VerifyHMACSHA256 — no implementations
-identity/    Identity interface, ctx helpers — no implementations
-rag/         Retriever/Indexer interfaces, ctx helpers — no implementations
-memory/      Memory interface — no implementations
-workflow/    Workflow struct (Trigger, AllowDelegation, Iteration, Tools)
-triggers/    TriggerType, Trigger
-tools/       ToolSpec and its builder
-llm/         provider-agnostic types (Message, Response, the LLM interface) — no implementations
-events/      a pub/sub event bus
-human/       Human{Name,Location,Timezone,Notes} + FromEnv() — read once inside agent.NewAgent
-             (HUMAN_NAME/HUMAN_LOCATION/HUMAN_TIMEZONE/HUMAN_NOTES), nil if HUMAN_NAME is unset
-examples/    starter (identity + memory + cron + webhook + messenger, copyable), basic (two-agent delegation demo),
-             researchspecialist (delegation-only demo agent), messenger (Slack/Telegram Messenger reference),
-             llm/openai (OpenAI-compatible chat-completions client reference)
+agent/       agent loop, tool calling, workflows, approvals, delegation,
+             guardrails, panic recovery, external delegate support
+runtime/     runtime registry, shared webhook mux, event bus, peer transport,
+             queued remote delegation
+tools/       ToolSpec and builder
+workflow/    workflow definition
+triggers/    trigger types
+messaging/   Messenger, ToolProvider, ApprovalMessenger, ConversationRef,
+             context helpers
+identity/    Identity interface and context helpers
+memory/      Memory interface
+rag/         Retriever and Indexer interfaces
+webhook/     Source interface and HMAC verification helper
+events/      pub/sub event bus
+human/       owner context
+llm/         provider-agnostic LLM request/response types
+examples/    copyable starter/basic agents, messenger refs, OpenAI-compatible
+             LLM client reference
+docs/        mkdocs documentation
 ```
 
-## What isn't finished
+## Examples
 
-- **One channel, one agent.** An agent needs its own `Messenger` instance to be reachable directly — there's no router letting several agents share one channel with a human choosing between them.
-- **A delegated agent's use of `send_message`/reaction tools depends on the model choosing to.** The tools are offered (see [Two ways into the loop](#two-ways-into-the-loop-not-one-with-a-flag)), but nothing forces a delegate to call them — in practice, models observed during development reliably skip them on a simple, single-answer task and just rely on `end_loop`'s relay instead. Not a bug, just worth knowing if you're depending on it for something visible to the user.
-- `Runtime.Launch` starts agents fire-and-forget, no coordinated shutdown.
-- No test coverage yet for the loop's guard rails (repeat-blocking, tool-less nudge, runaway-batch cap) — these have been manually verified during development but aren't pinned down by tests.
+The examples are intended as copyable references:
+
+- `examples/starter`: one agent with identity, memory, messenger, cron workflow,
+  and webhook workflow.
+- `examples/basic`: small multi-agent delegation demo.
+- `examples/researchspecialist`: specialist agent used by the basic example.
+- `examples/messenger`: Slack and Telegram messenger reference implementations.
+- `examples/llm/openai`: OpenAI-compatible chat completions client.
+
+## Design Boundaries
+
+Kael Platform deliberately avoids concrete provider implementations in the core
+packages:
+
+- no built-in Slack/Gmail/GitHub/Google/AWS clients
+- no built-in vector database
+- no production database memory
+- no app-specific agents
+- no owned HTTP port
+
+That keeps the framework reusable. Applications bring their own integrations and
+wire them through the platform interfaces.
+
+## Testing
+
+```bash
+go test ./...
+go vet ./...
+```
+
+## License
+
+See `LICENSE`.
