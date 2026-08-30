@@ -19,14 +19,17 @@ type fakeApprovalMessenger struct {
 	defaultRef        messaging.ConversationRef
 	requestedC        messaging.ConversationRef
 	requestedThreadID string
+	sent              []string
 	approve           bool
 }
 
 func (f *fakeApprovalMessenger) Platform() string { return f.platform }
 func (f *fakeApprovalMessenger) Send(ctx context.Context, conv messaging.ConversationRef, text string) (messaging.MessengerResponse, error) {
+	f.sent = append(f.sent, text)
 	return messaging.MessengerResponse{}, nil
 }
 func (f *fakeApprovalMessenger) Reply(ctx context.Context, to messaging.InboundMessage, text string) (messaging.MessengerResponse, error) {
+	f.sent = append(f.sent, text)
 	return messaging.MessengerResponse{}, nil
 }
 func (f *fakeApprovalMessenger) Listen(ctx context.Context, onMessage func(messaging.InboundMessage)) error {
@@ -45,6 +48,16 @@ type stubLLM struct{}
 
 func (stubLLM) Call(messages []llm.Message, toolset []*tools.ToolSpec) (*llm.Response, error) {
 	panic("stubLLM: Call should not be invoked by this test")
+}
+
+type stubLoop struct {
+	result *LoopResult
+	final  []llm.Message
+	err    error
+}
+
+func (s stubLoop) Run(ctx context.Context, messages []llm.Message, toolset []*tools.ToolSpec) (*LoopResult, []llm.Message, error) {
+	return s.result, append(messages, s.final...), s.err
 }
 
 func hasToolNamed(toolset []*tools.ToolSpec, name string) bool {
@@ -160,6 +173,31 @@ func TestCallToolApprovalIgnoresDelegatedConversation(t *testing.T) {
 	}
 	if fm.requestedC != fm.defaultRef {
 		t.Fatalf("RequestApproval was called with %+v, want this agent's own DefaultConversation() %+v — it must never inherit ctx's foreign conversation", fm.requestedC, fm.defaultRef)
+	}
+}
+
+func TestRunLoopNotifiesUserOnTerminalToolCallError(t *testing.T) {
+	fm := &fakeApprovalMessenger{
+		platform:   "slack",
+		defaultRef: messaging.ConversationRef{Platform: "slack", ChatID: "default-channel"},
+	}
+	a := NewAgent("test_agent", "Test Agent", "", "", stubLLM{})
+	a.AddMessenger(fm)
+	a.loop = stubLoop{result: &LoopResult{Iteration: 3, Status: LLMToolCallError}}
+
+	result, err := a.RunLoop(context.Background(), messaging.ConversationRef{Platform: "slack", ChatID: "active-channel"}, "do thing")
+	if err != nil {
+		t.Fatalf("RunLoop returned an unexpected error: %v", err)
+	}
+	if result.Status != LLMToolCallError {
+		t.Fatalf("RunLoop status = %s, want %s", result.Status, LLMToolCallError)
+	}
+	if len(fm.sent) != 1 {
+		t.Fatalf("RunLoop sent %d messages, want 1", len(fm.sent))
+	}
+	want := "Sorry, I ran into an error and couldn't finish handling that. Please try again."
+	if fm.sent[0] != want {
+		t.Fatalf("RunLoop sent %q, want %q", fm.sent[0], want)
 	}
 }
 

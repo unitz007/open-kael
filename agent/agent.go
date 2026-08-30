@@ -1868,6 +1868,18 @@ func (a *Agent) RunLoop(ctx context.Context, conv messaging.ConversationRef, use
 		}
 	}
 
+	if err == nil && result.Status != LLMStatusComplete {
+		alreadyReplied := hasSuccessfulSendMessage(final[1+len(prior):]) || turnDelivered(ctx)
+		if !alreadyReplied {
+			if m, ok := a.messengers[conv.Platform]; ok {
+				errNotice := "Sorry, I ran into an error and couldn't finish handling that. Please try again."
+				if _, sendErr := a.replyOrSend(ctx, m, conv, errNotice); sendErr != nil {
+					log.Println("failed to deliver terminal status notice:", sendErr)
+				}
+			}
+		}
+	}
+
 	return result, err
 }
 
