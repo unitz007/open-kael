@@ -37,6 +37,31 @@ const (
 	LLMToolCallError      LLMStatus = "llm_tool_call_error"
 )
 
+type delegationEnvCtxKey struct{}
+
+// WithDelegationEnv attaches task-scoped environment variables that a
+// DelegateTarget may pass to its actual execution backend. This is for
+// machine-readable credentials/configuration, not user-visible prompt text.
+func WithDelegationEnv(ctx context.Context, env []string) context.Context {
+	clean := make([]string, 0, len(env))
+	for _, entry := range env {
+		if strings.TrimSpace(entry) != "" {
+			clean = append(clean, entry)
+		}
+	}
+	if len(clean) == 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, delegationEnvCtxKey{}, clean)
+}
+
+// DelegationEnvFromContext returns any task-scoped environment previously
+// attached with WithDelegationEnv.
+func DelegationEnvFromContext(ctx context.Context) []string {
+	env, _ := ctx.Value(delegationEnvCtxKey{}).([]string)
+	return append([]string{}, env...)
+}
+
 type Agent struct {
 	Id             string               `json:"id"`
 	Name           string               `json:"name"`
@@ -152,8 +177,8 @@ type Agent struct {
 
 // DelegateTarget is anything that can receive a delegated task and run its
 // own complete loop to produce a result — a real in-process *Agent, or a
-// genuinely external agent (Claude Code on the owner's laptop, or any
-// networked peer) reached over a network boundary. Both satisfy this
+// genuinely external coding agent on the owner's laptop or any networked
+// peer reached over a network boundary. Both satisfy this
 // identically; messageAgentTool never distinguishes between
 // them — "being delegatable" is exactly this contract (hand off a task, get
 // back a result), nothing tied to kael-platform internals like memory or

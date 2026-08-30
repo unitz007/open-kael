@@ -47,15 +47,15 @@ type PeerInfo struct {
 
 // peerFrame is the one wire message shape, carried both directions once a
 // connection is established — symmetric, since the same type of Runtime
-// sits on both ends. Deliberately minimal: no credential or "extra
-// payload" field. A caller needing to pass something like that (a GitHub
-// token, say) is a separate, not-yet-built concern layered on top of this.
+// sits on both ends. Env is task-scoped execution configuration for the
+// far-side delegate, never part of prompts or persisted queued tasks.
 type peerFrame struct {
-	Type    string     `json:"type"` // "register" | "task" | "result"
-	Agents  []PeerInfo `json:"agents,omitempty"`   // register only: everything this side hosts
+	Type    string     `json:"type"`             // "register" | "task" | "result"
+	Agents  []PeerInfo `json:"agents,omitempty"` // register only: everything this side hosts
 	TaskID  string     `json:"task_id,omitempty"`
 	AgentID string     `json:"agent_id,omitempty"` // task only: which of the far side's local agents this is for
 	Text    string     `json:"text,omitempty"`
+	Env     []string   `json:"env,omitempty"`
 	Result  string     `json:"result,omitempty"`
 	Error   string     `json:"error,omitempty"`
 }
@@ -174,7 +174,7 @@ func (r *Runtime) drainQueueFor(p *Peer) {
 		}
 		for _, task := range tasks {
 			go func(task PendingTask) {
-				result, err := p.dispatch(task.TargetID, task.ID, task.Task)
+				result, err := p.dispatch(task.TargetID, task.ID, task.Task, nil)
 				if r.OnQueueDrained != nil {
 					r.OnQueueDrained(p.ctx, task, result, err)
 				}
@@ -264,7 +264,7 @@ func (p *Peer) handleTask(f peerFrame) {
 	out := peerFrame{Type: "result", TaskID: f.TaskID}
 	if target == nil {
 		out.Error = fmt.Sprintf("runtime: no local agent %q", f.AgentID)
-	} else if result, err := target.RunDelegatedTask(p.ctx, f.Text); err != nil {
+	} else if result, err := target.RunDelegatedTask(agent.WithDelegationEnv(p.ctx, f.Env), f.Text); err != nil {
 		out.Error = err.Error()
 	} else {
 		out.Result = result.Content
@@ -298,13 +298,13 @@ func (p *Peer) failAllPending(err error) {
 // dispatch sends a task to one of the far side's announced agents and
 // blocks for the result, failing immediately if the connection drops
 // before a reply arrives, or after dispatchTimeout if it never does.
-func (p *Peer) dispatch(agentID, taskID, text string) (string, error) {
+func (p *Peer) dispatch(agentID, taskID, text string, env []string) (string, error) {
 	ch := make(chan peerFrame, 1)
 	p.mu.Lock()
 	p.pending[taskID] = ch
 	p.mu.Unlock()
 
-	if err := p.send(peerFrame{Type: "task", TaskID: taskID, AgentID: agentID, Text: text}); err != nil {
+	if err := p.send(peerFrame{Type: "task", TaskID: taskID, AgentID: agentID, Text: text, Env: env}); err != nil {
 		p.mu.Lock()
 		delete(p.pending, taskID)
 		p.mu.Unlock()
@@ -356,7 +356,7 @@ type networkLoop struct {
 
 func (n *networkLoop) Run(ctx context.Context, messages []llm.Message, _ []*tools.ToolSpec) (*agent.LoopResult, []llm.Message, error) {
 	task := agent.LastUserMessage(messages)
-	result, err := n.peer.dispatch(n.agentID, newTaskID(n.agentID), task)
+	result, err := n.peer.dispatch(n.agentID, newTaskID(n.agentID), task, agent.DelegationEnvFromContext(ctx))
 	if err != nil {
 		return nil, messages, err
 	}
