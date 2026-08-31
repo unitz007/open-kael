@@ -85,6 +85,7 @@ type Agent struct {
 	llmMu      sync.Mutex
 	llmState   []llmProviderState
 	Tools      []*tools.ToolSpec `json:"tools"`
+	toolsMu    sync.RWMutex
 	eventBus   EventPublisher
 	memory     memory.Memory
 	inBox      *MessageQueue
@@ -740,7 +741,36 @@ func (a *Agent) AddWorkflow(workflow *workflow.Workflow) {
 }
 
 func (a *Agent) AddTool(tool *tools.ToolSpec) {
+	a.toolsMu.Lock()
+	defer a.toolsMu.Unlock()
 	a.Tools = append(a.Tools, tool)
+}
+
+// ToolsSnapshot returns a stable copy of the agent-level tool grants. Use
+// this instead of ranging over Agent.Tools from code that may run while the
+// dashboard is mutating runtime-session grants.
+func (a *Agent) ToolsSnapshot() []*tools.ToolSpec {
+	a.toolsMu.RLock()
+	defer a.toolsMu.RUnlock()
+	return append([]*tools.ToolSpec{}, a.Tools...)
+}
+
+// RemoveTool removes one agent-level tool grant by name from the live
+// runtime session. It intentionally does not touch workflow-local tools.
+func (a *Agent) RemoveTool(name string) bool {
+	a.toolsMu.Lock()
+	defer a.toolsMu.Unlock()
+	next := a.Tools[:0]
+	removed := false
+	for _, tool := range a.Tools {
+		if tool.Name == name {
+			removed = true
+			continue
+		}
+		next = append(next, tool)
+	}
+	a.Tools = next
+	return removed
 }
 
 // IdentitySummaries returns each external identity currently assigned to this
@@ -776,7 +806,7 @@ func (a *Agent) MessengerPlatforms() []string {
 // agent's base conversational grants.
 func (a *Agent) ApprovalToolNames() []string {
 	out := make([]string, 0)
-	for _, tool := range a.Tools {
+	for _, tool := range a.ToolsSnapshot() {
 		if tool.RequiresApproval {
 			out = append(out, tool.Name)
 		}
@@ -1031,7 +1061,7 @@ func (a *Agent) baseTools() []*tools.ToolSpec {
 // conversation to act through. Never gated behind anything. See
 // Agent.messagingTools for the one category that is gated, and why.
 func (a *Agent) defaultTools() []*tools.ToolSpec {
-	out := append([]*tools.ToolSpec{}, a.Tools...)
+	out := a.ToolsSnapshot()
 	out = append(out, a.retrieverToolSpecs()...)
 	if a.memory != nil {
 		out = append(out, a.getThreadHistoryTool())
