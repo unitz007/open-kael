@@ -8,11 +8,13 @@ import (
 	"log"
 	"net/http"
 	"runtime/debug"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/unitz007/kael/events"
 	"github.com/unitz007/kael/human"
 	"github.com/unitz007/kael/identity"
 	"github.com/unitz007/kael/llm"
@@ -741,6 +743,48 @@ func (a *Agent) AddTool(tool *tools.ToolSpec) {
 	a.Tools = append(a.Tools, tool)
 }
 
+// IdentitySummaries returns each external identity currently assigned to this
+// agent as "provider:acting_as" strings. It is intentionally metadata-only:
+// tokens stay behind Identity.Token and are never surfaced for monitoring.
+func (a *Agent) IdentitySummaries() []string {
+	out := make([]string, 0, len(a.identities))
+	for provider, id := range a.identities {
+		summary := provider
+		if actingAs := strings.TrimSpace(id.ActingAs()); actingAs != "" {
+			summary += ":" + actingAs
+		}
+		out = append(out, summary)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// MessengerPlatforms returns the platform names this agent can currently
+// communicate through, e.g. "slack" or "email".
+func (a *Agent) MessengerPlatforms() []string {
+	out := make([]string, 0, len(a.messengers))
+	for platform := range a.messengers {
+		out = append(out, platform)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// ApprovalToolNames returns the agent-level tools that currently require
+// approval before their handlers run. Workflow-local tools are intentionally
+// not included here because they are scoped to workflow execution, not the
+// agent's base conversational grants.
+func (a *Agent) ApprovalToolNames() []string {
+	out := make([]string, 0)
+	for _, tool := range a.Tools {
+		if tool.RequiresApproval {
+			out = append(out, tool.Name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // SetMemory sets this agent's conversation memory. NewAgent's own default
 // is a bare, process-local, in-memory implementation (this library ships no
 // persistent Memory implementation — see examples/starter for a
@@ -1298,8 +1342,43 @@ func (a *Agent) resolveSendTarget(ctx context.Context, platform string) (messagi
 // normal, non-error result (Handler never runs) so the model sees "not
 // approved" like any other tool outcome, not a failure to retry.
 func (a *Agent) callTool(ctx context.Context, tool *tools.ToolSpec, args json.RawMessage) (any, error) {
+	data := map[string]interface{}{
+		"tool":              tool.Name,
+		"requires_approval": tool.RequiresApproval,
+	}
+	if a.eventBus != nil {
+		workflowID, _ := messaging.WorkflowIDFromContext(ctx)
+		a.eventBus.PublishEvent(string(events.EventToolCallStarted), a.Name, workflowID, "Tool call started", nil, data)
+	}
+
+	var approved bool
+	var approvalRequested bool
+	var approvalRejected bool
+	var result any
+	var err error
+	defer func() {
+		if a.eventBus == nil {
+			return
+		}
+		workflowID, _ := messaging.WorkflowIDFromContext(ctx)
+		outcome := map[string]interface{}{
+			"tool":               tool.Name,
+			"requires_approval":  tool.RequiresApproval,
+			"approval_requested": approvalRequested,
+			"approval_approved":  approved,
+			"approval_rejected":  approvalRejected,
+			"result_type":        fmt.Sprintf("%T", result),
+		}
+		if err != nil {
+			a.eventBus.PublishEvent(string(events.EventToolCallFailed), a.Name, workflowID, "Tool call failed", err, outcome)
+			return
+		}
+		a.eventBus.PublishEvent(string(events.EventToolCallCompleted), a.Name, workflowID, "Tool call completed", nil, outcome)
+	}()
+
 	if !tool.RequiresApproval {
-		return tool.Handler(ctx, args)
+		result, err = tool.Handler(ctx, args)
+		return result, err
 	}
 
 	conv, m, err := a.resolveApprovalTarget(ctx)
@@ -1317,14 +1396,18 @@ func (a *Agent) callTool(ctx context.Context, tool *tools.ToolSpec, args json.Ra
 	}
 	approveCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	approved, err := am.RequestApproval(approveCtx, conv, tool.ApprovalSummarize(ctx, args))
+	approvalRequested = true
+	approved, err = am.RequestApproval(approveCtx, conv, tool.ApprovalSummarize(ctx, args))
 	if err != nil {
 		return nil, fmt.Errorf("%s approval wait failed: %w", tool.Name, err)
 	}
 	if !approved {
-		return "Not approved within the timeout — action not taken.", nil
+		approvalRejected = true
+		result = "Not approved within the timeout — action not taken."
+		return result, nil
 	}
-	return tool.Handler(ctx, args)
+	result, err = tool.Handler(ctx, args)
+	return result, err
 }
 
 func (a *Agent) resolveApprovalTarget(ctx context.Context) (messaging.ConversationRef, messaging.Messenger, error) {

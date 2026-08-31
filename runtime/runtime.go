@@ -8,6 +8,7 @@ import (
 	"github.com/unitz007/kael/human"
 	"log"
 	"net/http"
+	"sort"
 	"sync"
 )
 
@@ -54,6 +55,14 @@ type Runtime struct {
 	// than hardcoded here — that's app-level policy, the same way this
 	// package leaves memory/identity storage to the consuming app.
 	OnQueueDrained func(ctx context.Context, task PendingTask, result string, err error)
+}
+
+// PeerStatus is one remote delegate identity this Runtime currently knows
+// about, plus whether it is reachable through a live peer connection right
+// now. It is intentionally read-only monitoring data for dashboards/TUIs.
+type PeerStatus struct {
+	AgentID, AgentName, AgentDescription, AgentCapabilities string
+	Connected                                               bool
 }
 
 // DelegateTargets satisfies agent.AgentDirectory — every locally-registered
@@ -128,6 +137,48 @@ func (r *Runtime) PeerConnected(agentID string) bool {
 		}
 	}
 	return false
+}
+
+// PeerStatuses returns the remote delegate identities this Runtime has seen
+// during this process lifetime, plus any currently-connected remotes. A
+// never-connected expected peer will not appear here; app-level config can
+// add those if it wants to display setup hints for expected-but-unseen peers.
+func (r *Runtime) PeerStatuses() []PeerStatus {
+	byID := make(map[string]PeerStatus)
+
+	r.knownRemotesMu.RLock()
+	for id, info := range r.knownRemotes {
+		byID[id] = PeerStatus{
+			AgentID:           info.AgentID,
+			AgentName:         info.AgentName,
+			AgentDescription:  info.AgentDescription,
+			AgentCapabilities: info.AgentCapabilities,
+		}
+	}
+	r.knownRemotesMu.RUnlock()
+
+	r.peersMu.RLock()
+	for _, p := range r.peers {
+		for _, info := range p.RemoteAgents() {
+			byID[info.AgentID] = PeerStatus{
+				AgentID:           info.AgentID,
+				AgentName:         info.AgentName,
+				AgentDescription:  info.AgentDescription,
+				AgentCapabilities: info.AgentCapabilities,
+				Connected:         true,
+			}
+		}
+	}
+	r.peersMu.RUnlock()
+
+	out := make([]PeerStatus, 0, len(byID))
+	for _, status := range byID {
+		out = append(out, status)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].AgentID < out[j].AgentID
+	})
+	return out
 }
 
 // replacePeerLocked evicts any existing peer that announced any of p's own

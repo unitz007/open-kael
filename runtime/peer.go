@@ -135,6 +135,7 @@ func newPeer(ctx context.Context, ws *websocket.Conn, local *Runtime) (*Peer, er
 
 	local.rememberRemotes(p.remote)
 	local.drainQueueFor(p)
+	log.Printf("runtime: peer connected: %s", describePeerInfos(p.remote))
 
 	return p, nil
 }
@@ -211,6 +212,7 @@ func (p *Peer) pingLoop() {
 // running out its own timeout.
 func (p *Peer) readLoop() {
 	defer func() {
+		log.Printf("runtime: peer disconnected: %s", describePeerInfos(p.remote))
 		p.local.peersMu.Lock()
 		for i, peer := range p.local.peers {
 			if peer == p {
@@ -377,6 +379,29 @@ func newTaskID(agentID string) string {
 	defer taskIDMu.Unlock()
 	taskIDCounter++
 	return fmt.Sprintf("%s-%d", agentID, taskIDCounter)
+}
+
+func describePeerInfos(infos []PeerInfo) string {
+	if len(infos) == 0 {
+		return "no remote agents announced"
+	}
+	var b strings.Builder
+	for i, info := range infos {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		name := strings.TrimSpace(info.AgentName)
+		if name == "" {
+			name = info.AgentID
+		}
+		b.WriteString(name)
+		if info.AgentID != "" && info.AgentID != name {
+			b.WriteString(" (")
+			b.WriteString(info.AgentID)
+			b.WriteString(")")
+		}
+	}
+	return b.String()
 }
 
 var upgrader = websocket.Upgrader{
