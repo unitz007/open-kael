@@ -350,17 +350,85 @@ func buildFinishAction() *domain.BoundAction {
 	}
 }
 
+// querySkillAction returns a BoundAction that the LLM inside a multi-tool
+// skill can call mid-turn to delegate a sub-task to another skill. Jev
+// routes the intent to the right skill; the skill runs headlessly and its
+// output is returned as the tool result so the caller can continue.
+//
+// Only injected into skills with 2+ tools — single-tool skills bypass the
+// LLM loop entirely (see BindSkill) and have no LLM to call this.
+// Only injected when a SkillRouter is configured.
+func (h *Host) querySkillAction(hosted *HostedAgent) *domain.BoundAction {
+	return &domain.BoundAction{
+		Spec: domain.ActionSpec{
+			Name:        "query_skill",
+			Description: "Delegate a sub-task to another skill and get its result. Provide what you need done and any relevant context; the right skill is selected automatically.",
+			InputSchema: domain.Schema{
+				Type: domain.SchemaTypeObject,
+				Properties: map[string]domain.Schema{
+					"intent":  {Type: domain.SchemaTypeString, Description: "What you need done, in plain language."},
+					"context": {Type: domain.SchemaTypeString, Description: "Relevant background the target skill needs to complete the sub-task."},
+				},
+				Required: []string{"intent", "context"},
+			},
+		},
+		Invoke: func(ctx context.Context, input map[string]any) (any, error) {
+			depth := querySkillDepth(ctx)
+			if depth >= maxQuerySkillDepth {
+				return nil, fmt.Errorf("query_skill: max depth %d reached", maxQuerySkillDepth)
+			}
+
+			intent, _ := input["intent"].(string)
+			context_, _ := input["context"].(string)
+
+			name, confidence, err := h.skillRouter.PickSkill(ctx, intent, hosted.Agent.Skills)
+			if err != nil {
+				return nil, fmt.Errorf("query_skill: routing failed: %w", err)
+			}
+			if name == "" {
+				return nil, fmt.Errorf("query_skill: no skill available for %q", intent)
+			}
+			if confidence < jevConfidenceThreshold {
+				return nil, fmt.Errorf("query_skill: intent %q is ambiguous (confidence %.2f) — try rephrasing", intent, confidence)
+			}
+
+			var target *domain.Skill
+			for _, s := range hosted.Agent.Skills {
+				if s.Name == name {
+					target = s
+					break
+				}
+			}
+			if target == nil {
+				return nil, fmt.Errorf("query_skill: skill %q not found", name)
+			}
+
+			ctx = withQuerySkillDepth(ctx, depth+1)
+			return h.runSkillQuery(ctx, hosted, target, map[string]any{
+				"intent":  intent,
+				"context": context_,
+			})
+		},
+	}
+}
+
 // actionsFor assembles everything hosted's own top-level loop may call this
 // turn: finish, every one of its own Skills (hydrated fresh — cheap, and
 // picks up any Skill/Tool/Integration change registered since the last
 // turn), and its delegate targets' Public Skills.
-func actionsFor(ctx context.Context, hosted *HostedAgent) ([]*domain.BoundAction, error) {
+//
+// When a SkillRouter is configured, query_skill is injected into each
+// multi-tool skill so its nested LLM loop can delegate sub-tasks mid-turn.
+func (h *Host) actionsFor(ctx context.Context, hosted *HostedAgent) ([]*domain.BoundAction, error) {
 	actions := []*domain.BoundAction{buildFinishAction()}
 
 	for _, skill := range hosted.Agent.Skills {
 		tools, err := domain.HydrateSkillTools(skill, hosted.Agent, hosted.Deps.ToolsByID, hosted.Deps.IdentitiesByID, hosted.Deps.IntegrationsByID, hosted.Deps.Executors)
 		if err != nil {
 			return nil, fmt.Errorf("hosting agent %q: skill %q: %w", hosted.Agent.ID, skill.ID, err)
+		}
+		if h.skillRouter != nil && len(tools) >= 2 {
+			tools = append(tools, h.querySkillAction(hosted))
 		}
 		actions = append(actions, domain.BindSkill(hosted.Agent, skill, tools))
 	}
@@ -422,7 +490,7 @@ func (h *Host) HandleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 	messages = append(messages, prior...)
 	messages = append(messages, domain.Message{Role: domain.RoleUser, Content: userText})
 
-	actions, err := actionsFor(ctx, hosted)
+	actions, err := h.actionsFor(ctx, hosted)
 	if err != nil {
 		return nil, err
 	}
