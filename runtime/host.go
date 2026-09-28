@@ -89,6 +89,11 @@ type Host struct {
 	// those tools even when their ToolDefinition.RequiresApproval is false.
 	userToolApprovalLoader func(ctx context.Context, userID string) (map[string]bool, error)
 
+	// userToolApprovalSetter persists a user's approval preference for one tool.
+	// When set, configure_tool_approval is injected into every user turn so the
+	// user can manage their approval gates conversationally through the messenger.
+	userToolApprovalSetter func(ctx context.Context, userID, toolID string, requires bool) error
+
 	// eventActorRefLoader resolves an external actor identifier from an event
 	// payload into a map of identityID → connectionRef for that actor's
 	// AppAuthorizations. sourceIdentityID identifies which Identity received
@@ -193,6 +198,14 @@ func (h *Host) SetUserConnectionRefLoader(f func(ctx context.Context, userID str
 // ToolDefinition.RequiresApproval is false.
 func (h *Host) SetUserToolApprovalLoader(f func(ctx context.Context, userID string) (map[string]bool, error)) {
 	h.userToolApprovalLoader = f
+}
+
+// SetUserToolApprovalSetter registers a function that persists a user's
+// approval preference for one tool. When set, a configure_tool_approval action
+// is injected into every user turn so they can manage approval gates
+// conversationally through the messenger without touching a web UI.
+func (h *Host) SetUserToolApprovalSetter(f func(ctx context.Context, userID, toolID string, requires bool) error) {
+	h.userToolApprovalSetter = f
 }
 
 // SetChannelRedeemer registers a function that validates and redeems a
@@ -427,6 +440,61 @@ func (h *Host) querySkillAction(hosted *HostedAgent) *domain.BoundAction {
 	}
 }
 
+// configureToolApprovalAction returns a BoundAction the LLM can call to set
+// or clear the current user's approval gate for a tool, identified by its
+// function name. Only injected when a user is in context and a setter is
+// registered — never for cron or event runs.
+func (h *Host) configureToolApprovalAction(hosted *HostedAgent) *domain.BoundAction {
+	return &domain.BoundAction{
+		Spec: domain.ActionSpec{
+			Name:        "configure_tool_approval",
+			Description: "Require or remove your personal approval gate for a specific tool.",
+			Instructions: "Use this when the user asks to be prompted before a tool runs, " +
+				"or to stop being prompted. Identify the tool by its function name " +
+				"(e.g. \"make_transfer\"). Always confirm the change back to the user.",
+			InputSchema: domain.Schema{
+				Type: domain.SchemaTypeObject,
+				Properties: map[string]domain.Schema{
+					"tool":    {Type: domain.SchemaTypeString, Description: "The tool's function name (e.g. \"make_transfer\")."},
+					"require": {Type: domain.SchemaTypeBoolean, Description: "true to require your approval before this tool runs; false to remove the gate."},
+				},
+				Required: []string{"tool", "require"},
+			},
+		},
+		Invoke: func(ctx context.Context, input map[string]any) (any, error) {
+			userID := domain.UserIDFromContext(ctx)
+			if userID == "" {
+				return nil, fmt.Errorf("configure_tool_approval: no user in context")
+			}
+			toolName, _ := input["tool"].(string)
+			require, _ := input["require"].(bool)
+
+			// Match by FunctionName (LLM-facing) with fallback to Name.
+			var toolID string
+			for _, def := range hosted.Deps.ToolsByID {
+				name := def.FunctionName
+				if name == "" {
+					name = def.Name
+				}
+				if name == toolName {
+					toolID = def.ID
+					break
+				}
+			}
+			if toolID == "" {
+				return nil, fmt.Errorf("configure_tool_approval: unknown tool %q", toolName)
+			}
+			if err := h.userToolApprovalSetter(ctx, userID, toolID, require); err != nil {
+				return nil, fmt.Errorf("configure_tool_approval: %w", err)
+			}
+			if require {
+				return fmt.Sprintf("Done — I'll ask for your approval before using %q from now on.", toolName), nil
+			}
+			return fmt.Sprintf("Done — %q will no longer ask for your approval.", toolName), nil
+		},
+	}
+}
+
 // actionsFor assembles everything hosted's own top-level loop may call this
 // turn: finish, every one of its own Skills (hydrated fresh — cheap, and
 // picks up any Skill/Tool/Integration change registered since the last
@@ -436,6 +504,12 @@ func (h *Host) querySkillAction(hosted *HostedAgent) *domain.BoundAction {
 // multi-tool skill so its nested LLM loop can delegate sub-tasks mid-turn.
 func (h *Host) actionsFor(ctx context.Context, hosted *HostedAgent) ([]*domain.BoundAction, error) {
 	actions := []*domain.BoundAction{buildFinishAction()}
+
+	// Inject configure_tool_approval when a user is in context and a setter is
+	// registered — only user turns, never cron/event runs without a human.
+	if h.userToolApprovalSetter != nil && domain.UserIDFromContext(ctx) != "" {
+		actions = append(actions, h.configureToolApprovalAction(hosted))
+	}
 
 	for _, skill := range hosted.Agent.Skills {
 		tools, err := domain.HydrateSkillTools(skill, hosted.Agent, hosted.Deps.ToolsByID, hosted.Deps.IdentitiesByID, hosted.Deps.IntegrationsByID, hosted.Deps.Executors)
