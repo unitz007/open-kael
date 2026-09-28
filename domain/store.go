@@ -82,6 +82,13 @@ type Store interface {
 	GetChannelLinkCode(ctx context.Context, code string) (*ChannelLinkCode, error)
 	DeleteChannelLinkCode(ctx context.Context, code string) error
 
+	// UserToolApproval — per-user gate preferences.
+	// SetUserToolApproval adds (requires=true) or removes (requires=false) the
+	// user's approval gate for toolID. ListUserToolApprovals returns the current
+	// set as a map[toolID]bool ready for domain.WithUserToolApprovals.
+	SetUserToolApproval(ctx context.Context, userID, toolID string, requires bool) error
+	ListUserToolApprovals(ctx context.Context, userID string) (map[string]bool, error)
+
 	// LoadAll is the boot-time bulk loader: returns every Agent (with Skills),
 	// every ToolDefinition keyed by ID, every Identity keyed by ID, and every
 	// Integration keyed by ID (with its Identities and Tools populated).

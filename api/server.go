@@ -241,6 +241,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /users/me/authorizations/{id}", s.userAuth(s.deleteMyAppAuthorization))
 
 	// User setup: agent + integrations the user needs to configure.
+	s.mux.HandleFunc("GET /users/me/tool-approvals", s.userAuth(s.listMyToolApprovals))
+	s.mux.HandleFunc("PUT /users/me/tool-approvals/{toolID}", s.userAuth(s.setMyToolApproval))
+	s.mux.HandleFunc("DELETE /users/me/tool-approvals/{toolID}", s.userAuth(s.deleteMyToolApproval))
+
 	s.mux.HandleFunc("GET /users/me/setup", s.userAuth(s.getMySetup))
 
 	// User channels: redeem a bot-generated link code, list, or disconnect.
