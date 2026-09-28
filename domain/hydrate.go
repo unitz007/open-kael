@@ -33,6 +33,9 @@ func HydrateTool(def *ToolDefinition, identity *Identity, integration *Integrati
 		}
 		return executor.Execute(ctx, identity, connectionRef, def.Action, input)
 	}
+	// User-level approval gate runs first (checked at call time from context)
+	// so a user can add approval to any tool regardless of its definition.
+	invoke = withUserApprovalGate(def, invoke)
 	if def.RequiresApproval {
 		invoke = withApprovalGate(def, invoke)
 	}
@@ -120,6 +123,7 @@ func resolveIdentityForIntegration(agent *Agent, integration *Integration, ident
 
 type ctxConnectionRefs struct{}
 type ctxUserID struct{}
+type ctxUserToolApprovals struct{}
 
 // WithConnectionRefs stores a map of identityID → connectionRef in ctx so
 // BoundAction invocations can resolve the current user's credential at call
@@ -153,4 +157,49 @@ func WithUserID(ctx context.Context, userID string) context.Context {
 func UserIDFromContext(ctx context.Context) string {
 	id, _ := ctx.Value(ctxUserID{}).(string)
 	return id
+}
+
+// WithUserToolApprovals stores a set of tool IDs the current user has
+// configured to require approval. The runtime host sets this per turn
+// alongside WithConnectionRefs. withUserApprovalGate reads it at call time,
+// so any tool in this set gets the approval gate even if its ToolDefinition
+// has RequiresApproval: false.
+func WithUserToolApprovals(ctx context.Context, toolIDs map[string]bool) context.Context {
+	return context.WithValue(ctx, ctxUserToolApprovals{}, toolIDs)
+}
+
+// UserToolApprovalsFromContext retrieves the user's per-tool approval set.
+func UserToolApprovalsFromContext(ctx context.Context) map[string]bool {
+	m, _ := ctx.Value(ctxUserToolApprovals{}).(map[string]bool)
+	return m
+}
+
+// withUserApprovalGate wraps invoke with a gate that fires when the current
+// user has flagged def.ID in their per-tool approval preferences (stored in
+// context via WithUserToolApprovals). It is a no-op for turns where no user
+// approval set is present (cron, event, bot-only) or where the tool is not in
+// the set — so it is safe to attach to every tool unconditionally.
+func withUserApprovalGate(def *ToolDefinition, inner func(ctx context.Context, input map[string]any) (any, error)) func(ctx context.Context, input map[string]any) (any, error) {
+	return func(ctx context.Context, input map[string]any) (any, error) {
+		approvals := UserToolApprovalsFromContext(ctx)
+		if !approvals[def.ID] {
+			return inner(ctx, input)
+		}
+		requester, ok := ApprovalRequesterFromContext(ctx)
+		if !ok {
+			return nil, fmt.Errorf("tool %q: user requires approval, but this run has no ApprovalRequester attached", def.ID)
+		}
+		conv, ok := ConversationFromContext(ctx)
+		if !ok {
+			return nil, fmt.Errorf("tool %q: user requires approval, but this run has no active conversation", def.ID)
+		}
+		approved, err := requester.RequestApproval(ctx, conv, def.RenderApprovalPrompt(input), def.ApprovalTimeoutSeconds)
+		if err != nil {
+			return nil, fmt.Errorf("tool %q: requesting user approval: %w", def.ID, err)
+		}
+		if !approved {
+			return "not approved", nil
+		}
+		return inner(ctx, input)
+	}
 }

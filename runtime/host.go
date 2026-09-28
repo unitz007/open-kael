@@ -83,6 +83,12 @@ type Host struct {
 	// scopes tool execution to the right per-user credentials each turn.
 	userConnectionRefLoader func(ctx context.Context, userID string) (map[string]string, error)
 
+	// userToolApprovalLoader loads the set of tool IDs the user has configured
+	// to require approval, as a map[toolID]bool. Injected into ctx via
+	// domain.WithUserToolApprovals each turn so withUserApprovalGate can gate
+	// those tools even when their ToolDefinition.RequiresApproval is false.
+	userToolApprovalLoader func(ctx context.Context, userID string) (map[string]bool, error)
+
 	// eventActorRefLoader resolves an external actor identifier from an event
 	// payload into a map of identityID → connectionRef for that actor's
 	// AppAuthorizations. sourceIdentityID identifies which Identity received
@@ -178,6 +184,15 @@ func (h *Host) SetUserChannelResolver(f func(ctx context.Context, identityID, ch
 // credentials each turn.
 func (h *Host) SetUserConnectionRefLoader(f func(ctx context.Context, userID string) (map[string]string, error)) {
 	h.userConnectionRefLoader = f
+}
+
+// SetUserToolApprovalLoader registers a function that returns the set of tool
+// IDs a user has configured to require approval. When set, the host loads this
+// per turn and injects it into context via domain.WithUserToolApprovals so the
+// user-level approval gate fires for those tools even when their
+// ToolDefinition.RequiresApproval is false.
+func (h *Host) SetUserToolApprovalLoader(f func(ctx context.Context, userID string) (map[string]bool, error)) {
+	h.userToolApprovalLoader = f
 }
 
 // SetChannelRedeemer registers a function that validates and redeems a
@@ -474,6 +489,9 @@ func (h *Host) HandleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 	if conv.UserID != "" && h.userConnectionRefLoader != nil {
 		ctx = h.withUserConnectionRefs(ctx, conv.UserID)
 	}
+	if conv.UserID != "" && h.userToolApprovalLoader != nil {
+		ctx = h.withUserToolApprovals(ctx, conv.UserID)
+	}
 	ctx = domain.WithConversation(ctx, conv)
 	if requester, ok := resolveApprovalRequester(hosted, conv); ok {
 		ctx = domain.WithApprovalRequester(ctx, requester)
@@ -587,6 +605,18 @@ func (h *Host) withUserConnectionRefs(ctx context.Context, userID string) contex
 		return ctx
 	}
 	return domain.WithConnectionRefs(ctx, refs)
+}
+
+// withUserToolApprovals loads the set of tool IDs the user has flagged for
+// approval and stores them in ctx via domain.WithUserToolApprovals so
+// withUserApprovalGate can apply the gate at tool call time.
+func (h *Host) withUserToolApprovals(ctx context.Context, userID string) context.Context {
+	approvals, err := h.userToolApprovalLoader(ctx, userID)
+	if err != nil {
+		log.Printf("runtime: load tool approvals for user %q: %v", userID, err)
+		return ctx
+	}
+	return domain.WithUserToolApprovals(ctx, approvals)
 }
 
 // onboardingMessage returns the intro text and link URL for an unlinked user's

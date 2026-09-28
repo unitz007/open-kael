@@ -194,3 +194,12 @@ CREATE TABLE IF NOT EXISTS conversation_messages (
 );
 
 CREATE INDEX IF NOT EXISTS idx_conv_messages_conv_id ON conversation_messages (conv_id, id);
+
+-- user_tool_approvals: per-user approval preferences for tools.
+-- Presence of a row means the user wants a human-approval gate on that tool
+-- even when ToolDefinition.RequiresApproval is false.
+CREATE TABLE IF NOT EXISTS user_tool_approvals (
+    user_id TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    tool_id TEXT NOT NULL REFERENCES tools (id) ON DELETE CASCADE,
+    PRIMARY KEY (user_id, tool_id)
+);
