@@ -16,6 +16,7 @@ import (
 type ActionSpec struct {
 	Name         string `json:"name"`
 	Description  string `json:"description"`
+	Instructions string `json:"instructions,omitempty"`
 	InputSchema  Schema `json:"input_schema"`
 	OutputSchema Schema `json:"output_schema"`
 }

@@ -37,10 +37,15 @@ func HydrateTool(def *ToolDefinition, identity *Identity, integration *Integrati
 		invoke = withApprovalGate(def, invoke)
 	}
 
+	name := def.FunctionName
+	if name == "" {
+		name = def.Name
+	}
 	return &BoundAction{
 		Spec: ActionSpec{
-			Name:         def.Name,
+			Name:         name,
 			Description:  def.Description,
+			Instructions: def.Instructions,
 			InputSchema:  def.InputSchema,
 			OutputSchema: def.OutputSchema,
 		},

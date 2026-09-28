@@ -16,13 +16,17 @@ import (
 type ToolDefinition struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
+	FunctionName string `json:"function_name,omitempty"`
 	Description string `json:"description"`
+	Instructions string `json:"instructions,omitempty"`
 
 	IntegrationID string `json:"integration_id"`
 
 	InputSchema  Schema `json:"input_schema"`
 	OutputSchema Schema `json:"output_schema"`
 
+	// Action is the executor-internal dispatch key (e.g. "slack.post_message").
+	// Distinct from FunctionName, which is what the LLM sees in tool-use calls.
 	Action string `json:"action"`
 
 	// RequiresApproval means a human must approve a call before Action
