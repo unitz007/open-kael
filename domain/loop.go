@@ -112,6 +112,14 @@ func (l *NativeLoop) Run(ctx context.Context, messages []Message, actions []*Bou
 		}
 
 		if len(resp.ToolCalls) == 0 {
+			if resp.Content != "" {
+				// Natural finish: model produced a text response with no tool
+				// calls — treat this as done and deliver the content to the
+				// caller, same as an explicit finish call would.
+				messages = append(messages, Message{Role: RoleAssistant, Content: resp.Content})
+				return &LoopResult{Status: LoopStatusComplete, Content: resp.Content}, messages, nil
+			}
+			// Empty response with no tool calls — nudge model to act.
 			messages = append(messages,
 				Message{Role: RoleAssistant, Content: resp.Content},
 				Message{Role: RoleUser, Content: fmt.Sprintf("Respond by calling one of the available actions, or call %q if you're done.", FinishActionName)},
