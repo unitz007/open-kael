@@ -835,28 +835,8 @@ func (h *Host) HandleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 		ctx = domain.WithApprovalRequester(ctx, requester)
 	}
 
-	// Resolve executor early for typing indicator and streaming delivery.
+	// Resolve executor early for streaming delivery.
 	executor, identity, connRef := h.resolveExecutorForConv(ctx, hosted, conv)
-
-	// Start typing indicator while the loop runs.
-	var stopTyping func()
-	if executor != nil {
-		if tn, ok := executor.(domain.TurnNotifier); ok {
-			if stop, err := tn.NotifyThinking(ctx, identity, connRef, conv.ChatID); err == nil {
-				stopTyping = stop
-			} else {
-				log.Printf("runtime: agent %q: NotifyThinking: %v", hosted.Agent.ID, err)
-			}
-		}
-	}
-	// stopOnce is safe to call multiple times; the defer is the safety net.
-	stopOnce := func() {
-		if stopTyping != nil {
-			stopTyping()
-			stopTyping = nil
-		}
-	}
-	defer stopOnce()
 
 	memKey := conv.Provider + ":" + conv.ChatID + ":" + conv.ThreadID
 	var prior []domain.Message
@@ -900,7 +880,6 @@ func (h *Host) HandleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 	}
 
 	if err != nil {
-		stopOnce()
 		h.deliverBestEffort(ctx, hosted, conv, "Sorry, I ran into an error and couldn't finish handling that. Please try again.")
 		return result, err
 	}
@@ -914,10 +893,6 @@ func (h *Host) HandleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 	default:
 		content = "Sorry, I ran into an error and couldn't finish handling that. Please try again."
 	}
-
-	// Stop typing before delivering the reply so the indicator clears
-	// the moment the message starts appearing.
-	stopOnce()
 
 	// Deliver via streaming if the executor supports it, else fall back
 	// to a single atomic send.
