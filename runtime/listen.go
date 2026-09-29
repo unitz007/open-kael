@@ -313,43 +313,8 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 		return
 	}
 
-	// Check whether the user still needs to connect any integrations.
-	if h.setupChecker != nil {
-		missingIDs, err := h.setupChecker(ctx, msg.Conversation.UserID, hosted.Agent)
-		if err != nil {
-			log.Printf("runtime: agent %q: setup check user %s: %v", hosted.Agent.ID, msg.Conversation.UserID, err)
-		} else if len(missingIDs) > 0 {
-			for _, identityID := range missingIDs {
-				var connectURL string
-				if h.connectURLGenerator != nil {
-					if u, err := h.connectURLGenerator(ctx, msg.Conversation.UserID, identityID); err == nil {
-						connectURL = u
-					}
-				}
-				if connectURL == "" {
-					continue
-				}
-				var extra map[string]any
-				if !isLocalhostURL(connectURL) {
-					extra = map[string]any{
-						"web_app_button": map[string]any{
-							"text": "Connect FPL account",
-							"url":  connectURL,
-						},
-					}
-				}
-				h.deliverBestEffort(ctx, hosted, msg.Conversation,
-					"To use FPL features, tap below to connect your Fantasy Premier League account.", extra)
-				return
-			}
-			return
-		}
-	}
-
-	// Onboarding intercept: complete a pending intro first, then check whether
-	// to start one. Runs only when both onboarding callbacks are registered and
-	// the user is known (messenger-only users who skipped the link flow have
-	// userID set by auto-provision above).
+	// Onboarding intercept: runs before the integration setup checker so new
+	// users introduce themselves before being asked to connect any accounts.
 	if h.onboardingChecker != nil && h.onboardingCompleter != nil && msg.Conversation.UserID != "" {
 		setupKey := msg.Conversation.IdentityID + ":" + msg.Conversation.ChatID
 
@@ -401,6 +366,39 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 			prompt := greeting + "\n\nBefore we get started — tell me a bit about yourself. " +
 				"Who are you, and what would you most like help with? A sentence or two is perfect."
 			h.deliverBestEffort(ctx, hosted, msg.Conversation, prompt)
+			return
+		}
+	}
+
+	// Check whether the user still needs to connect any integrations.
+	if h.setupChecker != nil {
+		missingIDs, err := h.setupChecker(ctx, msg.Conversation.UserID, hosted.Agent)
+		if err != nil {
+			log.Printf("runtime: agent %q: setup check user %s: %v", hosted.Agent.ID, msg.Conversation.UserID, err)
+		} else if len(missingIDs) > 0 {
+			for _, identityID := range missingIDs {
+				var connectURL string
+				if h.connectURLGenerator != nil {
+					if u, err := h.connectURLGenerator(ctx, msg.Conversation.UserID, identityID); err == nil {
+						connectURL = u
+					}
+				}
+				if connectURL == "" {
+					continue
+				}
+				var extra map[string]any
+				if !isLocalhostURL(connectURL) {
+					extra = map[string]any{
+						"web_app_button": map[string]any{
+							"text": "Connect FPL account",
+							"url":  connectURL,
+						},
+					}
+				}
+				h.deliverBestEffort(ctx, hosted, msg.Conversation,
+					"To use FPL features, tap below to connect your Fantasy Premier League account.", extra)
+				return
+			}
 			return
 		}
 	}
