@@ -72,8 +72,8 @@ type NativeLoop struct {
 }
 
 func NewNativeLoop(llms []LLM, maxIterations int) *NativeLoop {
-	if maxIterations <= 0 {
-		maxIterations = defaultMaxIterations
+	if maxIterations < 0 {
+		maxIterations = 0
 	}
 	return &NativeLoop{
 		LLMs:          llms,
