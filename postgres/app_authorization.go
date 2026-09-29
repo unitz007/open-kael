@@ -60,6 +60,18 @@ func (s *Store) GetAppAuthorizationByExternalUser(ctx context.Context, identityI
 	return a, err
 }
 
+func (s *Store) GetAppAuthorizationByCredentialRef(ctx context.Context, credentialRef string) (*domain.AppAuthorization, error) {
+	row := s.pool.QueryRow(ctx,
+		`SELECT id, identity_id, user_id, scope, name, credential_ref, external_user_id FROM app_authorizations WHERE credential_ref = $1`,
+		credentialRef,
+	)
+	a, err := scanAppAuthorization(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, domain.ErrNotFound
+	}
+	return a, err
+}
+
 func (s *Store) ListAppAuthorizationsByUser(ctx context.Context, userID string) ([]*domain.AppAuthorization, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT id, identity_id, user_id, scope, name, credential_ref, external_user_id FROM app_authorizations WHERE user_id = $1`,

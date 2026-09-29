@@ -36,6 +36,9 @@ func (noopStore) GetAppAuthorizationByUserAndIdentity(_ context.Context, _, _ st
 func (noopStore) ListAppAuthorizationsByUser(_ context.Context, _ string) ([]*domain.AppAuthorization, error) {
 	return nil, nil
 }
+func (noopStore) GetAppAuthorizationByCredentialRef(_ context.Context, _ string) (*domain.AppAuthorization, error) {
+	return nil, domain.ErrNotFound
+}
 func (noopStore) DeleteAppAuthorization(_ context.Context, _ string) error { return nil }
 
 func (noopStore) SaveMessengerChannel(_ context.Context, _ *domain.MessengerChannel) error { return nil }

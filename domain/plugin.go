@@ -1,5 +1,7 @@
 package domain
 
+import "context"
+
 // PluginDeps bundles the shared, live dependencies a Plugin's Executor
 // factory may need. Not every provider needs every field — an Executor
 // factory with no bot/app identity concept (e.g. one backed only by
@@ -7,6 +9,12 @@ package domain
 type PluginDeps struct {
 	Resolver     CredentialResolver
 	KindRegistry *IdentityKindRegistry
+	// OnAuthRevoked, when set, is called when an executor detects that a stored
+	// credential has been revoked (e.g. invalid_grant from an OAuth provider).
+	// The credentialRef is the raw value from AppAuthorization.CredentialRef.
+	// Typical use: delete the stale AppAuthorization so the next user message
+	// triggers the setup checker's reconnect flow automatically.
+	OnAuthRevoked func(ctx context.Context, credentialRef string)
 }
 
 // Plugin bundles everything one provider integration contributes to the

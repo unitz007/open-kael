@@ -67,6 +67,7 @@ type Store interface {
 	// identity_id = identityID and external_user_id = externalUserID. Used by
 	// the event runner to map a webhook sender back to the internal user.
 	GetAppAuthorizationByExternalUser(ctx context.Context, identityID, externalUserID string) (*AppAuthorization, error)
+	GetAppAuthorizationByCredentialRef(ctx context.Context, credentialRef string) (*AppAuthorization, error)
 	ListAppAuthorizationsByUser(ctx context.Context, userID string) ([]*AppAuthorization, error)
 	DeleteAppAuthorization(ctx context.Context, id string) error
 
