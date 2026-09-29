@@ -338,6 +338,19 @@ func (h *Host) SetUserAgentConfigSetter(f func(ctx context.Context, userID, agen
 	h.userAgentConfigSetter = f
 }
 
+// ReloadAgentCommands replaces the Commands slice on a registered HostedAgent.
+// Called by closed-kael's API server hook when PUT /agents/{id}/commands saves
+// a new command list — ensures the live runtime sees the update without a restart.
+func (h *Host) ReloadAgentCommands(agentID string, commands []domain.BotCommand) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	hosted, ok := h.agents[agentID]
+	if !ok {
+		return
+	}
+	hosted.Agent.Commands = commands
+}
+
 // SetOnboardingFlow registers the two callbacks that drive the first-message
 // onboarding flow: checker reports whether the user has already completed
 // their intro; completer saves the intro text and marks the channel onboarded.

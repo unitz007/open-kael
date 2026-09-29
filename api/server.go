@@ -46,6 +46,11 @@ type Server struct {
 	// Receives the owning agent ID so the runtime can reload the hosted agent.
 	onSkillChange func(agentID string)
 
+	// onAgentCommandChange, when set, is called after PUT /agents/{id}/commands
+	// saves a new command list. Receives the agent ID and the new command slice
+	// so the runtime (or messenger adapters) can update the platform command menu.
+	onAgentCommandChange func(agentID string, commands []domain.BotCommand)
+
 	// routePlugins are provider-specific route registrars. Each plugin's Mount
 	// is called from routes() after all generic routes are registered.
 	routePlugins []RoutePlugin
@@ -102,6 +107,14 @@ func WithAgentIdentityChangeHook(f func(agentID string, addedIdentityIDs, remove
 // runtime Host to reload its in-memory agent when skills change.
 func WithSkillChangeHook(f func(agentID string)) Option {
 	return func(s *Server) { s.onSkillChange = f }
+}
+
+// WithAgentCommandChangeHook registers a callback invoked when
+// PUT /agents/{id}/commands updates an agent's command list. The callback
+// receives the agent ID and new commands so the runtime (or messenger adapters)
+// can update the platform's bot command menu.
+func WithAgentCommandChangeHook(f func(agentID string, commands []domain.BotCommand)) Option {
+	return func(s *Server) { s.onAgentCommandChange = f }
 }
 
 // WithRoutePlugin registers a RoutePlugin whose Mount is called from routes()
@@ -223,6 +236,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /agents/{id}", ca(s.getAgent))
 	s.mux.HandleFunc("DELETE /agents/{id}", ca(s.deleteAgent))
 	s.mux.HandleFunc("PUT /agents/{id}/identities", ca(s.setAgentIdentities))
+	s.mux.HandleFunc("PUT /agents/{id}/commands", ca(s.setAgentCommands))
 
 	s.mux.HandleFunc("POST /agents/{agentID}/skills", ca(s.createSkill))
 	s.mux.HandleFunc("GET /agents/{agentID}/skills", ca(s.listSkillsByAgent))

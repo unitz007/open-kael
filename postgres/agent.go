@@ -2,7 +2,9 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 
 	"github.com/jackc/pgx/v5"
 
@@ -22,17 +24,22 @@ func (s *Store) SaveAgent(ctx context.Context, a *domain.Agent) error {
 	if a.CreatedBy == "" {
 		createdBy = nil
 	}
+	cmdsJSON, err := json.Marshal(a.Commands)
+	if err != nil {
+		return fmt.Errorf("postgres: encode agent %q commands: %w", a.ID, err)
+	}
 	_, err = tx.Exec(ctx, `
-		INSERT INTO agents (id, name, description, instructions, max_iterations, llm_model, llm_base_url, created_by)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		INSERT INTO agents (id, name, description, instructions, max_iterations, llm_model, llm_base_url, created_by, commands)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		ON CONFLICT (id) DO UPDATE SET
 			name = EXCLUDED.name,
 			description = EXCLUDED.description,
 			instructions = EXCLUDED.instructions,
 			max_iterations = EXCLUDED.max_iterations,
 			llm_model = EXCLUDED.llm_model,
-			llm_base_url = EXCLUDED.llm_base_url
-	`, a.ID, a.Name, a.Description, a.Instructions, a.MaxIterations, a.LLMConfig.Model, a.LLMConfig.BaseURL, createdBy)
+			llm_base_url = EXCLUDED.llm_base_url,
+			commands = EXCLUDED.commands
+	`, a.ID, a.Name, a.Description, a.Instructions, a.MaxIterations, a.LLMConfig.Model, a.LLMConfig.BaseURL, createdBy, cmdsJSON)
 	if err != nil {
 		return err
 	}
@@ -55,7 +62,7 @@ func (s *Store) SaveAgent(ctx context.Context, a *domain.Agent) error {
 // Skills is left nil; see Store.LoadAgent to also populate it.
 func (s *Store) GetAgent(ctx context.Context, id string) (*domain.Agent, error) {
 	row := s.pool.QueryRow(ctx, `
-		SELECT id, name, description, instructions, max_iterations, llm_model, llm_base_url, created_by
+		SELECT id, name, description, instructions, max_iterations, llm_model, llm_base_url, created_by, commands
 		FROM agents WHERE id = $1
 	`, id)
 	a, err := scanAgent(row)
@@ -78,12 +85,12 @@ func (s *Store) ListAgents(ctx context.Context, ownerID string) ([]*domain.Agent
 	var err error
 	if ownerID != "" {
 		rows, err = s.pool.Query(ctx, `
-			SELECT id, name, description, instructions, max_iterations, llm_model, llm_base_url, created_by
+			SELECT id, name, description, instructions, max_iterations, llm_model, llm_base_url, created_by, commands
 			FROM agents WHERE (created_by = $1 OR created_by IS NULL) ORDER BY id
 		`, ownerID)
 	} else {
 		rows, err = s.pool.Query(ctx, `
-			SELECT id, name, description, instructions, max_iterations, llm_model, llm_base_url, created_by
+			SELECT id, name, description, instructions, max_iterations, llm_model, llm_base_url, created_by, commands
 			FROM agents ORDER BY id
 		`)
 	}
@@ -138,7 +145,7 @@ func (s *Store) ListAgents(ctx context.Context, ownerID string) ([]*domain.Agent
 // or ErrNotFound when no agent uses that identity.
 func (s *Store) GetAgentByIdentityID(ctx context.Context, identityID string) (*domain.Agent, error) {
 	row := s.pool.QueryRow(ctx, `
-		SELECT a.id, a.name, a.description, a.instructions, a.max_iterations, a.llm_model, a.llm_base_url, a.created_by
+		SELECT a.id, a.name, a.description, a.instructions, a.max_iterations, a.llm_model, a.llm_base_url, a.created_by, a.commands
 		FROM agents a
 		JOIN agent_identities ai ON ai.agent_id = a.id
 		WHERE ai.identity_id = $1
@@ -183,11 +190,17 @@ func (s *Store) loadIdentityIDs(ctx context.Context, a *domain.Agent) error {
 func scanAgent(row rowScanner) (*domain.Agent, error) {
 	var a domain.Agent
 	var createdBy *string
-	if err := row.Scan(&a.ID, &a.Name, &a.Description, &a.Instructions, &a.MaxIterations, &a.LLMConfig.Model, &a.LLMConfig.BaseURL, &createdBy); err != nil {
+	var cmdsJSON []byte
+	if err := row.Scan(&a.ID, &a.Name, &a.Description, &a.Instructions, &a.MaxIterations, &a.LLMConfig.Model, &a.LLMConfig.BaseURL, &createdBy, &cmdsJSON); err != nil {
 		return nil, err
 	}
 	if createdBy != nil {
 		a.CreatedBy = *createdBy
+	}
+	if len(cmdsJSON) > 0 {
+		if err := json.Unmarshal(cmdsJSON, &a.Commands); err != nil {
+			return nil, fmt.Errorf("postgres: decode agent %q commands: %w", a.ID, err)
+		}
 	}
 	return &a, nil
 }

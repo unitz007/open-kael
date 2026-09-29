@@ -56,4 +56,19 @@ type Agent struct {
 	// CreatedBy is the ID of the User who created this agent. Empty for
 	// legacy/seeded agents that predate multi-tenancy.
 	CreatedBy string `json:"created_by,omitempty"`
+
+	// Commands is the list of slash/bot commands this agent registers with
+	// the messenger platform. When a user invokes one, the host replaces the
+	// incoming message text with Command.Message before running HandleTurn.
+	Commands []BotCommand `json:"commands,omitempty"`
+}
+
+// BotCommand is one slash/bot command registered for an Agent.
+// Command is the trigger word (without a leading "/"), Description is shown
+// in the platform's command menu, and Message is injected as the user's
+// message when the command is invoked with no additional text.
+type BotCommand struct {
+	Command     string `json:"command"`
+	Description string `json:"description,omitempty"`
+	Message     string `json:"message,omitempty"`
 }
