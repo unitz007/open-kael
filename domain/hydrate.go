@@ -31,6 +31,10 @@ func HydrateTool(def *ToolDefinition, identity *Identity, integration *Integrati
 		var connectionRef string
 		if identity != nil {
 			connectionRef, _ = ConnectionRefFromContext(ctx, identity.ID)
+			// Stamp the identity ID so executor callbacks (e.g. OnTokenRotated)
+			// can fall back to an identity-scoped DB lookup when the stored
+			// credential ref has already been rotated by an earlier tool call.
+			ctx = WithCallerIdentity(ctx, identity.ID)
 		}
 		return executor.Execute(ctx, identity, connectionRef, def.Action, input)
 	}
@@ -146,6 +150,7 @@ func resolveIdentityForIntegration(agent *Agent, integration *Integration, ident
 
 type ctxConnectionRefs struct{}
 type ctxUserID struct{}
+type ctxCallerIdentity struct{}
 type ctxUserToolApprovals struct{}
 
 // WithConnectionRefs stores a map of identityID → connectionRef in ctx so
@@ -179,6 +184,22 @@ func WithUserID(ctx context.Context, userID string) context.Context {
 // string when not set (bot-triggered or test contexts without a real user).
 func UserIDFromContext(ctx context.Context) string {
 	id, _ := ctx.Value(ctxUserID{}).(string)
+	return id
+}
+
+// WithCallerIdentity stores the identity ID of the Identity whose credential
+// is being resolved for the current tool invocation. HydrateTool sets this
+// inside the BoundAction's invoke closure so executors and their callbacks
+// can perform identity-scoped fallback lookups (e.g. re-finding an auth
+// record after a credential rotation changed the stored ref).
+func WithCallerIdentity(ctx context.Context, identityID string) context.Context {
+	return context.WithValue(ctx, ctxCallerIdentity{}, identityID)
+}
+
+// CallerIdentityFromContext retrieves the identity ID set by WithCallerIdentity.
+// Returns empty string when not set (tools invoked without an app identity).
+func CallerIdentityFromContext(ctx context.Context) string {
+	id, _ := ctx.Value(ctxCallerIdentity{}).(string)
 	return id
 }
 
