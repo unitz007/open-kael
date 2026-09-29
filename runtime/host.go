@@ -835,6 +835,29 @@ func (h *Host) HandleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 		ctx = domain.WithApprovalRequester(ctx, requester)
 	}
 
+	// Resolve executor early for typing indicator and streaming delivery.
+	executor, identity, connRef := h.resolveExecutorForConv(ctx, hosted, conv)
+
+	// Start typing indicator while the loop runs.
+	var stopTyping func()
+	if executor != nil {
+		if tn, ok := executor.(domain.TurnNotifier); ok {
+			if stop, err := tn.NotifyThinking(ctx, identity, connRef, conv.ChatID); err == nil {
+				stopTyping = stop
+			} else {
+				log.Printf("runtime: agent %q: NotifyThinking: %v", hosted.Agent.ID, err)
+			}
+		}
+	}
+	// stopOnce is safe to call multiple times; the defer is the safety net.
+	stopOnce := func() {
+		if stopTyping != nil {
+			stopTyping()
+			stopTyping = nil
+		}
+	}
+	defer stopOnce()
+
 	memKey := conv.Provider + ":" + conv.ChatID + ":" + conv.ThreadID
 	var prior []domain.Message
 	if hosted.Deps.Memory != nil {
@@ -877,6 +900,7 @@ func (h *Host) HandleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 	}
 
 	if err != nil {
+		stopOnce()
 		h.deliverBestEffort(ctx, hosted, conv, "Sorry, I ran into an error and couldn't finish handling that. Please try again.")
 		return result, err
 	}
@@ -890,9 +914,70 @@ func (h *Host) HandleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 	default:
 		content = "Sorry, I ran into an error and couldn't finish handling that. Please try again."
 	}
+
+	// Stop typing before delivering the reply so the indicator clears
+	// the moment the message starts appearing.
+	stopOnce()
+
+	// Deliver via streaming if the executor supports it, else fall back
+	// to a single atomic send.
+	if executor != nil {
+		if sm, ok := executor.(domain.StreamingMessenger); ok {
+			chunks := chunkContent(ctx, content)
+			if _, _, serr := sm.StreamReply(ctx, identity, connRef, conv.ChatID, conv.ThreadID, chunks); serr != nil {
+				log.Printf("runtime: agent %q: stream reply failed, falling back: %v", hosted.Agent.ID, serr)
+				h.deliverBestEffort(ctx, hosted, conv, content)
+			}
+			return result, nil
+		}
+	}
 	h.deliverBestEffort(ctx, hosted, conv, content)
 
 	return result, nil
+}
+
+// resolveExecutorForConv looks up the Executor and Identity for a conversation
+// and resolves the per-user connectionRef from context. Returns nils when no
+// matching Integration or Executor is found — callers must guard against nil.
+func (h *Host) resolveExecutorForConv(ctx context.Context, hosted *HostedAgent, conv domain.ConversationRef) (domain.Executor, *domain.Identity, string) {
+	identity, integration := resolveIdentityAndIntegration(hosted, conv)
+	if integration == nil {
+		return nil, nil, ""
+	}
+	executor, ok := hosted.Deps.Executors.For(integration.Service)
+	if !ok {
+		return nil, nil, ""
+	}
+	var connectionRef string
+	if identity != nil {
+		connectionRef, _ = domain.ConnectionRefFromContext(ctx, identity.ID)
+	}
+	return executor, identity, connectionRef
+}
+
+// chunkContent splits content into ~50-rune chunks and sends them on the
+// returned channel, which is closed when all chunks have been sent.
+// The goroutine exits early if ctx is cancelled. Concatenating all chunks
+// reconstructs the original content exactly (rune-accurate split).
+func chunkContent(ctx context.Context, content string) <-chan string {
+	const chunkRunes = 50
+	ch := make(chan string, 32)
+	go func() {
+		defer close(ch)
+		runes := []rune(content)
+		for i := 0; i < len(runes); i += chunkRunes {
+			end := i + chunkRunes
+			if end > len(runes) {
+				end = len(runes)
+			}
+			select {
+			case ch <- string(runes[i:end]):
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return ch
 }
 
 const jevConfidenceThreshold = 0.65

@@ -1,5 +1,37 @@
 package domain
 
+import "context"
+
+// TurnNotifier is optionally implemented by messengers to show an in-progress
+// indicator while a turn is being processed (e.g. Telegram's "typing" action,
+// Slack's typing indicator). The runtime discovers it via type assertion and
+// calls NotifyThinking before entering the agent loop; the returned stop func
+// is called once the reply is ready to be sent.
+//
+// identity and connectionRef follow the same multi-tenant credential pattern
+// as Executor.Execute — one Executor instance serves every connected bot, so
+// which credentials to use can't be baked in at construction time.
+type TurnNotifier interface {
+	// NotifyThinking starts the in-progress indicator for chatID.
+	// The returned stop func must be called exactly once (safe to call multiple
+	// times — idempotent). It is called by the runtime before reply delivery.
+	NotifyThinking(ctx context.Context, identity *Identity, connectionRef, chatID string) (stop func(), err error)
+}
+
+// StreamingMessenger is optionally implemented by messengers to deliver a
+// reply progressively — sending a placeholder and editing it as content
+// accumulates — rather than one atomic send. The runtime feeds content over
+// chunks (word groups or raw LLM token deltas); close the channel to signal
+// completion. StreamReply blocks until the stream is fully consumed and the
+// final message is delivered, then returns the sent message's IDs.
+//
+// The message_id and thread_id in the return match ActionSendMessage's
+// output contract so callers can reply within the same thread later.
+// Implementations must tolerate a closed or cancelled channel gracefully.
+type StreamingMessenger interface {
+	StreamReply(ctx context.Context, identity *Identity, connectionRef, chatID, threadID string, chunks <-chan string) (messageID, replyThreadID string, err error)
+}
+
 // ActionSendMessage is the canonical dispatch key a messenger-capable
 // provider's Executor responds to. Unlike a provider-specific Action (e.g.
 // executors/slack's "slack.post_message"), this one is shared: every
