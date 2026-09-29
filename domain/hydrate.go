@@ -3,6 +3,7 @@ package domain
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 )
 
 // HydrateTool resolves a stored ToolDefinition into a real, callable
@@ -38,6 +39,9 @@ func HydrateTool(def *ToolDefinition, identity *Identity, integration *Integrati
 	invoke = withUserApprovalGate(def, invoke)
 	if def.RequiresApproval {
 		invoke = withApprovalGate(def, invoke)
+		// Outermost wrapper: short-circuit re-calls after first success so
+		// the model cannot loop on an approved write action.
+		invoke = withOneShotGuard(invoke)
 	}
 
 	name := def.FunctionName
@@ -77,6 +81,25 @@ func withApprovalGate(def *ToolDefinition, inner func(ctx context.Context, input
 			return "not approved", nil
 		}
 		return inner(ctx, input)
+	}
+}
+
+// withOneShotGuard wraps a RequiresApproval action so it can only execute
+// once per BoundAction lifetime (one turn). After the first successful call,
+// subsequent calls return a directive telling the model to call finish rather
+// than re-running the action — preventing approval-gated write tools from
+// looping when the model generates slightly different arguments each time.
+func withOneShotGuard(inner func(ctx context.Context, input map[string]any) (any, error)) func(ctx context.Context, input map[string]any) (any, error) {
+	var done atomic.Bool
+	return func(ctx context.Context, input map[string]any) (any, error) {
+		if done.Load() {
+			return "already completed — call finish to deliver the result to the user", nil
+		}
+		output, err := inner(ctx, input)
+		if err == nil {
+			done.Store(true)
+		}
+		return output, err
 	}
 }
 
