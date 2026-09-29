@@ -159,6 +159,25 @@ type Host struct {
 	// before the inner skill loop runs — replacing the outer NativeLoop's
 	// LLM-based skill selection with a fast, type-safe Jev classifier.
 	skillRouter SkillRouter
+
+	// userAgentConfigLoader loads a user's personal instructions for one Agent.
+	// When set, the instructions are injected as a <user_instructions> block in
+	// the system prompt each turn. ErrNotFound is silently ignored (no config yet).
+	userAgentConfigLoader func(ctx context.Context, userID, agentID string) (*domain.UserAgentConfig, error)
+
+	// onboardingChecker reports whether the user has already completed the
+	// onboarding intro for (identityID, channelRef). Returns true when
+	// onboarded_at IS NOT NULL on the messenger_channel row.
+	onboardingChecker func(ctx context.Context, identityID, channelRef string) (onboarded bool, err error)
+
+	// onboardingCompleter saves the user's intro text as their personal agent
+	// instructions (user_agent_configs) and stamps onboarded_at on the
+	// messenger_channel. Called after the user types their onboarding reply.
+	onboardingCompleter func(ctx context.Context, identityID, channelRef, agentID, userID, instructions string) error
+
+	// pendingOnboardings tracks channels that have received the onboarding
+	// prompt and are waiting for the user's intro reply. Key is "identityID:chatID".
+	pendingOnboardings sync.Map
 }
 
 // SkillRouter picks the right skill for an inbound message. Any classifier
@@ -295,6 +314,27 @@ func (h *Host) SetLLMFactory(factory func(*domain.Agent) []domain.LLM) {
 	h.llmFactory = factory
 }
 
+// SetUserAgentConfigLoader registers a function that loads a user's personal
+// instructions for one Agent. When set, the instructions are injected as a
+// <user_instructions> block into the system prompt on every turn so the agent
+// can personalise its responses to that user.
+func (h *Host) SetUserAgentConfigLoader(f func(ctx context.Context, userID, agentID string) (*domain.UserAgentConfig, error)) {
+	h.userAgentConfigLoader = f
+}
+
+// SetOnboardingFlow registers the two callbacks that drive the first-message
+// onboarding flow: checker reports whether the user has already completed
+// their intro; completer saves the intro text and marks the channel onboarded.
+// When both are set, the host intercepts the first message on any unboarded
+// channel and prompts the user to introduce themselves before the normal turn.
+func (h *Host) SetOnboardingFlow(
+	checker func(ctx context.Context, identityID, channelRef string) (bool, error),
+	completer func(ctx context.Context, identityID, channelRef, agentID, userID, instructions string) error,
+) {
+	h.onboardingChecker = checker
+	h.onboardingCompleter = completer
+}
+
 // StopIdentityListeners cancels the listener goroutines for the given
 // (agentID, identityID) pairs. Called when identities are removed from an
 // agent via the API so the goroutines exit cleanly rather than continuing
@@ -349,8 +389,10 @@ func (h *Host) ReloadAgentSkills(ctx context.Context, agentID string, loader fun
 // is reflected automatically on the next turn without any manual edit to an
 // instructions field. If the agent has an explicit Instructions override it
 // is appended after the generated block so operators can still inject custom
-// behaviour without giving up the auto-generated foundation.
-func buildSystemPrompt(agent *domain.Agent) string {
+// behaviour without giving up the auto-generated foundation. When userInstructions
+// is non-empty (the user's personal intro loaded from user_agent_configs) it is
+// appended last as a <user_instructions> block so the agent knows who it is talking to.
+func buildSystemPrompt(agent *domain.Agent, userInstructions string) string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "You are %s.", agent.Name)
@@ -368,6 +410,10 @@ func buildSystemPrompt(agent *domain.Agent) string {
 
 	if agent.Instructions != "" {
 		fmt.Fprintf(&b, "\n\n%s", agent.Instructions)
+	}
+
+	if userInstructions != "" {
+		fmt.Fprintf(&b, "\n\n<user_instructions>\n%s\n</user_instructions>", userInstructions)
 	}
 
 	return b.String()
@@ -593,8 +639,16 @@ func (h *Host) HandleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 		prior = hosted.Deps.Memory.History(ctx, memKey)
 	}
 
+	var userInstructions string
+	if conv.UserID != "" && h.userAgentConfigLoader != nil {
+		if cfg, err := h.userAgentConfigLoader(ctx, conv.UserID, hosted.Agent.ID); err == nil {
+			userInstructions = cfg.Instructions
+		}
+		// ErrNotFound is expected when the user hasn't set instructions yet — silence it.
+	}
+
 	messages := make([]domain.Message, 0, len(prior)+2)
-	messages = append(messages, domain.Message{Role: domain.RoleSystem, Content: buildSystemPrompt(hosted.Agent)})
+	messages = append(messages, domain.Message{Role: domain.RoleSystem, Content: buildSystemPrompt(hosted.Agent, userInstructions)})
 	messages = append(messages, prior...)
 	messages = append(messages, domain.Message{Role: domain.RoleUser, Content: userText})
 

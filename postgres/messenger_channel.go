@@ -20,7 +20,7 @@ func (s *Store) SaveMessengerChannel(ctx context.Context, ch *domain.MessengerCh
 
 func (s *Store) GetMessengerChannelByIdentityAndRef(ctx context.Context, identityID, channelRef string) (*domain.MessengerChannel, error) {
 	row := s.pool.QueryRow(ctx,
-		`SELECT id, identity_id, user_id, channel_ref FROM messenger_channels WHERE identity_id = $1 AND channel_ref = $2`,
+		`SELECT id, identity_id, user_id, channel_ref, onboarded_at FROM messenger_channels WHERE identity_id = $1 AND channel_ref = $2`,
 		identityID, channelRef,
 	)
 	ch, err := scanMessengerChannel(row)
@@ -32,7 +32,7 @@ func (s *Store) GetMessengerChannelByIdentityAndRef(ctx context.Context, identit
 
 func (s *Store) ListMessengerChannelsByUser(ctx context.Context, userID string) ([]*domain.MessengerChannel, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, identity_id, user_id, channel_ref FROM messenger_channels WHERE user_id = $1`,
+		`SELECT id, identity_id, user_id, channel_ref, onboarded_at FROM messenger_channels WHERE user_id = $1`,
 		userID,
 	)
 	if err != nil {
@@ -58,7 +58,7 @@ func (s *Store) DeleteMessengerChannel(ctx context.Context, id string) error {
 
 func scanMessengerChannel(row pgx.Row) (*domain.MessengerChannel, error) {
 	var ch domain.MessengerChannel
-	if err := row.Scan(&ch.ID, &ch.IdentityID, &ch.UserID, &ch.ChannelRef); err != nil {
+	if err := row.Scan(&ch.ID, &ch.IdentityID, &ch.UserID, &ch.ChannelRef, &ch.OnboardedAt); err != nil {
 		return nil, err
 	}
 	return &ch, nil

@@ -1,5 +1,7 @@
 package domain
 
+import "time"
+
 // MessengerChannel maps a platform user to their address on a specific
 // messaging Identity (Telegram bot, Slack bot, Discord bot, MS Teams bot).
 // It is the user-side counterpart for messaging providers — the bridge between
@@ -10,10 +12,11 @@ package domain
 // carries no auth credential — the bot token lives on the Identity; the
 // ChannelRef is only a routing address.
 type MessengerChannel struct {
-	ID         string `json:"id"`
-	IdentityID string `json:"identity_id"` // which bot/Identity this channel belongs to
-	UserID     string `json:"user_id"`
-	ChannelRef string `json:"channel_ref"` // provider-specific address: Telegram ChatID, Slack UserID, Discord UserID, etc.
+	ID          string     `json:"id"`
+	IdentityID  string     `json:"identity_id"` // which bot/Identity this channel belongs to
+	UserID      string     `json:"user_id"`
+	ChannelRef  string     `json:"channel_ref"` // provider-specific address: Telegram ChatID, Slack UserID, Discord UserID, etc.
+	OnboardedAt *time.Time `json:"onboarded_at,omitempty"` // nil until the user completes the onboarding intro
 }
 
 // UserChannel is a deprecated alias kept during migration. Use MessengerChannel.

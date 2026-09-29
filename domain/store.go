@@ -89,6 +89,15 @@ type Store interface {
 	SetUserToolApproval(ctx context.Context, userID, toolID string, requires bool) error
 	ListUserToolApprovals(ctx context.Context, userID string) (map[string]bool, error)
 
+	// UserAgentConfig — per-user personal instructions for one Agent.
+	// GetUserAgentConfig returns ErrNotFound when no config exists yet.
+	GetUserAgentConfig(ctx context.Context, userID, agentID string) (*UserAgentConfig, error)
+	SetUserAgentConfig(ctx context.Context, cfg *UserAgentConfig) error
+
+	// MarkMessengerChannelOnboarded stamps onboarded_at = now() on the
+	// messenger_channel row identified by (identityID, channelRef).
+	MarkMessengerChannelOnboarded(ctx context.Context, identityID, channelRef string) error
+
 	// LoadAll is the boot-time bulk loader: returns every Agent (with Skills),
 	// every ToolDefinition keyed by ID, every Identity keyed by ID, and every
 	// Integration keyed by ID (with its Identities and Tools populated).

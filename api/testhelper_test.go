@@ -106,6 +106,17 @@ func (noopStore) DeleteSkill(_ context.Context, _ string) error { return nil }
 func (noopStore) LoadAll(_ context.Context) ([]*domain.Agent, map[string]*domain.ToolDefinition, map[string]*domain.Identity, map[string]*domain.Integration, error) {
 	return nil, nil, nil, nil, nil
 }
+func (noopStore) SetUserToolApproval(_ context.Context, _, _ string, _ bool) error { return nil }
+func (noopStore) ListUserToolApprovals(_ context.Context, _ string) (map[string]bool, error) {
+	return nil, nil
+}
+func (noopStore) GetUserAgentConfig(_ context.Context, _, _ string) (*domain.UserAgentConfig, error) {
+	return nil, domain.ErrNotFound
+}
+func (noopStore) SetUserAgentConfig(_ context.Context, _ *domain.UserAgentConfig) error {
+	return nil
+}
+func (noopStore) MarkMessengerChannelOnboarded(_ context.Context, _, _ string) error { return nil }
 
 // stubStoreWithUser embeds noopStore but returns a valid session for the
 // "valid-token" bearer token, pointing at a fixed user "u-stub-1". Useful for

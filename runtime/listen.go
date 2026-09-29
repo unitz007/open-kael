@@ -333,6 +333,40 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 		}
 	}
 
+	// Onboarding intercept: complete a pending intro first, then check whether
+	// to start one. Runs only when both onboarding callbacks are registered and
+	// the user is known (messenger-only users who skipped the link flow have
+	// userID set by auto-provision above).
+	if h.onboardingChecker != nil && h.onboardingCompleter != nil && msg.Conversation.UserID != "" {
+		setupKey := msg.Conversation.IdentityID + ":" + msg.Conversation.ChatID
+		if _, pending := h.pendingOnboardings.Load(setupKey); pending {
+			// User is replying to the onboarding prompt — save their intro.
+			h.pendingOnboardings.Delete(setupKey)
+			if err := h.onboardingCompleter(ctx,
+				msg.Conversation.IdentityID, msg.Conversation.ChatID,
+				hosted.Agent.ID, msg.Conversation.UserID, msg.Text,
+			); err != nil {
+				log.Printf("runtime: agent %q: onboarding completer: %v", hosted.Agent.ID, err)
+			}
+			h.deliverBestEffort(ctx, hosted, msg.Conversation,
+				"Thanks for sharing that! I'll keep it in mind to help you better. What can I do for you?")
+			return
+		}
+
+		onboarded, err := h.onboardingChecker(ctx, msg.Conversation.IdentityID, msg.Conversation.ChatID)
+		if err != nil {
+			log.Printf("runtime: agent %q: onboarding checker: %v", hosted.Agent.ID, err)
+		}
+		if !onboarded {
+			h.pendingOnboardings.Store(setupKey, true)
+			h.deliverBestEffort(ctx, hosted, msg.Conversation,
+				"Welcome! Before we get started, please tell me a bit about yourself — "+
+					"who you are and what you'd like to use me for. "+
+					"This helps me give you better, more personalised responses.")
+			return
+		}
+	}
+
 	// Settings menu command: intercept before the LLM turn loop.
 	if h.settingsFlow != nil && isSettingsCommand(msg.Text) {
 		if executor, ok := h.executorForMessage(hosted, msg); ok {

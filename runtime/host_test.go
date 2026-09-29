@@ -116,7 +116,7 @@ func TestHandleTurn_DeliversFinalAnswerAndPersistsMemory(t *testing.T) {
 		t.Fatalf("expected one ActionSendMessage delivering the final answer, got %+v", slackExec.calls)
 	}
 
-	if history := mem.History(context.Background(), "slack:C1"); len(history) == 0 {
+	if history := mem.History(context.Background(), "slack:C1:"); len(history) == 0 {
 		t.Fatalf("expected memory to have been appended for this conversation")
 	}
 }

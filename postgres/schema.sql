@@ -93,6 +93,8 @@ CREATE TABLE IF NOT EXISTS messenger_channels (
 
 CREATE INDEX IF NOT EXISTS idx_messenger_channels_user_id ON messenger_channels (user_id);
 
+ALTER TABLE messenger_channels ADD COLUMN IF NOT EXISTS onboarded_at TIMESTAMPTZ;
+
 CREATE TABLE IF NOT EXISTS channel_link_codes (
     code        TEXT PRIMARY KEY,
     identity_id TEXT NOT NULL DEFAULT '',
@@ -194,6 +196,15 @@ CREATE TABLE IF NOT EXISTS conversation_messages (
 );
 
 CREATE INDEX IF NOT EXISTS idx_conv_messages_conv_id ON conversation_messages (conv_id, id);
+
+-- user_agent_configs: per-user personal instructions for one Agent. Injected
+-- into the system prompt so the agent can personalise responses to each user.
+CREATE TABLE IF NOT EXISTS user_agent_configs (
+    user_id      TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    agent_id     TEXT NOT NULL REFERENCES agents (id) ON DELETE CASCADE,
+    instructions TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (user_id, agent_id)
+);
 
 -- user_tool_approvals: per-user approval preferences for tools.
 -- Presence of a row means the user wants a human-approval gate on that tool

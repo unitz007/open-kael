@@ -247,6 +247,10 @@ func (s *Server) routes() {
 
 	s.mux.HandleFunc("GET /users/me/setup", s.userAuth(s.getMySetup))
 
+	// User agent config: personal instructions per agent.
+	s.mux.HandleFunc("GET /users/me/agents/{agentID}/config", s.userAuth(s.getMyAgentConfig))
+	s.mux.HandleFunc("PUT /users/me/agents/{agentID}/config", s.userAuth(s.putMyAgentConfig))
+
 	// User channels: redeem a bot-generated link code, list, or disconnect.
 	s.mux.HandleFunc("POST /users/me/channels/redeem", s.userAuth(s.redeemChannelByCode))
 	s.mux.HandleFunc("GET /users/me/channels", s.userAuth(s.listMyChannels))
