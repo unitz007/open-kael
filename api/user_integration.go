@@ -156,6 +156,9 @@ func (s *Server) createMyAppAuthorization(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	if s.onIntegrationConnected != nil {
+		go s.onIntegrationConnected(r.Context(), auth.UserID, auth.IdentityID)
+	}
 	writeJSON(w, http.StatusOK, &auth)
 }
 

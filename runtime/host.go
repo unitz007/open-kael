@@ -139,6 +139,11 @@ type Host struct {
 	// Used to generate LLM-phrased connect prompts instead of hardcoded text.
 	connectIntegrationNameLoader func(ctx context.Context, identityID string) (name string, err error)
 
+	// userChannelsByIdentityLoader, when set, returns all MessengerChannel
+	// channel refs for the given (userID, identityID) pair. Used by
+	// OnIntegrationConnected to deliver post-connection messages.
+	userChannelsByIdentityLoader func(ctx context.Context, userID, identityID string) (channelRefs []string, err error)
+
 	// pendingSetups tracks in-progress in-bot credential collection flows.
 	// Key is "identityID:chatID"; value is *pendingCredential.
 	pendingSetups sync.Map
@@ -395,6 +400,89 @@ func (h *Host) SetOnboardingPendingCallbacks(
 // hardcoded fallback text.
 func (h *Host) SetConnectIntegrationNameLoader(f func(ctx context.Context, identityID string) (string, error)) {
 	h.connectIntegrationNameLoader = f
+}
+
+// SetUserChannelsByIdentityLoader registers a callback that returns the
+// channel refs for a given (userID, identityID) pair. Required for
+// OnIntegrationConnected to know which channels to deliver the message to.
+func (h *Host) SetUserChannelsByIdentityLoader(f func(ctx context.Context, userID, identityID string) ([]string, error)) {
+	h.userChannelsByIdentityLoader = f
+}
+
+// OnIntegrationConnected is called after a user successfully connects an
+// integration. It finds the user's channels for that identity, generates an
+// LLM confirmation message, and delivers it. Safe to call in a goroutine.
+func (h *Host) OnIntegrationConnected(ctx context.Context, userID, identityID string) {
+	if h.userChannelsByIdentityLoader == nil {
+		return
+	}
+	channelRefs, err := h.userChannelsByIdentityLoader(ctx, userID, identityID)
+	if err != nil || len(channelRefs) == 0 {
+		return
+	}
+	var integrationName string
+	if h.connectIntegrationNameLoader != nil {
+		if name, err := h.connectIntegrationNameLoader(ctx, identityID); err == nil {
+			integrationName = name
+		}
+	}
+	// Find a hosted agent that has this identity so we can use its LLM.
+	h.mu.RLock()
+	var hosted *HostedAgent
+	for _, ha := range h.agents {
+		for _, id := range ha.Agent.IdentityIDs {
+			if id == identityID {
+				hosted = ha
+				break
+			}
+		}
+		if hosted != nil {
+			break
+		}
+	}
+	h.mu.RUnlock()
+	if hosted == nil {
+		return
+	}
+	text := h.connectedMessage(ctx, hosted.Agent, hosted.Agent.LLMs, integrationName)
+	conv := domain.ConversationRef{IdentityID: identityID}
+	for _, ref := range channelRefs {
+		conv.ChatID = ref
+		h.deliverBestEffort(ctx, hosted, conv, text)
+	}
+}
+
+// connectedMessage generates a confirmation that the user has connected an
+// integration, using the LLM when available.
+func (h *Host) connectedMessage(ctx context.Context, agent *domain.Agent, llms []domain.LLM, integrationName string) string {
+	if len(llms) > 0 {
+		what := integrationName
+		if what == "" {
+			what = "the integration"
+		}
+		prompt := fmt.Sprintf(
+			"You are %s.", agent.Name,
+		)
+		if agent.Description != "" {
+			prompt += " " + agent.Description
+		}
+		prompt += fmt.Sprintf(
+			"\n\nThe user has just successfully connected their %s account. "+
+				"Write a short, warm confirmation (1-2 sentences) and invite them to try it out. "+
+				"Plain text only — no markdown.",
+			what,
+		)
+		msgs := []domain.Message{{Role: domain.RoleUser, Content: prompt}}
+		if resp, err := llms[0].Call(ctx, msgs, nil); err == nil && resp.Content != "" {
+			return resp.Content
+		} else if err != nil {
+			log.Printf("runtime: connected message LLM failed for agent %q: %v", agent.ID, err)
+		}
+	}
+	if integrationName != "" {
+		return "Your " + integrationName + " account is now connected! Feel free to ask me anything."
+	}
+	return "You're all connected! Feel free to ask me anything."
 }
 
 // connectPrompt generates a friendly message asking the user to connect their

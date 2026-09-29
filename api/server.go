@@ -51,6 +51,11 @@ type Server struct {
 	// so the runtime (or messenger adapters) can update the platform command menu.
 	onAgentCommandChange func(agentID string, commands []domain.BotCommand)
 
+	// onIntegrationConnected, when set, is called after any AppAuthorization is
+	// successfully saved (POST /users/me/authorizations). Receives the userID
+	// and identityID of the newly connected integration.
+	onIntegrationConnected func(ctx context.Context, userID, identityID string)
+
 	// routePlugins are provider-specific route registrars. Each plugin's Mount
 	// is called from routes() after all generic routes are registered.
 	routePlugins []RoutePlugin
@@ -120,6 +125,10 @@ func WithAgentCommandChangeHook(f func(agentID string, commands []domain.BotComm
 // WithRoutePlugin registers a RoutePlugin whose Mount is called from routes()
 // after all generic routes, allowing providers to add OAuth callbacks and
 // other provider-specific endpoints without touching server.go.
+func WithIntegrationConnectedHook(f func(ctx context.Context, userID, identityID string)) Option {
+	return func(s *Server) { s.onIntegrationConnected = f }
+}
+
 func WithRoutePlugin(p RoutePlugin) Option {
 	return func(s *Server) { s.routePlugins = append(s.routePlugins, p) }
 }
