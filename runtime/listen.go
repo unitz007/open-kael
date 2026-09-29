@@ -205,6 +205,12 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 		msg.Conversation.ThreadID = msg.ThreadID
 	}
 
+	// Route callback queries (button taps) directly — they never go to HandleTurn.
+	if msg.CallbackQuery != nil {
+		h.handleCallbackQuery(ctx, hosted, msg)
+		return
+	}
+
 	// Intercept channel link codes before routing to HandleTurn. Handles both
 	// plain codes and Telegram's /start <code> deep link format.
 	if h.channelRedeemer != nil {
@@ -375,6 +381,36 @@ func (h *Host) handlePendingSetup(ctx context.Context, hosted *HostedAgent, msg 
 	}
 	h.deliverBestEffort(ctx, hosted, msg.Conversation,
 		"Your FPL account is now connected! You can start asking about your team.")
+}
+
+// handleCallbackQuery dispatches a button-tap InboundMessage. It resolves the
+// user, then routes kael_sm: data to the SettingsFlow if the executor
+// implements SettingsMenuProvider. Approval callbacks (kael_approve:/kael_reject:)
+// are left to the executor's own internal handling (via the listener loop).
+func (h *Host) handleCallbackQuery(ctx context.Context, hosted *HostedAgent, msg domain.InboundMessage) {
+	cq := msg.CallbackQuery
+
+	// Resolve the platform user — same as the normal message path.
+	if h.userChannelResolver != nil && msg.Conversation.UserID == "" {
+		if userID, err := h.userChannelResolver(ctx, msg.Conversation.IdentityID, msg.Conversation.ChatID); err == nil {
+			msg.Conversation.UserID = userID
+		}
+	}
+
+	if strings.HasPrefix(cq.Data, "kael_sm:") && h.settingsFlow != nil {
+		executor, ok := h.executorForMessage(hosted, msg)
+		if !ok {
+			return
+		}
+		provider, ok := executor.(domain.SettingsMenuProvider)
+		if !ok {
+			return
+		}
+		action := cq.Data[len("kael_sm:"):]
+		h.settingsFlow.Handle(ctx, provider, hosted,
+			msg.Conversation.IdentityID, msg.Conversation.ChatID,
+			cq.MessageID, msg.Conversation.UserID, action)
+	}
 }
 
 // isSettingsCommand reports whether text is a settings-menu trigger.

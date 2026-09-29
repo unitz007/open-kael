@@ -25,6 +25,19 @@ type InboundMessage struct {
 	Text         string
 	MessageID    string
 	ThreadID     string
+	// CallbackQuery, when non-nil, marks this as a button-tap event rather
+	// than a free-form text message. The host routes it separately from turns.
+	CallbackQuery *CallbackQueryData
+}
+
+// CallbackQueryData carries the payload from a messenger inline-button tap.
+// Listeners that support interactive keyboards (Telegram, Slack) populate
+// this instead of Text when an update is a button interaction rather than
+// a text message. QueryID is the platform-specific acknowledgement handle.
+type CallbackQueryData struct {
+	QueryID   string // platform callback query ID — ack it to dismiss the spinner
+	Data      string // opaque callback_data value encoded in the button
+	MessageID string // ID of the message that carried the button
 }
 
 type ctxKey int
