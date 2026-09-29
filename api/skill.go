@@ -54,6 +54,34 @@ func (s *Server) getSkill(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, skill)
 }
 
+func (s *Server) updateSkill(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	existing, err := s.store.GetSkill(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			writeError(w, http.StatusNotFound, err)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	var skill domain.Skill
+	if err := decodeJSON(r, &skill); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	skill.ID = existing.ID
+	skill.AgentID = existing.AgentID
+	if err := s.store.SaveSkill(r.Context(), &skill); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if s.onSkillChange != nil {
+		s.onSkillChange(skill.AgentID)
+	}
+	writeJSON(w, http.StatusOK, skill)
+}
+
 func (s *Server) deleteSkill(w http.ResponseWriter, r *http.Request) {
 	skillID := r.PathValue("id")
 	var agentID string

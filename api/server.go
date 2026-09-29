@@ -250,6 +250,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /agents/{agentID}/skills", ca(s.createSkill))
 	s.mux.HandleFunc("GET /agents/{agentID}/skills", ca(s.listSkillsByAgent))
 	s.mux.HandleFunc("GET /skills/{id}", ca(s.getSkill))
+	s.mux.HandleFunc("PUT /skills/{id}", ca(s.updateSkill))
 	s.mux.HandleFunc("DELETE /skills/{id}", ca(s.deleteSkill))
 
 	// User routes: public (register/login) and authenticated (me/logout).
