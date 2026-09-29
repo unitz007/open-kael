@@ -15,6 +15,14 @@ type PluginDeps struct {
 	// Typical use: delete the stale AppAuthorization so the next user message
 	// triggers the setup checker's reconnect flow automatically.
 	OnAuthRevoked func(ctx context.Context, credentialRef string)
+
+	// OnTokenRotated, when set, is called when an executor receives a new
+	// refresh token from the provider (rotating refresh token scheme).
+	// oldCredRef is the previously stored AppAuthorization.CredentialRef;
+	// newRefreshToken is the plaintext new token that should replace it.
+	// Typical use: encrypt the new token and update AppAuthorization.CredentialRef
+	// so the next tool call uses the rotated credential.
+	OnTokenRotated func(ctx context.Context, oldCredRef, newRefreshToken string)
 }
 
 // Plugin bundles everything one provider integration contributes to the
