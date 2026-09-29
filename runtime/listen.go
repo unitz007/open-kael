@@ -410,6 +410,11 @@ func (h *Host) handleCallbackQuery(ctx context.Context, hosted *HostedAgent, msg
 		h.settingsFlow.Handle(ctx, provider, hosted,
 			msg.Conversation.IdentityID, msg.Conversation.ChatID,
 			cq.MessageID, msg.Conversation.UserID, action)
+
+		// Dismiss the loading spinner on the client after the action completes.
+		if ack, ok := executor.(domain.CallbackQueryAcknowledger); ok {
+			go func() { _ = ack.AcknowledgeCallbackQuery(context.Background(), cq.QueryID) }()
+		}
 	}
 }
 

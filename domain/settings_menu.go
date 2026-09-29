@@ -2,6 +2,14 @@ package domain
 
 import "context"
 
+// CallbackQueryAcknowledger is an optional interface executors may implement
+// to dismiss the loading spinner on the user's client after a callback query
+// (button tap) has been processed. The host calls it fire-and-forget after
+// routing the action.
+type CallbackQueryAcknowledger interface {
+	AcknowledgeCallbackQuery(ctx context.Context, queryID string) error
+}
+
 // SettingsMenuProvider renders a navigable button menu in a messenger.
 // Messengers implement this alongside InteractiveMessenger so the runtime
 // host can deliver the settings flow through any supported channel without
