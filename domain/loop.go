@@ -98,7 +98,6 @@ func (l *NativeLoop) Run(ctx context.Context, messages []Message, actions []*Bou
 		specs = append(specs, a.Spec)
 	}
 
-	calledBefore := make(map[string]bool)
 	callCounts := make(map[string]int)
 	consecutiveFailures := 0
 
@@ -158,12 +157,6 @@ func (l *NativeLoop) Run(ctx context.Context, messages []Message, actions []*Bou
 				return giveUp(fmt.Sprintf("action %q called too many times", call.Name))
 			}
 
-			callKey := call.Name + "|" + fmt.Sprint(call.Arguments)
-			if calledBefore[callKey] {
-				messages = append(messages, Message{Role: RoleTool, ToolCallID: call.ID, Name: call.Name, Content: "duplicate call with identical arguments, already handled"})
-				continue
-			}
-
 			output, err := action.Invoke(ctx, call.Arguments)
 			if err != nil {
 				log.Printf("loop: action %q failed: %v", call.Name, err)
@@ -175,7 +168,6 @@ func (l *NativeLoop) Run(ctx context.Context, messages []Message, actions []*Bou
 				continue
 			}
 
-			calledBefore[callKey] = true
 			consecutiveFailures = 0
 			messages = append(messages, Message{Role: RoleTool, ToolCallID: call.ID, Name: call.Name, Content: StringifyResult(output)})
 		}
