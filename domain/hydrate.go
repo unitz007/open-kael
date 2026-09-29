@@ -3,6 +3,7 @@ package domain
 import (
 	"context"
 	"fmt"
+	"log"
 	"sync/atomic"
 )
 
@@ -97,11 +98,15 @@ func withOneShotGuard(inner func(ctx context.Context, input map[string]any) (any
 	var done atomic.Bool
 	return func(ctx context.Context, input map[string]any) (any, error) {
 		if done.Load() {
+			log.Printf("one-shot guard: blocking re-call (already succeeded)")
 			return "already completed — call finish to deliver the result to the user", nil
 		}
 		output, err := inner(ctx, input)
 		if err == nil {
+			log.Printf("one-shot guard: success, marking done")
 			done.Store(true)
+		} else {
+			log.Printf("one-shot guard: inner returned error, done stays false: %v", err)
 		}
 		return output, err
 	}
