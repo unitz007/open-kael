@@ -898,6 +898,7 @@ func (h *Host) HandleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 	// to a single atomic send.
 	if executor != nil {
 		if sm, ok := executor.(domain.StreamingMessenger); ok {
+			log.Printf("runtime: agent %q: streaming reply (%d runes)", hosted.Agent.ID, len([]rune(content)))
 			chunks := chunkContent(ctx, content)
 			if _, _, serr := sm.StreamReply(ctx, identity, connRef, conv.ChatID, conv.ThreadID, chunks); serr != nil {
 				log.Printf("runtime: agent %q: stream reply failed, falling back: %v", hosted.Agent.ID, serr)
@@ -905,6 +906,7 @@ func (h *Host) HandleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 			}
 			return result, nil
 		}
+		log.Printf("runtime: agent %q: executor does not implement StreamingMessenger, using atomic send", hosted.Agent.ID)
 	}
 	h.deliverBestEffort(ctx, hosted, conv, content)
 
