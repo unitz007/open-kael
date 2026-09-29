@@ -386,17 +386,23 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 				if connectURL == "" {
 					continue
 				}
+				var integrationName string
+				if h.connectIntegrationNameLoader != nil {
+					if name, err := h.connectIntegrationNameLoader(ctx, identityID); err == nil {
+						integrationName = name
+					}
+				}
+				text, buttonLabel := h.connectPrompt(ctx, hosted.Agent, hosted.Agent.LLMs, integrationName)
 				var extra map[string]any
 				if !isLocalhostURL(connectURL) {
 					extra = map[string]any{
 						"web_app_button": map[string]any{
-							"text": "Connect FPL account",
+							"text": buttonLabel,
 							"url":  connectURL,
 						},
 					}
 				}
-				h.deliverBestEffort(ctx, hosted, msg.Conversation,
-					"To use FPL features, tap below to connect your Fantasy Premier League account.", extra)
+				h.deliverBestEffort(ctx, hosted, msg.Conversation, text, extra)
 				return
 			}
 			return

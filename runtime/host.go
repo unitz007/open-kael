@@ -134,6 +134,11 @@ type Host struct {
 	// doesn't support a URL-based flow.
 	connectURLGenerator func(ctx context.Context, userID, identityID string) (string, error)
 
+	// connectIntegrationNameLoader, when set, returns the human-readable name
+	// of the integration for the given identityID (e.g. "Fantasy Premier League").
+	// Used to generate LLM-phrased connect prompts instead of hardcoded text.
+	connectIntegrationNameLoader func(ctx context.Context, identityID string) (name string, err error)
+
 	// pendingSetups tracks in-progress in-bot credential collection flows.
 	// Key is "identityID:chatID"; value is *pendingCredential.
 	pendingSetups sync.Map
@@ -382,6 +387,46 @@ func (h *Host) SetOnboardingPendingCallbacks(
 ) {
 	h.onboardingPromptedChecker = checker
 	h.onboardingPromptedMarker = marker
+}
+
+// SetConnectIntegrationNameLoader registers a callback that returns the
+// human-readable name of the integration for a given identityID. When set,
+// the host uses the LLM to generate a natural connect prompt instead of the
+// hardcoded fallback text.
+func (h *Host) SetConnectIntegrationNameLoader(f func(ctx context.Context, identityID string) (string, error)) {
+	h.connectIntegrationNameLoader = f
+}
+
+// connectPrompt generates a friendly message asking the user to connect their
+// integration account, using the LLM when one is available.
+// Returns (messageText, buttonLabel).
+func (h *Host) connectPrompt(ctx context.Context, agent *domain.Agent, llms []domain.LLM, integrationName string) (text, buttonLabel string) {
+	buttonLabel = "Connect " + integrationName + " account"
+	if len(llms) > 0 && integrationName != "" {
+		prompt := fmt.Sprintf(
+			"You are %s.", agent.Name,
+		)
+		if agent.Description != "" {
+			prompt += " " + agent.Description
+		}
+		prompt += fmt.Sprintf(
+			"\n\nThe user needs to connect their %s account to unlock your full capabilities. "+
+				"Write a short, friendly message (1-2 sentences) asking them to tap the button below to connect it. "+
+				"Plain text only — no markdown.",
+			integrationName,
+		)
+		msgs := []domain.Message{{Role: domain.RoleUser, Content: prompt}}
+		if resp, err := llms[0].Call(ctx, msgs, nil); err == nil && resp.Content != "" {
+			return resp.Content, buttonLabel
+		} else if err != nil {
+			log.Printf("runtime: connect prompt LLM failed for agent %q: %v", agent.ID, err)
+		}
+	}
+	fallback := "To use all features, tap below to connect your " + integrationName + " account."
+	if integrationName == "" {
+		fallback = "To continue, tap below to connect the required account."
+	}
+	return fallback, buttonLabel
 }
 
 // onboardingAck produces a warm acknowledgement of the user's intro text,
