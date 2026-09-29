@@ -886,6 +886,10 @@ func (h *Host) HandleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 
 	content := result.Content
 	switch {
+	case result.Status == domain.LoopStatusError:
+		// giveUp reasons are internal diagnostics — never surface raw loop
+		// internals to the user regardless of whether Content is set.
+		content = "Sorry, I ran into an error and couldn't finish handling that. Please try again."
 	case content != "":
 		// use as-is
 	case result.Status == domain.LoopStatusComplete:
@@ -971,8 +975,22 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 
 	log.Printf("skill-router: skill=%q confidence=%.2f", skillName, confidence)
 
-	if skillName == "" || confidence < jevConfidenceThreshold {
-		log.Printf("skill-router: low confidence or no match — falling back to NativeLoop")
+	if skillName == "" {
+		// Skill router is confident no skill matches. Run with only finish
+		// available so the model must produce a direct text response — avoids
+		// the model calling skills in a loop on a non-skill query.
+		log.Printf("skill-router: no match — responding directly without skills")
+		var finishOnly []*domain.BoundAction
+		for _, a := range actions {
+			if a.Spec.Name == domain.FinishActionName {
+				finishOnly = append(finishOnly, a)
+				break
+			}
+		}
+		return h.runNativeLoop(ctx, hosted, messages, finishOnly)
+	}
+	if confidence < jevConfidenceThreshold {
+		log.Printf("skill-router: low confidence — falling back to NativeLoop")
 		return h.runNativeLoop(ctx, hosted, messages, actions)
 	}
 
