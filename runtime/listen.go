@@ -199,6 +199,13 @@ type pendingCredential struct {
 	step       string // "awaiting_url"
 }
 
+// pendingInstructionsState tracks a chat that is waiting for the user's
+// personal instructions text reply (after a ForceReply or text-based prompt).
+type pendingInstructionsState struct {
+	userID  string
+	agentID string
+}
+
 func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg domain.InboundMessage) {
 	defer recoverFromPanic(hosted.Agent.ID, "handling inbound message")
 	if msg.ThreadID != "" {
@@ -208,6 +215,12 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 	// Route callback queries (button taps) directly — they never go to HandleTurn.
 	if msg.CallbackQuery != nil {
 		h.handleCallbackQuery(ctx, hosted, msg)
+		return
+	}
+
+	// Handle modal submissions (e.g. Slack views.open for personal instructions).
+	if msg.InstructionsSubmission != nil {
+		h.handleInstructionsSubmission(ctx, hosted, msg)
 		return
 	}
 
@@ -367,11 +380,54 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 		}
 	}
 
+	// Pending instructions reply: user sent text in reply to a ForceReply /
+	// text-based instructions prompt.
+	instrKey := msg.Conversation.IdentityID + ":" + msg.Conversation.ChatID
+	if ps, ok := h.pendingInstructions.Load(instrKey); ok {
+		h.pendingInstructions.Delete(instrKey)
+		state := ps.(pendingInstructionsState)
+		if h.userAgentConfigSetter != nil {
+			if err := h.userAgentConfigSetter(ctx, state.userID, state.agentID, msg.Text); err != nil {
+				log.Printf("runtime: agent %q: save instructions user %s: %v", hosted.Agent.ID, state.userID, err)
+				h.deliverBestEffort(ctx, hosted, msg.Conversation, "Sorry, I couldn't save your instructions. Please try again.")
+				return
+			}
+		}
+		h.deliverBestEffort(ctx, hosted, msg.Conversation, "Got it! I've saved your personal instructions and will keep them in mind going forward.")
+		return
+	}
+
 	// Settings menu command: intercept before the LLM turn loop.
 	if h.settingsFlow != nil && isSettingsCommand(msg.Text) {
 		if executor, ok := h.executorForMessage(hosted, msg); ok {
 			if provider, ok := executor.(domain.SettingsMenuProvider); ok {
 				h.settingsFlow.Open(ctx, provider, hosted, msg.Conversation.IdentityID, msg.Conversation.ChatID, msg.Conversation.UserID)
+				return
+			}
+		}
+	}
+
+	// /instructions command: prompt the user to set their personal agent instructions.
+	if isInstructionsCommand(msg.Text) && msg.Conversation.UserID != "" {
+		if executor, ok := h.executorForMessage(hosted, msg); ok {
+			if prompter, ok := executor.(domain.InstructionsPromptProvider); ok {
+				var current string
+				if h.userAgentConfigLoader != nil {
+					if cfg, err := h.userAgentConfigLoader(ctx, msg.Conversation.UserID, hosted.Agent.ID); err == nil {
+						current = cfg.Instructions
+					}
+				}
+				wait, err := prompter.SendInstructionsPrompt(ctx, msg.Conversation.ChatID, current, "")
+				if err != nil {
+					log.Printf("runtime: agent %q: send instructions prompt: %v", hosted.Agent.ID, err)
+					return
+				}
+				if wait {
+					h.pendingInstructions.Store(instrKey, pendingInstructionsState{
+						userID:  msg.Conversation.UserID,
+						agentID: hosted.Agent.ID,
+					})
+				}
 				return
 			}
 		}
@@ -431,16 +487,26 @@ func (h *Host) handleCallbackQuery(ctx context.Context, hosted *HostedAgent, msg
 		}
 	}
 
-	if strings.HasPrefix(cq.Data, "kael_sm:") && h.settingsFlow != nil {
+	if strings.HasPrefix(cq.Data, "kael_sm:") {
 		executor, ok := h.executorForMessage(hosted, msg)
 		if !ok {
+			return
+		}
+
+		action := cq.Data[len("kael_sm:"):]
+
+		if action == "instructions" {
+			h.handleInstructionsCallback(ctx, hosted, msg, executor)
+			return
+		}
+
+		if h.settingsFlow == nil {
 			return
 		}
 		provider, ok := executor.(domain.SettingsMenuProvider)
 		if !ok {
 			return
 		}
-		action := cq.Data[len("kael_sm:"):]
 		h.settingsFlow.Handle(ctx, provider, hosted,
 			msg.Conversation.IdentityID, msg.Conversation.ChatID,
 			cq.MessageID, msg.Conversation.UserID, action)
@@ -452,10 +518,84 @@ func (h *Host) handleCallbackQuery(ctx context.Context, hosted *HostedAgent, msg
 	}
 }
 
+// handleInstructionsCallback handles the kael_sm:instructions button tap.
+// It loads the user's current instructions, calls SendInstructionsPrompt on
+// the executor (opening a modal for Slack, sending ForceReply for Telegram),
+// and tracks pending state when a text reply is expected.
+func (h *Host) handleInstructionsCallback(ctx context.Context, hosted *HostedAgent, msg domain.InboundMessage, executor domain.Executor) {
+	cq := msg.CallbackQuery
+
+	prompter, ok := executor.(domain.InstructionsPromptProvider)
+	if !ok {
+		return
+	}
+
+	// Close the settings menu before opening the instructions prompt.
+	if provider, ok := executor.(domain.SettingsMenuProvider); ok {
+		if err := provider.DeleteSettingsMenu(ctx, msg.Conversation.ChatID, cq.MessageID); err != nil {
+			log.Printf("runtime: instructions: delete settings menu: %v", err)
+		}
+	}
+
+	var current string
+	if h.userAgentConfigLoader != nil && msg.Conversation.UserID != "" {
+		if cfg, err := h.userAgentConfigLoader(ctx, msg.Conversation.UserID, hosted.Agent.ID); err == nil {
+			current = cfg.Instructions
+		}
+	}
+
+	wait, err := prompter.SendInstructionsPrompt(ctx, msg.Conversation.ChatID, current, cq.TriggerID)
+	if err != nil {
+		log.Printf("runtime: instructions: send prompt: %v", err)
+	}
+
+	if wait && msg.Conversation.UserID != "" {
+		key := msg.Conversation.IdentityID + ":" + msg.Conversation.ChatID
+		h.pendingInstructions.Store(key, pendingInstructionsState{
+			userID:  msg.Conversation.UserID,
+			agentID: hosted.Agent.ID,
+		})
+	}
+
+	if ack, ok := executor.(domain.CallbackQueryAcknowledger); ok {
+		go func() { _ = ack.AcknowledgeCallbackQuery(context.Background(), cq.QueryID) }()
+	}
+}
+
+// handleInstructionsSubmission handles an InstructionsSubmission message
+// (from a Slack modal) by saving the text as the user's personal instructions.
+func (h *Host) handleInstructionsSubmission(ctx context.Context, hosted *HostedAgent, msg domain.InboundMessage) {
+	// Resolve user if not already set.
+	if msg.Conversation.UserID == "" && h.userChannelResolver != nil {
+		if userID, err := h.userChannelResolver(ctx, msg.Conversation.IdentityID, msg.Conversation.ChatID); err == nil {
+			msg.Conversation.UserID = userID
+		}
+	}
+	if msg.Conversation.UserID == "" {
+		return
+	}
+	if h.userAgentConfigSetter == nil {
+		return
+	}
+	text := msg.InstructionsSubmission.Text
+	if err := h.userAgentConfigSetter(ctx, msg.Conversation.UserID, hosted.Agent.ID, text); err != nil {
+		log.Printf("runtime: agent %q: save instructions modal submission user %s: %v", hosted.Agent.ID, msg.Conversation.UserID, err)
+		h.deliverBestEffort(ctx, hosted, msg.Conversation, "Sorry, I couldn't save your instructions. Please try again.")
+		return
+	}
+	h.deliverBestEffort(ctx, hosted, msg.Conversation, "Got it! I've saved your personal instructions and will keep them in mind going forward.")
+}
+
 // isSettingsCommand reports whether text is a settings-menu trigger.
 func isSettingsCommand(text string) bool {
 	t := strings.ToLower(strings.TrimSpace(text))
 	return t == "/settings" || t == "settings"
+}
+
+// isInstructionsCommand reports whether text is a personal-instructions trigger.
+func isInstructionsCommand(text string) bool {
+	t := strings.ToLower(strings.TrimSpace(text))
+	return t == "/instructions" || t == "instructions"
 }
 
 // executorForMessage returns the Executor registered for the integration that

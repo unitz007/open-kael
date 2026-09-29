@@ -178,6 +178,15 @@ type Host struct {
 	// pendingOnboardings tracks channels that have received the onboarding
 	// prompt and are waiting for the user's intro reply. Key is "identityID:chatID".
 	pendingOnboardings sync.Map
+
+	// userAgentConfigSetter persists a user's personal instructions for one
+	// Agent. When set, the host saves the user's reply after SendInstructionsPrompt.
+	userAgentConfigSetter func(ctx context.Context, userID, agentID, instructions string) error
+
+	// pendingInstructions tracks channels that have received a text-based
+	// instructions prompt (ForceReply or text fallback) and are waiting for
+	// the user's reply. Key is "identityID:chatID"; value is pendingInstructionsState.
+	pendingInstructions sync.Map
 }
 
 // SkillRouter picks the right skill for an inbound message. Any classifier
@@ -320,6 +329,13 @@ func (h *Host) SetLLMFactory(factory func(*domain.Agent) []domain.LLM) {
 // can personalise its responses to that user.
 func (h *Host) SetUserAgentConfigLoader(f func(ctx context.Context, userID, agentID string) (*domain.UserAgentConfig, error)) {
 	h.userAgentConfigLoader = f
+}
+
+// SetUserAgentConfigSetter registers a function that persists a user's personal
+// instructions for one Agent. When set, the host saves the reply text after
+// SendInstructionsPrompt as the user's new instructions.
+func (h *Host) SetUserAgentConfigSetter(f func(ctx context.Context, userID, agentID, instructions string) error) {
+	h.userAgentConfigSetter = f
 }
 
 // SetOnboardingFlow registers the two callbacks that drive the first-message

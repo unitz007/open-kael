@@ -28,6 +28,10 @@ type InboundMessage struct {
 	// CallbackQuery, when non-nil, marks this as a button-tap event rather
 	// than a free-form text message. The host routes it separately from turns.
 	CallbackQuery *CallbackQueryData
+	// InstructionsSubmission, when non-nil, carries text the user submitted
+	// from a modal or form (e.g. Slack views.open). The host saves it as the
+	// user's personal agent instructions.
+	InstructionsSubmission *InstructionsSubmissionData
 }
 
 // CallbackQueryData carries the payload from a messenger inline-button tap.
@@ -38,6 +42,14 @@ type CallbackQueryData struct {
 	QueryID   string // platform callback query ID — ack it to dismiss the spinner
 	Data      string // opaque callback_data value encoded in the button
 	MessageID string // ID of the message that carried the button
+	TriggerID string // Slack only: trigger_id from a block_actions interaction, valid for 3s; used to open modals
+}
+
+// InstructionsSubmissionData carries the text a user typed into an
+// instructions-editing modal (e.g. a Slack views.open modal). The host
+// saves it as the user's personal agent instructions.
+type InstructionsSubmissionData struct {
+	Text string
 }
 
 type ctxKey int

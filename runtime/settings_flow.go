@@ -150,6 +150,7 @@ func (f *SettingsFlow) buildMainMenu(hosted *HostedAgent, approvals map[string]b
 			Callback: "kael_sm:nav:tools:" + intg.id + ":0",
 		})
 	}
+	rows = append(rows, domain.SettingsRow{Label: "📝 Personal Instructions", Callback: "kael_sm:instructions"})
 	rows = append(rows, domain.SettingsRow{Label: "Close", Callback: "kael_sm:close"})
 
 	return &domain.SettingsMenu{Title: "⚙️ Agent Settings", Rows: rows}
