@@ -16,7 +16,8 @@ type MessengerChannel struct {
 	IdentityID  string     `json:"identity_id"` // which bot/Identity this channel belongs to
 	UserID      string     `json:"user_id"`
 	ChannelRef  string     `json:"channel_ref"` // provider-specific address: Telegram ChatID, Slack UserID, Discord UserID, etc.
-	OnboardedAt *time.Time `json:"onboarded_at,omitempty"` // nil until the user completes the onboarding intro
+	OnboardingPromptedAt *time.Time `json:"onboarding_prompted_at,omitempty"` // nil until the onboarding prompt has been sent
+	OnboardedAt          *time.Time `json:"onboarded_at,omitempty"`           // nil until the user completes the onboarding intro
 }
 
 // UserChannel is a deprecated alias kept during migration. Use MessengerChannel.

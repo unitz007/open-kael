@@ -116,6 +116,9 @@ func (noopStore) GetUserAgentConfig(_ context.Context, _, _ string) (*domain.Use
 func (noopStore) SetUserAgentConfig(_ context.Context, _ *domain.UserAgentConfig) error {
 	return nil
 }
+func (noopStore) MarkMessengerChannelOnboardingPrompted(_ context.Context, _, _ string) error {
+	return nil
+}
 func (noopStore) MarkMessengerChannelOnboarded(_ context.Context, _, _ string) error { return nil }
 
 // stubStoreWithUser embeds noopStore but returns a valid session for the

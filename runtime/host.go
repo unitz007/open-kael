@@ -179,6 +179,14 @@ type Host struct {
 	// prompt and are waiting for the user's intro reply. Key is "identityID:chatID".
 	pendingOnboardings sync.Map
 
+	// onboardingPromptedChecker reports whether the onboarding prompt was sent
+	// but the user hasn't replied yet. Used to recover pending state after a restart.
+	onboardingPromptedChecker func(ctx context.Context, identityID, channelRef string) (bool, error)
+
+	// onboardingPromptedMarker persists the fact that the onboarding prompt was
+	// sent, so pending state survives restarts.
+	onboardingPromptedMarker func(ctx context.Context, identityID, channelRef string) error
+
 	// userAgentConfigSetter persists a user's personal instructions for one
 	// Agent. When set, the host saves the user's reply after SendInstructionsPrompt.
 	userAgentConfigSetter func(ctx context.Context, userID, agentID, instructions string) error
@@ -362,6 +370,38 @@ func (h *Host) SetOnboardingFlow(
 ) {
 	h.onboardingChecker = checker
 	h.onboardingCompleter = completer
+}
+
+// SetOnboardingPendingCallbacks registers callbacks that persist the
+// "onboarding prompt sent, awaiting reply" state to the database. When set,
+// the pending state survives server restarts: checker returns true when the
+// prompt was sent but onboarding is not yet complete; marker stamps that state.
+func (h *Host) SetOnboardingPendingCallbacks(
+	checker func(ctx context.Context, identityID, channelRef string) (bool, error),
+	marker func(ctx context.Context, identityID, channelRef string) error,
+) {
+	h.onboardingPromptedChecker = checker
+	h.onboardingPromptedMarker = marker
+}
+
+// onboardingAck produces a warm acknowledgement of the user's intro text,
+// phrased by the LLM when one is available, with a plain fallback.
+func (h *Host) onboardingAck(ctx context.Context, agent *domain.Agent, llms []domain.LLM, userIntro string) string {
+	if len(llms) > 0 && strings.TrimSpace(userIntro) != "" {
+		prompt := fmt.Sprintf(
+			"The user just introduced themselves: %q\n\n"+
+				"Acknowledge what they shared in one warm, natural sentence, then invite them to ask their first question. "+
+				"Plain text only — no markdown.",
+			userIntro,
+		)
+		msgs := []domain.Message{{Role: domain.RoleUser, Content: prompt}}
+		if resp, err := llms[0].Call(ctx, msgs, nil); err == nil && resp.Content != "" {
+			return resp.Content
+		} else if err != nil {
+			log.Printf("runtime: onboarding ack LLM failed for agent %q: %v", agent.ID, err)
+		}
+	}
+	return "Thanks for sharing that! What can I help you with?"
 }
 
 // StopIdentityListeners cancels the listener goroutines for the given

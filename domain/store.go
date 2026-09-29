@@ -94,6 +94,10 @@ type Store interface {
 	GetUserAgentConfig(ctx context.Context, userID, agentID string) (*UserAgentConfig, error)
 	SetUserAgentConfig(ctx context.Context, cfg *UserAgentConfig) error
 
+	// MarkMessengerChannelOnboardingPrompted stamps onboarding_prompted_at = now()
+	// so the pending onboarding state survives server restarts.
+	MarkMessengerChannelOnboardingPrompted(ctx context.Context, identityID, channelRef string) error
+
 	// MarkMessengerChannelOnboarded stamps onboarded_at = now() on the
 	// messenger_channel row identified by (identityID, channelRef).
 	MarkMessengerChannelOnboarded(ctx context.Context, identityID, channelRef string) error

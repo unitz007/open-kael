@@ -352,7 +352,20 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 	// userID set by auto-provision above).
 	if h.onboardingChecker != nil && h.onboardingCompleter != nil && msg.Conversation.UserID != "" {
 		setupKey := msg.Conversation.IdentityID + ":" + msg.Conversation.ChatID
-		if _, pending := h.pendingOnboardings.Load(setupKey); pending {
+
+		// Check pending: in-memory fast path first, then DB fallback so the
+		// state survives a server restart between prompt and reply.
+		_, inMemPending := h.pendingOnboardings.Load(setupKey)
+		dbPending := false
+		if !inMemPending && h.onboardingPromptedChecker != nil {
+			if p, err := h.onboardingPromptedChecker(ctx, msg.Conversation.IdentityID, msg.Conversation.ChatID); err == nil {
+				dbPending = p
+			} else {
+				log.Printf("runtime: agent %q: onboarding prompted checker: %v", hosted.Agent.ID, err)
+			}
+		}
+
+		if inMemPending || dbPending {
 			// User is replying to the onboarding prompt — save their intro.
 			h.pendingOnboardings.Delete(setupKey)
 			if err := h.onboardingCompleter(ctx,
@@ -361,8 +374,8 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 			); err != nil {
 				log.Printf("runtime: agent %q: onboarding completer: %v", hosted.Agent.ID, err)
 			}
-			h.deliverBestEffort(ctx, hosted, msg.Conversation,
-				"Thanks for sharing that! I'll keep it in mind to help you better. What can I do for you?")
+			ack := h.onboardingAck(ctx, hosted.Agent, hosted.Agent.LLMs, msg.Text)
+			h.deliverBestEffort(ctx, hosted, msg.Conversation, ack)
 			return
 		}
 
@@ -372,10 +385,22 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 		}
 		if !onboarded {
 			h.pendingOnboardings.Store(setupKey, true)
-			h.deliverBestEffort(ctx, hosted, msg.Conversation,
-				"Welcome! Before we get started, please tell me a bit about yourself — "+
-					"who you are and what you'd like to use me for. "+
-					"This helps me give you better, more personalised responses.")
+			if h.onboardingPromptedMarker != nil {
+				if err := h.onboardingPromptedMarker(ctx, msg.Conversation.IdentityID, msg.Conversation.ChatID); err != nil {
+					log.Printf("runtime: agent %q: onboarding prompted marker: %v", hosted.Agent.ID, err)
+				}
+			}
+			// Show the agent intro first, then ask for the user's intro.
+			var pubSkills []*domain.Skill
+			for _, s := range hosted.Agent.Skills {
+				if s.Visibility == domain.SkillPublic {
+					pubSkills = append(pubSkills, s)
+				}
+			}
+			greeting := h.greetingBody(ctx, hosted.Agent, pubSkills, hosted.Agent.LLMs)
+			prompt := greeting + "\n\nBefore we get started — tell me a bit about yourself. " +
+				"Who are you, and what would you most like help with? A sentence or two is perfect."
+			h.deliverBestEffort(ctx, hosted, msg.Conversation, prompt)
 			return
 		}
 	}

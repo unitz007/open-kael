@@ -93,6 +93,7 @@ CREATE TABLE IF NOT EXISTS messenger_channels (
 
 CREATE INDEX IF NOT EXISTS idx_messenger_channels_user_id ON messenger_channels (user_id);
 
+ALTER TABLE messenger_channels ADD COLUMN IF NOT EXISTS onboarding_prompted_at TIMESTAMPTZ;
 ALTER TABLE messenger_channels ADD COLUMN IF NOT EXISTS onboarded_at TIMESTAMPTZ;
 
 CREATE TABLE IF NOT EXISTS channel_link_codes (
