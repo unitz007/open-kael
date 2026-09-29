@@ -94,6 +94,12 @@ type Host struct {
 	// user can manage their approval gates conversationally through the messenger.
 	userToolApprovalSetter func(ctx context.Context, userID, toolID string, requires bool) error
 
+	// settingsFlow, when non-nil, handles /settings commands intercepted before
+	// HandleTurn and renders the button-driven settings menu through the
+	// messenger's SettingsMenuProvider. Initialised automatically when both
+	// userToolApprovalLoader and userToolApprovalSetter are set.
+	settingsFlow *SettingsFlow
+
 	// eventActorRefLoader resolves an external actor identifier from an event
 	// payload into a map of identityID → connectionRef for that actor's
 	// AppAuthorizations. sourceIdentityID identifies which Identity received
@@ -198,6 +204,7 @@ func (h *Host) SetUserConnectionRefLoader(f func(ctx context.Context, userID str
 // ToolDefinition.RequiresApproval is false.
 func (h *Host) SetUserToolApprovalLoader(f func(ctx context.Context, userID string) (map[string]bool, error)) {
 	h.userToolApprovalLoader = f
+	h.maybeInitSettingsFlow()
 }
 
 // SetUserToolApprovalSetter registers a function that persists a user's
@@ -206,6 +213,15 @@ func (h *Host) SetUserToolApprovalLoader(f func(ctx context.Context, userID stri
 // conversationally through the messenger without touching a web UI.
 func (h *Host) SetUserToolApprovalSetter(f func(ctx context.Context, userID, toolID string, requires bool) error) {
 	h.userToolApprovalSetter = f
+	h.maybeInitSettingsFlow()
+}
+
+// maybeInitSettingsFlow creates the SettingsFlow once both the approval loader
+// and setter are registered. Safe to call multiple times — only creates once.
+func (h *Host) maybeInitSettingsFlow() {
+	if h.userToolApprovalLoader != nil && h.userToolApprovalSetter != nil && h.settingsFlow == nil {
+		h.settingsFlow = newSettingsFlow(h.userToolApprovalLoader, h.userToolApprovalSetter)
+	}
 }
 
 // SetChannelRedeemer registers a function that validates and redeems a

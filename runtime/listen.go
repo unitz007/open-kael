@@ -327,6 +327,16 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 		}
 	}
 
+	// Settings menu command: intercept before the LLM turn loop.
+	if h.settingsFlow != nil && isSettingsCommand(msg.Text) {
+		if executor, ok := h.executorForMessage(hosted, msg); ok {
+			if provider, ok := executor.(domain.SettingsMenuProvider); ok {
+				h.settingsFlow.Open(ctx, provider, hosted, msg.Conversation.IdentityID, msg.Conversation.ChatID, msg.Conversation.UserID)
+				return
+			}
+		}
+	}
+
 	if _, err := h.HandleTurn(ctx, hosted, msg.Conversation, msg.Text); err != nil {
 		log.Printf("runtime: agent %q: handling message from identity %s chat %s: %v", hosted.Agent.ID, msg.Conversation.IdentityID, msg.Conversation.ChatID, err)
 	}
@@ -365,6 +375,26 @@ func (h *Host) handlePendingSetup(ctx context.Context, hosted *HostedAgent, msg 
 	}
 	h.deliverBestEffort(ctx, hosted, msg.Conversation,
 		"Your FPL account is now connected! You can start asking about your team.")
+}
+
+// isSettingsCommand reports whether text is a settings-menu trigger.
+func isSettingsCommand(text string) bool {
+	t := strings.ToLower(strings.TrimSpace(text))
+	return t == "/settings" || t == "settings"
+}
+
+// executorForMessage returns the Executor registered for the integration that
+// owns msg.Conversation.IdentityID, if one exists.
+func (h *Host) executorForMessage(hosted *HostedAgent, msg domain.InboundMessage) (domain.Executor, bool) {
+	identity, ok := hosted.Deps.IdentitiesByID[msg.Conversation.IdentityID]
+	if !ok {
+		return nil, false
+	}
+	integration, ok := hosted.Deps.IntegrationsByID[identity.IntegrationID]
+	if !ok {
+		return nil, false
+	}
+	return hosted.Deps.Executors.For(integration.Service)
 }
 
 // extractLinkCode extracts a potential ChannelLinkCode from a message text.
