@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/unitz007/open-kael/domain"
 )
@@ -91,6 +92,11 @@ func (h *Host) startListeners(ctx context.Context, hosted *HostedAgent, inbox ch
 // startOneListener starts a single listener goroutine for identity, feeding
 // messages into inbox. Registers a cancel func in listenerCancels so
 // StopIdentityListeners can stop it later.
+const (
+	listenerBackoffMin = 2 * time.Second
+	listenerBackoffMax = 2 * time.Minute
+)
+
 func (h *Host) startOneListener(ctx context.Context, agentID string, identity *domain.Identity, listener domain.Listener, inbox chan domain.InboundMessage) {
 	listenerCtx, cancel := context.WithCancel(ctx)
 	key := agentID + ":" + identity.ID
@@ -101,13 +107,30 @@ func (h *Host) startOneListener(ctx context.Context, agentID string, identity *d
 		defer h.listenerCancels.Delete(lKey)
 		defer lCancel()
 		defer recoverFromPanic(agentID, "listener "+id.ID)
-		if err := l.Listen(lCtx, id, func(msg domain.InboundMessage) {
-			select {
-			case inbox <- msg:
-			case <-lCtx.Done():
+		backoff := listenerBackoffMin
+		for {
+			err := l.Listen(lCtx, id, func(msg domain.InboundMessage) {
+				select {
+				case inbox <- msg:
+				case <-lCtx.Done():
+				}
+			})
+			if lCtx.Err() != nil {
+				return // clean shutdown
 			}
-		}); err != nil && lCtx.Err() == nil {
-			log.Printf("runtime: agent %q: listener %q stopped: %v", agentID, id.ID, err)
+			if err != nil {
+				log.Printf("runtime: agent %q: listener %q stopped: %v — restarting in %s", agentID, id.ID, err, backoff)
+				select {
+				case <-time.After(backoff):
+				case <-lCtx.Done():
+					return
+				}
+				if backoff < listenerBackoffMax {
+					backoff *= 2
+				}
+				continue
+			}
+			return // listener returned nil (clean exit without ctx cancel — shouldn't normally happen)
 		}
 	}(identity, listener, listenerCtx, cancel, key)
 }
