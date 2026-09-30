@@ -109,14 +109,26 @@ ALTER TABLE channel_link_codes ADD COLUMN IF NOT EXISTS channel_ref TEXT NOT NUL
 ALTER TABLE channel_link_codes DROP COLUMN IF EXISTS user_id;
 
 CREATE TABLE IF NOT EXISTS tools (
-    id             TEXT PRIMARY KEY,
-    name           TEXT NOT NULL,
-    description    TEXT NOT NULL DEFAULT '',
-    integration_id TEXT NOT NULL REFERENCES integrations (id) ON DELETE CASCADE,
-    input_schema   JSONB NOT NULL DEFAULT '{}',
-    output_schema  JSONB NOT NULL DEFAULT '{}',
-    action         TEXT NOT NULL DEFAULT ''
+    id                       TEXT PRIMARY KEY,
+    name                     TEXT NOT NULL,
+    function_name            TEXT NOT NULL DEFAULT '',
+    description              TEXT NOT NULL DEFAULT '',
+    instructions             TEXT NOT NULL DEFAULT '',
+    integration_id           TEXT NOT NULL REFERENCES integrations (id) ON DELETE CASCADE,
+    input_schema             JSONB NOT NULL DEFAULT '{}',
+    output_schema            JSONB NOT NULL DEFAULT '{}',
+    action                   TEXT NOT NULL DEFAULT '',
+    requires_approval        BOOLEAN NOT NULL DEFAULT FALSE,
+    approval_prompt_template TEXT NOT NULL DEFAULT '',
+    approval_timeout_seconds INT NOT NULL DEFAULT 0
 );
+
+-- Idempotent migrations for tools columns added after initial schema.
+ALTER TABLE tools ADD COLUMN IF NOT EXISTS function_name            TEXT NOT NULL DEFAULT '';
+ALTER TABLE tools ADD COLUMN IF NOT EXISTS instructions             TEXT NOT NULL DEFAULT '';
+ALTER TABLE tools ADD COLUMN IF NOT EXISTS requires_approval        BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE tools ADD COLUMN IF NOT EXISTS approval_prompt_template TEXT NOT NULL DEFAULT '';
+ALTER TABLE tools ADD COLUMN IF NOT EXISTS approval_timeout_seconds INT NOT NULL DEFAULT 0;
 
 CREATE INDEX IF NOT EXISTS idx_tools_integration_id ON tools (integration_id);
 
