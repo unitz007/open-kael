@@ -783,7 +783,11 @@ func (h *Host) actionsFor(ctx context.Context, hosted *HostedAgent) ([]*domain.B
 		if h.skillRouter != nil && len(tools) >= 2 {
 			tools = append(tools, h.querySkillAction(hosted))
 		}
-		actions = append(actions, domain.BindSkill(hosted.Agent, skill, tools))
+		// One-shot guard at the skill level: prevents the outer NativeLoop from
+		// calling the same skill more than once per turn when the skill router
+		// falls back (low confidence). Each skill should be invoked once; the
+		// inner loop handles any multi-step work.
+		actions = append(actions, domain.WrapOneShotGuard(domain.BindSkill(hosted.Agent, skill, tools)))
 	}
 
 	if hosted.Agent.Directory != nil {

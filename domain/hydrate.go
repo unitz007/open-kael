@@ -112,6 +112,18 @@ func withOneShotGuard(inner func(ctx context.Context, input map[string]any) (any
 	}
 }
 
+// WrapOneShotGuard wraps action so it can only execute once per BoundAction
+// lifetime. After the first successful call, subsequent calls return a
+// directive telling the model to call finish. Used by the host to prevent
+// the outer NativeLoop from calling the same skill more than once per turn
+// when falling back from the skill router.
+func WrapOneShotGuard(action *BoundAction) *BoundAction {
+	return &BoundAction{
+		Spec:   action.Spec,
+		Invoke: withOneShotGuard(action.Invoke),
+	}
+}
+
 // HydrateSkillTools resolves every Tool a Skill binds into BoundActions.
 // agent supplies the IdentityIDs used to pick the right Identity per
 // integration. toolsByID, identitiesByID, and integrationsByID are plain
