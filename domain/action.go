@@ -71,11 +71,27 @@ func BindSkill(agent *Agent, skill *Skill, tools []*BoundAction) *BoundAction {
 				loop = NewNativeLoop(agent.LLMs, agent.MaxIterations)
 			}
 
+			// Build the finish schema: start from the skill's OutputSchema and
+			// inject a required "content" field so the model always writes a
+			// plain-text reply. Without it, result.Content is empty and the
+			// caller receives raw JSON (e.g. "{}") instead of a readable message.
+			finishSchema := Schema{
+				Type:       SchemaTypeObject,
+				Properties: make(map[string]Schema, len(skill.OutputSchema.Properties)+1),
+				Required:   append(append([]string{}, skill.OutputSchema.Required...), "content"),
+			}
+			for k, v := range skill.OutputSchema.Properties {
+				finishSchema.Properties[k] = v
+			}
+			finishSchema.Properties["content"] = Schema{
+				Type:        SchemaTypeString,
+				Description: "A clear, concise summary of what was accomplished, to deliver to the user.",
+			}
 			finish := &BoundAction{
 				Spec: ActionSpec{
 					Name:        FinishActionName,
 					Description: "Call this once you have the final result.",
-					InputSchema: skill.OutputSchema,
+					InputSchema: finishSchema,
 				},
 			}
 			actions := make([]*BoundAction, 0, len(tools)+1)
