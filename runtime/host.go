@@ -967,24 +967,31 @@ func chunkContent(ctx context.Context, content string) <-chan string {
 
 const jevConfidenceThreshold = 0.65
 
-// routeWithJev uses the SkillRouter to pick the right skill for userText,
-// then invokes it directly — the NativeLoop is never used for skill selection
-// in the routing path. On error or no match the model responds directly with
-// no skill actions available; on low confidence the identified skill is still
-// invoked directly rather than handing control to NativeLoop.
+// routeWithJev uses the SkillRouter to pick the right skill for userText.
+// When a skill is identified (any confidence), it is invoked directly —
+// NativeLoop is never used for skill selection. When the router returns no
+// skill name (abstained), the full action set is handed to NativeLoop so the
+// model can decide whether any skill applies. On error the model falls back to
+// NativeLoop with full actions for the same reason.
 func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText string, messages []domain.Message, actions []*domain.BoundAction) (*domain.LoopResult, []domain.Message, error) {
 	skillName, confidence, err := h.skillRouter.PickSkill(ctx, userText, hosted.Agent.Skills)
 	if err != nil {
-		log.Printf("skill-router: pick skill failed: %v — responding directly", err)
-		return h.respondDirectly(ctx, hosted, messages, actions)
+		log.Printf("skill-router: pick skill failed: %v — running NativeLoop with full actions", err)
+		return h.runNativeLoop(ctx, hosted, messages, actions)
 	}
 
 	log.Printf("skill-router: skill=%q confidence=%.2f", skillName, confidence)
 
 	if skillName == "" {
-		// Router is confident no skill matches — produce a plain text response.
-		log.Printf("skill-router: no match — responding directly without skills")
-		return h.respondDirectly(ctx, hosted, messages, actions)
+		// Router returned no skill name — it could not identify a match. Hand
+		// the full action set (skills + finish, all one-shot guarded) to the
+		// NativeLoop so the model can decide whether any skill applies. This
+		// differs from the low-confidence case: there the router named a skill
+		// and we invoke it directly; here the router abstained, so the model
+		// must choose. Using only finish here would leave the model with skills
+		// visible in its system prompt but no way to invoke them.
+		log.Printf("skill-router: no match — running NativeLoop with full actions")
+		return h.runNativeLoop(ctx, hosted, messages, actions)
 	}
 
 	if confidence < jevConfidenceThreshold {
