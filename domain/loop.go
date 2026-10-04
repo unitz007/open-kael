@@ -26,6 +26,7 @@ const (
 	llmCooldown            = 60 * time.Second
 	maxConsecutiveFailures = 3
 	maxSameActionCalls     = 5
+	maxToolCallsPerIter    = 10
 )
 
 type LoopStatus string
@@ -120,6 +121,18 @@ func (l *NativeLoop) Run(ctx context.Context, messages []Message, actions []*Bou
 			consecutiveFailures++
 			if consecutiveFailures >= maxConsecutiveFailures {
 				return giveUp("too many responses with no action call")
+			}
+			continue
+		}
+
+		if len(resp.ToolCalls) > maxToolCallsPerIter {
+			messages = append(messages,
+				Message{Role: RoleAssistant, Content: resp.Content, ToolCalls: resp.ToolCalls[:0]},
+				Message{Role: RoleUser, Content: fmt.Sprintf("You requested %d tool calls at once. Make at most %d tool calls per response.", len(resp.ToolCalls), maxToolCallsPerIter)},
+			)
+			consecutiveFailures++
+			if consecutiveFailures >= maxConsecutiveFailures {
+				return giveUp("too many tool calls per response")
 			}
 			continue
 		}
