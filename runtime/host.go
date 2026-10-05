@@ -211,9 +211,10 @@ type Host struct {
 // — a remote API, a local model, a keyword matcher — can implement this;
 // the concrete TypeSafe AI Jev implementation lives in the root jev package.
 type SkillRouter interface {
-	// PickSkill returns the name of the skill that should handle userText, and
-	// the classifier's confidence (0–1). Returns ("", 0, nil) when no skill fits.
-	PickSkill(ctx context.Context, userText string, skills []*domain.Skill) (skillName string, confidence float64, err error)
+	// PickSkill returns the name of the skill that should handle userText,
+	// the classifier's confidence (0–1), and the user's intent ("execute" or
+	// "recommend"). Returns ("", 0, "recommend", nil) when no skill fits.
+	PickSkill(ctx context.Context, userText string, skills []*domain.Skill) (skillName string, confidence float64, intent string, err error)
 }
 
 func NewHost() *Host {
@@ -673,7 +674,7 @@ func (h *Host) querySkillAction(hosted *HostedAgent) *domain.BoundAction {
 			intent, _ := input["intent"].(string)
 			context_, _ := input["context"].(string)
 
-			name, confidence, err := h.skillRouter.PickSkill(ctx, intent, hosted.Agent.Skills)
+			name, confidence, _, err := h.skillRouter.PickSkill(ctx, intent, hosted.Agent.Skills)
 			if err != nil {
 				return nil, fmt.Errorf("query_skill: routing failed: %w", err)
 			}
@@ -974,13 +975,13 @@ const jevConfidenceThreshold = 0.65
 // model can decide whether any skill applies. On error the model falls back to
 // NativeLoop with full actions for the same reason.
 func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText string, messages []domain.Message, actions []*domain.BoundAction) (*domain.LoopResult, []domain.Message, error) {
-	skillName, confidence, err := h.skillRouter.PickSkill(ctx, userText, hosted.Agent.Skills)
+	skillName, confidence, intent, err := h.skillRouter.PickSkill(ctx, userText, hosted.Agent.Skills)
 	if err != nil {
 		log.Printf("skill-router: pick skill failed: %v — running NativeLoop with full actions", err)
 		return h.runNativeLoop(ctx, hosted, messages, actions)
 	}
 
-	log.Printf("skill-router: skill=%q confidence=%.2f", skillName, confidence)
+	log.Printf("skill-router: skill=%q confidence=%.2f intent=%q", skillName, confidence, intent)
 
 	if skillName == "" {
 		// Router returned no skill name — it could not identify a match. Hand
@@ -1006,7 +1007,7 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 		if action.Spec.Name != skillName {
 			continue
 		}
-		output, err := action.Invoke(ctx, map[string]any{"message": userText})
+		output, err := action.Invoke(ctx, map[string]any{"message": userText, "intent": intent})
 		if err != nil {
 			log.Printf("skill-router: invoke skill %q failed: %v", skillName, err)
 			return &domain.LoopResult{Status: domain.LoopStatusError}, messages, err

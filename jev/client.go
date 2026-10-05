@@ -156,9 +156,16 @@ func (c *Client) SystemOne(ctx context.Context, state string, questions map[stri
 
 const unknownSkill = "unknown"
 
+// Intent constants returned by PickSkill.
+const (
+	IntentExecute   = "execute"
+	IntentRecommend = "recommend"
+)
+
 // PickSkill implements runtime.JevRouter. It builds a Choice question from
 // the agent's current skill list and calls Jev to pick the best match.
-func (c *Client) PickSkill(ctx context.Context, userText string, skills []*domain.Skill) (string, float64, error) {
+// It also classifies the user's intent (execute vs recommend) in the same call.
+func (c *Client) PickSkill(ctx context.Context, userText string, skills []*domain.Skill) (skillName string, confidence float64, intent string, err error) {
 	criteria := make(map[string]string, len(skills)+1)
 	for _, s := range skills {
 		criteria[s.Name] = s.Description
@@ -170,19 +177,32 @@ func (c *Client) PickSkill(ctx context.Context, userText string, skills []*domai
 			Instructions: "Which skill should handle this user request?",
 			Criteria:     criteria,
 		},
+		"intent": Choice{
+			Instructions: "What does the user want to do?",
+			Criteria: map[string]string{
+				IntentExecute:   "The user wants to perform an action or make something happen",
+				IntentRecommend: "The user wants advice, suggestions, or information without taking action",
+			},
+		},
 	})
 	if err != nil {
-		return "", 0, err
+		return "", 0, IntentRecommend, err
 	}
 
-	answer, ok := resp.Answers["skill"]
+	skillAnswer, ok := resp.Answers["skill"]
 	if !ok {
-		return "", 0, fmt.Errorf("jev: no 'skill' answer in response")
+		return "", 0, IntentRecommend, fmt.Errorf("jev: no 'skill' answer in response")
 	}
-	if answer.Choice == unknownSkill {
-		return "", answer.Confidence, nil
+
+	intent = IntentRecommend
+	if intentAnswer, ok := resp.Answers["intent"]; ok {
+		intent = intentAnswer.Choice
 	}
-	return answer.Choice, answer.Confidence, nil
+
+	if skillAnswer.Choice == unknownSkill {
+		return "", skillAnswer.Confidence, intent, nil
+	}
+	return skillAnswer.Choice, skillAnswer.Confidence, intent, nil
 }
 
 func (c *Client) ep() string {
