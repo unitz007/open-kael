@@ -216,7 +216,7 @@ func (c *Client) PickSkills(ctx context.Context, userText string, skills []*doma
 	questions := make(map[string]question, len(skills)+1)
 	for _, s := range skills {
 		questions["skill:"+s.Name] = Noul{
-			Instructions: fmt.Sprintf("Does this skill apply to the user's request? Skill %q: %s", s.Name, s.Description),
+			Instructions: fmt.Sprintf("Is this skill relevant to the user's request? Skill %q: %s", s.Name, s.Description),
 		}
 	}
 	questions["intent"] = Choice{
