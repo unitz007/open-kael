@@ -154,9 +154,12 @@ func (c *Client) SystemOne(ctx context.Context, state string, questions map[stri
 	return &result, nil
 }
 
-const unknownSkill = "unknown"
+const (
+	unknownSkill         = "unknown"
+	skillApplyThreshold  = 0.6
+)
 
-// Intent constants returned by PickSkill.
+// Intent constants returned by PickSkill and PickSkills.
 const (
 	IntentExecute   = "execute"
 	IntentRecommend = "recommend"
@@ -203,6 +206,44 @@ func (c *Client) PickSkill(ctx context.Context, userText string, skills []*domai
 		return "", skillAnswer.Confidence, intent, nil
 	}
 	return skillAnswer.Choice, skillAnswer.Confidence, intent, nil
+}
+
+// PickSkills implements runtime.SkillRouter for multi-skill routing. It asks
+// one Noul question per skill — "does this apply?" — plus the existing intent
+// Choice, all in a single Jev API call. Every skill whose Noul score meets
+// skillApplyThreshold is returned; an empty slice means no match.
+func (c *Client) PickSkills(ctx context.Context, userText string, skills []*domain.Skill) (skillNames []string, intent string, err error) {
+	questions := make(map[string]question, len(skills)+1)
+	for _, s := range skills {
+		questions["skill:"+s.Name] = Noul{
+			Instructions: fmt.Sprintf("Does this skill apply to the user's request? Skill %q: %s", s.Name, s.Description),
+		}
+	}
+	questions["intent"] = Choice{
+		Instructions: "What does the user want to do?",
+		Criteria: map[string]string{
+			IntentExecute:   "The user wants to perform an action or make something happen",
+			IntentRecommend: "The user wants advice, suggestions, or information without taking action",
+		},
+	}
+
+	resp, err := c.SystemOne(ctx, userText, questions)
+	if err != nil {
+		return nil, IntentRecommend, err
+	}
+
+	intent = IntentRecommend
+	if intentAnswer, ok := resp.Answers["intent"]; ok {
+		intent = intentAnswer.Choice
+	}
+
+	for _, s := range skills {
+		if a, ok := resp.Answers["skill:"+s.Name]; ok && a.Noul >= skillApplyThreshold {
+			skillNames = append(skillNames, s.Name)
+		}
+	}
+
+	return skillNames, intent, nil
 }
 
 func (c *Client) ep() string {

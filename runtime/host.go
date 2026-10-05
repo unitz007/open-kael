@@ -207,14 +207,19 @@ type Host struct {
 	pendingInstructions sync.Map
 }
 
-// SkillRouter picks the right skill for an inbound message. Any classifier
+// SkillRouter picks the right skill(s) for an inbound message. Any classifier
 // — a remote API, a local model, a keyword matcher — can implement this;
 // the concrete TypeSafe AI Jev implementation lives in the root jev package.
 type SkillRouter interface {
-	// PickSkill returns the name of the skill that should handle userText,
-	// the classifier's confidence (0–1), and the user's intent ("execute" or
-	// "recommend"). Returns ("", 0, "recommend", nil) when no skill fits.
+	// PickSkill returns the single best-matching skill name, the classifier's
+	// confidence (0–1), and the user's intent. Returns ("", 0, "recommend", nil)
+	// when no skill fits. Used by query_skill for single-skill delegation.
 	PickSkill(ctx context.Context, userText string, skills []*domain.Skill) (skillName string, confidence float64, intent string, err error)
+
+	// PickSkills returns all skills that apply to userText and the user's
+	// intent. An empty slice means no skill matched. Used by the main routing
+	// path to load and merge tools from multiple skills into one outer loop.
+	PickSkills(ctx context.Context, userText string, skills []*domain.Skill) (skillNames []string, intent string, err error)
 }
 
 func NewHost() *Host {
@@ -968,56 +973,58 @@ func chunkContent(ctx context.Context, content string) <-chan string {
 
 const jevConfidenceThreshold = 0.65
 
-// routeWithJev uses the SkillRouter to pick the right skill for userText.
-// When a skill is identified (any confidence), it is invoked directly —
-// NativeLoop is never used for skill selection. When the router returns no
-// skill name (abstained), the full action set is handed to NativeLoop so the
-// model can decide whether any skill applies. On error the model falls back to
-// NativeLoop with full actions for the same reason.
+// routeWithJev uses the SkillRouter to pick which skills apply to userText.
+// All matched skills have their tools merged into a single flat list that the
+// outer NativeLoop runs with full conversation history — no nested loops.
+// Falls back to NativeLoop with full actions when no skills match, and to
+// respondDirectly when matched skills yield no tools.
 func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText string, messages []domain.Message, actions []*domain.BoundAction) (*domain.LoopResult, []domain.Message, error) {
-	skillName, confidence, intent, err := h.skillRouter.PickSkill(ctx, userText, hosted.Agent.Skills)
+	skillNames, intent, err := h.skillRouter.PickSkills(ctx, userText, hosted.Agent.Skills)
 	if err != nil {
-		log.Printf("skill-router: pick skill failed: %v — running NativeLoop with full actions", err)
+		log.Printf("skill-router: pick skills failed: %v — running NativeLoop with full actions", err)
 		return h.runNativeLoop(ctx, hosted, messages, actions)
 	}
 
-	log.Printf("skill-router: skill=%q confidence=%.2f intent=%q", skillName, confidence, intent)
+	log.Printf("skill-router: skills=%v intent=%q", skillNames, intent)
 
-	if skillName == "" {
-		// Router returned no skill name — it could not identify a match. Hand
-		// the full action set (skills + finish, all one-shot guarded) to the
-		// NativeLoop so the model can decide whether any skill applies. This
-		// differs from the low-confidence case: there the router named a skill
-		// and we invoke it directly; here the router abstained, so the model
-		// must choose. Using only finish here would leave the model with skills
-		// visible in its system prompt but no way to invoke them.
-		log.Printf("skill-router: no match — running NativeLoop with full actions")
+	if len(skillNames) == 0 {
+		log.Printf("skill-router: no skills matched — running NativeLoop with full actions")
 		return h.runNativeLoop(ctx, hosted, messages, actions)
 	}
 
-	if confidence < jevConfidenceThreshold {
-		// Low confidence but a skill was identified — invoke it directly rather
-		// than falling back to NativeLoop, which would allow the model to call
-		// skills multiple times in a selection loop.
-		log.Printf("skill-router: low confidence (%.2f) — invoking %q directly", confidence, skillName)
+	// Hydrate and merge tools from all selected skills, deduplicating by name.
+	seen := map[string]bool{}
+	var mergedTools []*domain.BoundAction
+	for _, name := range skillNames {
+		for _, skill := range hosted.Agent.Skills {
+			if skill.Name != name {
+				continue
+			}
+			tools, err := domain.HydrateSkillTools(skill, hosted.Agent, hosted.Deps.ToolsByID, hosted.Deps.IdentitiesByID, hosted.Deps.IntegrationsByID, hosted.Deps.Executors)
+			if err != nil {
+				log.Printf("skill-router: hydrate skill %q: %v — skipping", name, err)
+				continue
+			}
+			for _, t := range tools {
+				if seen[t.Spec.Name] {
+					continue
+				}
+				seen[t.Spec.Name] = true
+				mergedTools = append(mergedTools, t)
+			}
+		}
 	}
 
-	// Find the bound action for the chosen skill and invoke it directly.
-	for _, action := range actions {
-		if action.Spec.Name != skillName {
-			continue
-		}
-		output, err := action.Invoke(ctx, map[string]any{"message": userText, "intent": intent})
-		if err != nil {
-			log.Printf("skill-router: invoke skill %q failed: %v", skillName, err)
-			return &domain.LoopResult{Status: domain.LoopStatusError}, messages, err
-		}
-		content := domain.StringifyResult(output)
-		return &domain.LoopResult{Status: domain.LoopStatusComplete, Content: content}, messages, nil
+	if len(mergedTools) == 0 {
+		log.Printf("skill-router: selected skills yielded no tools — responding directly")
+		return h.respondDirectly(ctx, hosted, messages, actions)
 	}
 
-	log.Printf("skill-router: skill %q not found in actions — responding directly", skillName)
-	return h.respondDirectly(ctx, hosted, messages, actions)
+	// Run the outer loop with full conversation history and merged tools.
+	// Intent is available for future injection (e.g. system hint) if needed.
+	_ = intent
+	loopActions := append(mergedTools, buildFinishAction())
+	return h.runNativeLoop(ctx, hosted, messages, loopActions)
 }
 
 // respondDirectly runs a turn with only the finish action available — no skill
