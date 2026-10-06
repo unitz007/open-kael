@@ -10,10 +10,16 @@ import (
 	"regexp"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/unitz007/open-kael/domain"
 )
+
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
 
 var emailRE = regexp.MustCompile(`^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$`)
 
@@ -72,6 +78,10 @@ func (s *Server) registerUser(w http.ResponseWriter, r *http.Request) {
 		VerificationToken: verificationToken,
 	}
 	if err := s.store.SaveUser(r.Context(), user); err != nil {
+		if isUniqueViolation(err) {
+			writeError(w, http.StatusConflict, errors.New("an account with this email already exists"))
+			return
+		}
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
