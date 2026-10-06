@@ -29,6 +29,9 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	if s.onAgentCreate != nil {
+		s.onAgentCreate(agent.ID)
+	}
 	writeJSON(w, http.StatusOK, agent)
 }
 

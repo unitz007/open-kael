@@ -36,6 +36,10 @@ type Server struct {
 	// separate endpoint. Set via WithIntegrationEvents.
 	integrationEvents *domain.IntegrationEventRegistry
 
+	// onAgentCreate, when set, is called after a new agent is successfully saved
+	// by createAgent. Receives the agent ID so the runtime can register it.
+	onAgentCreate func(agentID string)
+
 	// onAgentIdentityChange, when set, is called after setAgentIdentities saves
 	// an agent with a changed identity list. Receives the agent ID, the added
 	// identity IDs, and the removed identity IDs. Used to start/stop listeners
@@ -109,6 +113,13 @@ func WithCredentialEncryptor(enc domain.CredentialEncryptor) Option {
 // GET /integrations responses include the events each integration can emit.
 func WithIntegrationEvents(r *domain.IntegrationEventRegistry) Option {
 	return func(s *Server) { s.integrationEvents = r }
+}
+
+// WithAgentCreateHook registers a callback invoked after a new agent is
+// successfully created via POST /agents. The callback receives the new agent's
+// ID so the runtime can register it for listener start-up.
+func WithAgentCreateHook(f func(agentID string)) Option {
+	return func(s *Server) { s.onAgentCreate = f }
 }
 
 // WithAgentIdentityChangeHook registers a callback invoked when
