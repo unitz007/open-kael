@@ -119,6 +119,10 @@ func (h *Host) startOneListener(ctx context.Context, agentID string, identity *d
 				return // clean shutdown
 			}
 			if err != nil {
+				if errors.Is(err, domain.ErrPermanent) {
+					log.Printf("runtime: agent %q: listener %q stopped permanently: %v", agentID, id.ID, err)
+					return
+				}
 				log.Printf("runtime: agent %q: listener %q stopped: %v — restarting in %s", agentID, id.ID, err, backoff)
 				select {
 				case <-time.After(backoff):
