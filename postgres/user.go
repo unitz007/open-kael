@@ -17,15 +17,19 @@ func (s *Store) SaveUser(ctx context.Context, u *domain.User) error {
 		email = &u.Email
 	}
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO users (id, email, password_hash)
-		VALUES ($1, $2, $3)
-		ON CONFLICT (id) DO UPDATE SET email = EXCLUDED.email, password_hash = EXCLUDED.password_hash
-	`, u.ID, email, u.PasswordHash)
+		INSERT INTO users (id, email, password_hash, first_name, last_name)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (id) DO UPDATE SET
+			email         = EXCLUDED.email,
+			password_hash = EXCLUDED.password_hash,
+			first_name    = EXCLUDED.first_name,
+			last_name     = EXCLUDED.last_name
+	`, u.ID, email, u.PasswordHash, u.FirstName, u.LastName)
 	return err
 }
 
 func (s *Store) GetUser(ctx context.Context, id string) (*domain.User, error) {
-	row := s.pool.QueryRow(ctx, `SELECT id, email, password_hash FROM users WHERE id = $1`, id)
+	row := s.pool.QueryRow(ctx, `SELECT id, email, password_hash, first_name, last_name FROM users WHERE id = $1`, id)
 	u, err := scanUser(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, domain.ErrNotFound
@@ -34,7 +38,7 @@ func (s *Store) GetUser(ctx context.Context, id string) (*domain.User, error) {
 }
 
 func (s *Store) GetUserByEmail(ctx context.Context, email string) (*domain.User, error) {
-	row := s.pool.QueryRow(ctx, `SELECT id, email, password_hash FROM users WHERE email = $1`, email)
+	row := s.pool.QueryRow(ctx, `SELECT id, email, password_hash, first_name, last_name FROM users WHERE email = $1`, email)
 	u, err := scanUser(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, domain.ErrNotFound
@@ -50,7 +54,7 @@ func (s *Store) DeleteUser(ctx context.Context, id string) error {
 func scanUser(row pgx.Row) (*domain.User, error) {
 	var u domain.User
 	var email *string
-	if err := row.Scan(&u.ID, &email, &u.PasswordHash); err != nil {
+	if err := row.Scan(&u.ID, &email, &u.PasswordHash, &u.FirstName, &u.LastName); err != nil {
 		return nil, err
 	}
 	if email != nil {

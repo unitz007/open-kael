@@ -17,6 +17,8 @@ CREATE TABLE IF NOT EXISTS users (
 -- Idempotent for databases that already had these columns as NOT NULL.
 ALTER TABLE users ALTER COLUMN email DROP NOT NULL;
 ALTER TABLE users ALTER COLUMN password_hash SET DEFAULT '';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS first_name TEXT NOT NULL DEFAULT '';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS last_name  TEXT NOT NULL DEFAULT '';
 
 -- Replaced by messenger_channels; kept so existing DBs don't error on startup.
 CREATE TABLE IF NOT EXISTS user_channels (
