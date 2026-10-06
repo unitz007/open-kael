@@ -14,6 +14,7 @@ type ConversationRef struct {
 	ThreadID   string // optional; platform thread/topic ID (e.g. Telegram supergroup topic, Slack thread). Empty on platforms without threads.
 	IdentityID string // set by Listener implementations; identifies which bot received the message
 	UserID     string // optional; resolved by the host from MessengerChannel before HandleTurn
+	MessageID  string // optional; set from InboundMessage.MessageID so ConversationActionProvider can react to the triggering message
 }
 
 // InboundMessage is what a Listener (runtime host, not this package — see

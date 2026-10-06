@@ -498,6 +498,12 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 		}
 	}
 
+	// Carry the inbound message ID into the ConversationRef so
+	// ConversationActionProvider implementations can react to the triggering
+	// message without the model needing to know or supply the ID.
+	if msg.MessageID != "" {
+		msg.Conversation.MessageID = msg.MessageID
+	}
 	if _, err := h.HandleTurn(ctx, hosted, msg.Conversation, msg.Text); err != nil {
 		log.Printf("runtime: agent %q: handling message from identity %s chat %s: %v", hosted.Agent.ID, msg.Conversation.IdentityID, msg.Conversation.ChatID, err)
 	}
