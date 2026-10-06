@@ -4,6 +4,7 @@ import (
 	cryptorand "crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/http"
 	"regexp"
 	"time"
@@ -53,18 +54,76 @@ func (s *Server) registerUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	verificationToken, err := newToken()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	emailVerified := s.mailer == nil // auto-verify when no mailer is configured
 	user := &domain.User{
-		ID:           newID(),
-		Email:        req.Email,
-		FirstName:    req.FirstName,
-		LastName:     req.LastName,
-		PasswordHash: string(hash),
+		ID:                newID(),
+		Email:             req.Email,
+		FirstName:         req.FirstName,
+		LastName:          req.LastName,
+		PasswordHash:      string(hash),
+		EmailVerified:     emailVerified,
+		VerificationToken: verificationToken,
 	}
 	if err := s.store.SaveUser(r.Context(), user); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+
+	if s.mailer != nil {
+		link := fmt.Sprintf("%s/verify?token=%s", s.appURL, verificationToken)
+		body := verificationEmailHTML(req.FirstName, link)
+		if err := s.mailer.Send(r.Context(), req.Email, "Verify your email address", body); err != nil {
+			// Don't fail the signup — log and let the user request a resend later.
+			_ = err
+		}
+	}
+
 	writeJSON(w, http.StatusCreated, user)
+}
+
+func (s *Server) verifyEmail(w http.ResponseWriter, r *http.Request) {
+	token := r.URL.Query().Get("token")
+	if token == "" {
+		writeError(w, http.StatusBadRequest, errors.New("token is required"))
+		return
+	}
+
+	user, err := s.store.GetUserByVerificationToken(r.Context(), token)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, errors.New("invalid or expired token"))
+		return
+	}
+	if user.EmailVerified {
+		writeJSON(w, http.StatusOK, map[string]string{"message": "email already verified"})
+		return
+	}
+
+	user.EmailVerified = true
+	user.VerificationToken = ""
+	if err := s.store.SaveUser(r.Context(), user); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"message": "email verified"})
+}
+
+func verificationEmailHTML(firstName, link string) string {
+	return fmt.Sprintf(`<!DOCTYPE html>
+<html>
+<body style="font-family:sans-serif;max-width:480px;margin:40px auto;color:#111;">
+  <h2>Hi %s, verify your email</h2>
+  <p>Click the button below to verify your email address and activate your account.</p>
+  <a href="%s" style="display:inline-block;padding:12px 24px;background:#000;color:#fff;text-decoration:none;border-radius:6px;font-weight:600;">Verify Email</a>
+  <p style="margin-top:24px;font-size:13px;color:#666;">Or copy this link:<br><a href="%s">%s</a></p>
+  <p style="font-size:12px;color:#999;margin-top:32px;">If you didn't create an account, you can safely ignore this email.</p>
+</body>
+</html>`, firstName, link, link, link)
 }
 
 func (s *Server) loginUser(w http.ResponseWriter, r *http.Request) {
@@ -83,6 +142,10 @@ func (s *Server) loginUser(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
 		writeError(w, http.StatusUnauthorized, errors.New("invalid credentials"))
+		return
+	}
+	if !user.EmailVerified {
+		writeError(w, http.StatusForbidden, errors.New("email address not verified — check your inbox"))
 		return
 	}
 

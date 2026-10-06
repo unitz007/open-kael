@@ -7,11 +7,13 @@ import "time"
 // and configures Agents (the creator is the operator of the platform, not
 // necessarily a User record in it).
 type User struct {
-	ID           string `json:"id"`
-	Email        string `json:"email"`
-	FirstName    string `json:"first_name,omitempty"`
-	LastName     string `json:"last_name,omitempty"`
-	PasswordHash string `json:"-"` // never serialized; store-only field
+	ID                string `json:"id"`
+	Email             string `json:"email"`
+	FirstName         string `json:"first_name,omitempty"`
+	LastName          string `json:"last_name,omitempty"`
+	EmailVerified     bool   `json:"email_verified"`
+	PasswordHash      string `json:"-"` // never serialized; store-only field
+	VerificationToken string `json:"-"` // never serialized; store-only field
 }
 
 // Session is an authenticated session for a User — an opaque token the client

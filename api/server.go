@@ -61,6 +61,13 @@ type Server struct {
 	// and identityID of the newly connected integration.
 	onIntegrationConnected func(ctx context.Context, userID, identityID string)
 
+	// mailer, when set, sends transactional emails (e.g. email verification).
+	// When nil, email verification is skipped and accounts are auto-verified.
+	mailer domain.Mailer
+
+	// appURL is the base URL of the frontend, used to build verification links.
+	appURL string
+
 	// routePlugins are provider-specific route registrars. Each plugin's Mount
 	// is called from routes() after all generic routes are registered.
 	routePlugins []RoutePlugin
@@ -143,6 +150,12 @@ func WithIntegrationConnectedHook(f func(ctx context.Context, userID, identityID
 
 func WithRoutePlugin(p RoutePlugin) Option {
 	return func(s *Server) { s.routePlugins = append(s.routePlugins, p) }
+}
+
+// WithMailer enables email verification on signup. appURL is the frontend base
+// URL used to build the verification link (e.g. "https://app.example.com").
+func WithMailer(m domain.Mailer, appURL string) Option {
+	return func(s *Server) { s.mailer = m; s.appURL = appURL }
 }
 
 func NewServer(store domain.Store, opts ...Option) *Server {
@@ -267,6 +280,7 @@ func (s *Server) routes() {
 
 	// User routes: public (register/login) and authenticated (me/logout).
 	s.mux.HandleFunc("POST /users", s.registerUser)
+	s.mux.HandleFunc("GET /users/verify", s.verifyEmail)
 	s.mux.HandleFunc("POST /sessions", s.loginUser)
 	s.mux.HandleFunc("GET /users/me", s.userAuth(s.getMe))
 	s.mux.HandleFunc("DELETE /sessions", s.userAuth(s.logoutUser))
