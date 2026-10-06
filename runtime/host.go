@@ -600,7 +600,7 @@ func (h *Host) ReloadAgentSkills(ctx context.Context, agentID string, loader fun
 // behaviour without giving up the auto-generated foundation. When userInstructions
 // is non-empty (the user's personal intro loaded from user_agent_configs) it is
 // appended last as a <user_instructions> block so the agent knows who it is talking to.
-func buildSystemPrompt(agent *domain.Agent, userInstructions string) string {
+func buildSystemPrompt(agent *domain.Agent, userInstructions string, hiddenActions []string) string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "You are %s.", agent.Name)
@@ -624,6 +624,11 @@ func buildSystemPrompt(agent *domain.Agent, userInstructions string) string {
 		fmt.Fprintf(&b, "\n\n<user_instructions>\n%s\n</user_instructions>", userInstructions)
 	}
 
+	if len(hiddenActions) > 0 {
+		fmt.Fprintf(&b, "\n\nInternal tools (%s) are implementation details — never mention, describe, or list them to users.",
+			strings.Join(hiddenActions, ", "))
+	}
+
 	return b.String()
 }
 
@@ -637,6 +642,7 @@ func buildFinishAction() *domain.BoundAction {
 		Spec: domain.ActionSpec{
 			Name:        domain.FinishActionName,
 			Description: "Call this once you have your final answer for the user.",
+			Hidden:      true,
 			InputSchema: domain.Schema{
 				Type: domain.SchemaTypeObject,
 				Properties: map[string]domain.Schema{
@@ -719,6 +725,7 @@ func (h *Host) configureToolApprovalAction(hosted *HostedAgent) *domain.BoundAct
 		Spec: domain.ActionSpec{
 			Name:        "configure_tool_approval",
 			Description: "Require or remove your personal approval gate for a specific tool.",
+			Hidden:      true,
 			Instructions: "Use this when the user asks to be prompted before a tool runs, " +
 				"or to stop being prompted. Identify the tool by its function name " +
 				"(e.g. \"make_transfer\"). Always confirm the change back to the user.",
@@ -867,11 +874,6 @@ func (h *Host) HandleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 		// ErrNotFound is expected when the user hasn't set instructions yet — silence it.
 	}
 
-	messages := make([]domain.Message, 0, len(prior)+2)
-	messages = append(messages, domain.Message{Role: domain.RoleSystem, Content: buildSystemPrompt(hosted.Agent, userInstructions)})
-	messages = append(messages, prior...)
-	messages = append(messages, domain.Message{Role: domain.RoleUser, Content: userText})
-
 	actions, err := h.actionsFor(ctx, hosted)
 	if err != nil {
 		return nil, err
@@ -885,6 +887,18 @@ func (h *Host) HandleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 		convActions = provider.ConversationActions(ctx, identity, conv)
 		actions = append(actions, convActions...)
 	}
+
+	var hiddenActions []string
+	for _, a := range actions {
+		if a.Spec.Hidden {
+			hiddenActions = append(hiddenActions, a.Spec.Name)
+		}
+	}
+
+	messages := make([]domain.Message, 0, len(prior)+2)
+	messages = append(messages, domain.Message{Role: domain.RoleSystem, Content: buildSystemPrompt(hosted.Agent, userInstructions, hiddenActions)})
+	messages = append(messages, prior...)
+	messages = append(messages, domain.Message{Role: domain.RoleUser, Content: userText})
 
 	var result *domain.LoopResult
 	var final []domain.Message

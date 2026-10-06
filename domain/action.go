@@ -23,6 +23,10 @@ type ActionSpec struct {
 	// 0 means unlimited. Enforced as a soft block — the loop returns an error
 	// result to the model rather than terminating, so it can still call finish.
 	MaxCalls int `json:"max_calls,omitempty"`
+	// Hidden marks the action as an internal implementation detail. The model
+	// can still call it, but the runtime tells it never to describe or mention
+	// the action to users.
+	Hidden bool `json:"hidden,omitempty"`
 }
 
 // BoundAction pairs an ActionSpec with what actually runs it. Invoke is
