@@ -65,7 +65,7 @@ func (s *Server) getAgent(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) deleteAgent(w http.ResponseWriter, r *http.Request) {
-	agent, err := s.store.GetAgent(r.Context(), r.PathValue("id"))
+	agent, err := s.store.LoadAgent(r.Context(), r.PathValue("id"))
 	if err != nil {
 		if errors.Is(err, domain.ErrNotFound) {
 			writeError(w, http.StatusNotFound, err)
@@ -78,9 +78,13 @@ func (s *Server) deleteAgent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, domain.ErrNotFound)
 		return
 	}
+	identityIDs := agent.IdentityIDs
 	if err := s.store.DeleteAgent(r.Context(), agent.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
+	}
+	if s.onAgentDelete != nil && len(identityIDs) > 0 {
+		go s.onAgentDelete(agent.ID, identityIDs)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

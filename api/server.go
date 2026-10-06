@@ -46,6 +46,11 @@ type Server struct {
 	// Receives the owning agent ID so the runtime can reload the hosted agent.
 	onSkillChange func(agentID string)
 
+	// onAgentDelete, when set, is called after an agent is successfully deleted.
+	// Receives the agent ID and the identity IDs that were linked to the agent so
+	// the runtime can stop their listener goroutines immediately.
+	onAgentDelete func(agentID string, identityIDs []string)
+
 	// onAgentCommandChange, when set, is called after PUT /agents/{id}/commands
 	// saves a new command list. Receives the agent ID and the new command slice
 	// so the runtime (or messenger adapters) can update the platform command menu.
@@ -105,6 +110,13 @@ func WithIntegrationEvents(r *domain.IntegrationEventRegistry) Option {
 // Intended for wiring the runtime Host to start/stop listeners dynamically.
 func WithAgentIdentityChangeHook(f func(agentID string, addedIdentityIDs, removedIdentityIDs []string)) Option {
 	return func(s *Server) { s.onAgentIdentityChange = f }
+}
+
+// WithAgentDeleteHook registers a callback invoked after an agent is deleted.
+// The callback receives the agent ID and the identity IDs that were linked to
+// it so the runtime can stop their listener goroutines immediately.
+func WithAgentDeleteHook(f func(agentID string, identityIDs []string)) Option {
+	return func(s *Server) { s.onAgentDelete = f }
 }
 
 // WithSkillChangeHook registers a callback invoked when a skill is created or
