@@ -600,7 +600,7 @@ func (h *Host) ReloadAgentSkills(ctx context.Context, agentID string, loader fun
 // behaviour without giving up the auto-generated foundation. When userInstructions
 // is non-empty (the user's personal intro loaded from user_agent_configs) it is
 // appended last as a <user_instructions> block so the agent knows who it is talking to.
-func buildSystemPrompt(agent *domain.Agent, userInstructions string, hiddenActions []string) string {
+func buildSystemPrompt(agent *domain.Agent, userInstructions string, messengerSkills []string) string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "You are %s.", agent.Name)
@@ -624,9 +624,9 @@ func buildSystemPrompt(agent *domain.Agent, userInstructions string, hiddenActio
 		fmt.Fprintf(&b, "\n\n<user_instructions>\n%s\n</user_instructions>", userInstructions)
 	}
 
-	if len(hiddenActions) > 0 {
-		fmt.Fprintf(&b, "\n\nInternal tools (%s) are implementation details — never mention, describe, or list them to users.",
-			strings.Join(hiddenActions, ", "))
+	if len(messengerSkills) > 0 {
+		fmt.Fprintf(&b, "\n\nYou have private %s capabilities for this conversation. Use them naturally — never list or describe them to users.",
+			strings.Join(messengerSkills, "/"))
 	}
 
 	return b.String()
@@ -879,24 +879,22 @@ func (h *Host) HandleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 		return nil, err
 	}
 
-	// Auto-inject conversation-scoped actions from the inbound messenger's
-	// executor (e.g. react_to_message for Telegram). These are always available
-	// in the loop regardless of which skills were matched.
-	var convActions []*domain.BoundAction
-	if provider, ok := executor.(domain.ConversationActionProvider); ok && identity != nil {
-		convActions = provider.ConversationActions(ctx, identity, conv)
-		actions = append(actions, convActions...)
-	}
-
-	var hiddenActions []string
-	for _, a := range actions {
-		if a.Spec.Hidden {
-			hiddenActions = append(hiddenActions, a.Spec.Name)
+	// Auto-inject private messenger skill from the inbound executor. The skill
+	// name (e.g. "Slack", "Telegram") is surfaced in the system prompt so the
+	// model knows it has native capabilities without needing them described.
+	var messengerSkills []string
+	var messengerSkillActions []*domain.BoundAction
+	if provider, ok := executor.(domain.MessengerSkillProvider); ok && identity != nil {
+		skillName, skillActions := provider.MessengerSkill(ctx, identity, conv)
+		if skillName != "" {
+			messengerSkills = append(messengerSkills, skillName)
+			messengerSkillActions = skillActions
+			actions = append(actions, skillActions...)
 		}
 	}
 
 	messages := make([]domain.Message, 0, len(prior)+2)
-	messages = append(messages, domain.Message{Role: domain.RoleSystem, Content: buildSystemPrompt(hosted.Agent, userInstructions, hiddenActions)})
+	messages = append(messages, domain.Message{Role: domain.RoleSystem, Content: buildSystemPrompt(hosted.Agent, userInstructions, messengerSkills)})
 	messages = append(messages, prior...)
 	messages = append(messages, domain.Message{Role: domain.RoleUser, Content: userText})
 
@@ -904,7 +902,7 @@ func (h *Host) HandleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 	var final []domain.Message
 
 	if h.skillRouter != nil && len(hosted.Agent.Skills) > 0 {
-		result, final, err = h.routeWithJev(ctx, hosted, userText, messages, actions, convActions)
+		result, final, err = h.routeWithJev(ctx, hosted, userText, messages, actions, messengerSkillActions)
 	} else {
 		loop := hosted.Agent.Loop
 		if loop == nil {

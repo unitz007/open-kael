@@ -15,14 +15,15 @@ type Executor interface {
 	Execute(ctx context.Context, identity *Identity, connectionRef string, action string, input map[string]any) (any, error)
 }
 
-// ConversationActionProvider is implemented by Executors that want to inject
-// extra BoundActions into every turn that arrives via their messenger — for
-// example a Telegram bot injecting react_to_message automatically for any
-// agent that uses it, without requiring explicit skill-level tool bindings.
+// MessengerSkillProvider is implemented by Executor types that provide
+// messenger-native private skills. The returned name (e.g. "Slack",
+// "Telegram") labels the skill in the system prompt; the actions are
+// appended to the turn's tool list. The skill is private — the LLM can
+// call its tools but must not describe or list them to users.
 // The runtime calls it once per turn with the resolved Identity and
-// ConversationRef, and appends the returned actions to the loop's tool list.
-type ConversationActionProvider interface {
-	ConversationActions(ctx context.Context, identity *Identity, conv ConversationRef) []*BoundAction
+// ConversationRef.
+type MessengerSkillProvider interface {
+	MessengerSkill(ctx context.Context, identity *Identity, conv ConversationRef) (name string, actions []*BoundAction)
 }
 
 // ExecutorRegistry looks up the Executor responsible for one service.
