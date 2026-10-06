@@ -165,8 +165,21 @@ func (s *Store) GetAgentByIdentityID(ctx context.Context, identityID string) (*d
 }
 
 func (s *Store) DeleteAgent(ctx context.Context, id string) error {
-	_, err := s.pool.Exec(ctx, `DELETE FROM agents WHERE id = $1`, id)
-	return err
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	for _, q := range []string{
+		`DELETE FROM conversation_messages WHERE agent_id = $1`,
+		`DELETE FROM conversations WHERE agent_id = $1`,
+		`DELETE FROM agents WHERE id = $1`,
+	} {
+		if _, err := tx.Exec(ctx, q, id); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
 }
 
 func (s *Store) loadIdentityIDs(ctx context.Context, a *domain.Agent) error {
