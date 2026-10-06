@@ -15,6 +15,16 @@ type Executor interface {
 	Execute(ctx context.Context, identity *Identity, connectionRef string, action string, input map[string]any) (any, error)
 }
 
+// ConversationActionProvider is implemented by Executors that want to inject
+// extra BoundActions into every turn that arrives via their messenger — for
+// example a Telegram bot injecting react_to_message automatically for any
+// agent that uses it, without requiring explicit skill-level tool bindings.
+// The runtime calls it once per turn with the resolved Identity and
+// ConversationRef, and appends the returned actions to the loop's tool list.
+type ConversationActionProvider interface {
+	ConversationActions(ctx context.Context, identity *Identity, conv ConversationRef) []*BoundAction
+}
+
 // ExecutorRegistry looks up the Executor responsible for one service.
 // One registry entry per service, shared across every Identity of that
 // service — e.g. multiple GitHub App identities all resolve to the same

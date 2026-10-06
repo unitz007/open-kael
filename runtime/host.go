@@ -872,11 +872,20 @@ func (h *Host) HandleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 		return nil, err
 	}
 
+	// Auto-inject conversation-scoped actions from the inbound messenger's
+	// executor (e.g. react_to_message for Telegram). These are always available
+	// in the loop regardless of which skills were matched.
+	var convActions []*domain.BoundAction
+	if provider, ok := executor.(domain.ConversationActionProvider); ok && identity != nil {
+		convActions = provider.ConversationActions(ctx, identity, conv)
+		actions = append(actions, convActions...)
+	}
+
 	var result *domain.LoopResult
 	var final []domain.Message
 
 	if h.skillRouter != nil && len(hosted.Agent.Skills) > 0 {
-		result, final, err = h.routeWithJev(ctx, hosted, userText, messages, actions)
+		result, final, err = h.routeWithJev(ctx, hosted, userText, messages, actions, convActions)
 	} else {
 		loop := hosted.Agent.Loop
 		if loop == nil {
@@ -978,7 +987,7 @@ const jevConfidenceThreshold = 0.65
 // outer NativeLoop runs with full conversation history — no nested loops.
 // Falls back to NativeLoop with full actions when no skills match, and to
 // respondDirectly when matched skills yield no tools.
-func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText string, messages []domain.Message, actions []*domain.BoundAction) (*domain.LoopResult, []domain.Message, error) {
+func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText string, messages []domain.Message, actions []*domain.BoundAction, convActions []*domain.BoundAction) (*domain.LoopResult, []domain.Message, error) {
 	skillNames, intent, err := h.skillRouter.PickSkills(ctx, userText, hosted.Agent.Skills)
 	if err != nil {
 		log.Printf("skill-router: pick skills failed: %v — running NativeLoop with full actions", err)
@@ -1023,7 +1032,10 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 	// Run the outer loop with full conversation history and merged tools.
 	// Intent is available for future injection (e.g. system hint) if needed.
 	_ = intent
-	loopActions := append(mergedTools, buildFinishAction())
+	loopActions := make([]*domain.BoundAction, 0, len(mergedTools)+len(convActions)+1)
+	loopActions = append(loopActions, mergedTools...)
+	loopActions = append(loopActions, convActions...)
+	loopActions = append(loopActions, buildFinishAction())
 	return h.runNativeLoop(ctx, hosted, messages, loopActions)
 }
 
