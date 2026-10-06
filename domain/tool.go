@@ -29,6 +29,10 @@ type ToolDefinition struct {
 	// Distinct from FunctionName, which is what the LLM sees in tool-use calls.
 	Action string `json:"action"`
 
+	// MaxCalls caps how many times this tool may be called per loop run.
+	// 0 means unlimited. Propagated to ActionSpec.MaxCalls at hydration time.
+	MaxCalls int `json:"max_calls,omitempty"`
+
 	// RequiresApproval means a human must approve a call before Action
 	// actually runs against the resolved Executor — enforced by the
 	// runtime host at its single BoundAction.Invoke call site, mirroring

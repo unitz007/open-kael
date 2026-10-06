@@ -19,6 +19,10 @@ type ActionSpec struct {
 	Instructions string `json:"instructions,omitempty"`
 	InputSchema  Schema `json:"input_schema"`
 	OutputSchema Schema `json:"output_schema"`
+	// MaxCalls caps how many times this action may be called per loop run.
+	// 0 means unlimited. Enforced as a soft block — the loop returns an error
+	// result to the model rather than terminating, so it can still call finish.
+	MaxCalls int `json:"max_calls,omitempty"`
 }
 
 // BoundAction pairs an ActionSpec with what actually runs it. Invoke is

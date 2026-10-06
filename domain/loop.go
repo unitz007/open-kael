@@ -170,6 +170,15 @@ func (l *NativeLoop) Run(ctx context.Context, messages []Message, actions []*Bou
 			if callCounts[call.Name] > maxSameActionCalls {
 				return giveUp(fmt.Sprintf("action %q called too many times", call.Name))
 			}
+			if action.Spec.MaxCalls > 0 && callCounts[call.Name] > action.Spec.MaxCalls {
+				messages = append(messages, Message{Role: RoleTool, ToolCallID: call.ID, Name: call.Name,
+					Content: fmt.Sprintf("already called %d time(s) this turn — the result is already in context, do not call again", action.Spec.MaxCalls)})
+				consecutiveFailures++
+				if consecutiveFailures >= maxConsecutiveFailures {
+					return giveUp("too many failed action calls")
+				}
+				continue
+			}
 
 			output, err := action.Invoke(ctx, call.Arguments)
 			if err != nil {
