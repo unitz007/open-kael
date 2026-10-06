@@ -2,13 +2,20 @@ package domain
 
 import "context"
 
+// ConversationKey uniquely identifies one conversation: the agent handling it,
+// the specific bot identity it arrived on, the chat (channel or DM), and the
+// thread within that chat (empty for unthreaded providers).
+type ConversationKey struct {
+	AgentID    string
+	IdentityID string
+	ChatID     string
+	ThreadID   string
+}
+
 // Memory holds an Agent's conversation turns across separate inbound
-// messages, keyed by an arbitrary string id — what id means (a
-// conversation, a user, a thread) is entirely up to the caller. No
-// implementation ships here, same reasoning as Executor: a concrete store
-// (Postgres, in-process, file-backed) belongs to whoever embeds this
-// framework, not the framework itself.
+// messages. No implementation ships here — a concrete store (Postgres,
+// in-process, file-backed) belongs to whoever embeds this framework.
 type Memory interface {
-	History(ctx context.Context, id string) []Message
-	Append(ctx context.Context, id string, messages ...Message)
+	History(ctx context.Context, key ConversationKey) []Message
+	Append(ctx context.Context, key ConversationKey, messages ...Message)
 }

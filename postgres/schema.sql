@@ -185,12 +185,29 @@ CREATE TABLE IF NOT EXISTS agent_identities (
     PRIMARY KEY (agent_id, identity_id)
 );
 
--- conversations: one row per unique memory key (provider:chatID:threadID).
--- The id is the opaque memKey constructed by the runtime.
+-- conversations: one row per unique (agent, identity, chat, thread) tuple.
 CREATE TABLE IF NOT EXISTS conversations (
-    id         TEXT PRIMARY KEY,
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    agent_id    TEXT NOT NULL DEFAULT '',
+    identity_id TEXT NOT NULL DEFAULT '',
+    chat_id     TEXT NOT NULL DEFAULT '',
+    thread_id   TEXT NOT NULL DEFAULT '',
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (agent_id, identity_id, chat_id, thread_id)
 );
+
+-- Migration: add composite columns to existing installations that only have
+-- the old TEXT PRIMARY KEY column. Both ALTER TABLE statements are no-ops
+-- when the columns already exist.
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS agent_id    TEXT NOT NULL DEFAULT '';
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS identity_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS chat_id     TEXT NOT NULL DEFAULT '';
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS thread_id   TEXT NOT NULL DEFAULT '';
+
+DO $$ BEGIN
+    ALTER TABLE conversations ADD CONSTRAINT conversations_composite_pk
+        PRIMARY KEY (agent_id, identity_id, chat_id, thread_id);
+EXCEPTION WHEN invalid_table_definition OR duplicate_table OR duplicate_object THEN NULL;
+END $$;
 
 -- conversation_messages: ordered message history for each conversation.
 -- BIGSERIAL id gives natural insertion order; the last N messages by id
@@ -200,7 +217,10 @@ CREATE TABLE IF NOT EXISTS conversations (
 -- replaced with a placeholder so the window stays within LLM context limits).
 CREATE TABLE IF NOT EXISTS conversation_messages (
     id           BIGSERIAL PRIMARY KEY,
-    conv_id      TEXT NOT NULL REFERENCES conversations (id) ON DELETE CASCADE,
+    agent_id     TEXT NOT NULL DEFAULT '',
+    identity_id  TEXT NOT NULL DEFAULT '',
+    chat_id      TEXT NOT NULL DEFAULT '',
+    thread_id    TEXT NOT NULL DEFAULT '',
     role         TEXT NOT NULL,
     content      TEXT NOT NULL DEFAULT '',
     tool_calls   JSONB NOT NULL DEFAULT '[]',
@@ -209,7 +229,14 @@ CREATE TABLE IF NOT EXISTS conversation_messages (
     created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_conv_messages_conv_id ON conversation_messages (conv_id, id);
+-- Migration: add composite columns to existing installations.
+ALTER TABLE conversation_messages ADD COLUMN IF NOT EXISTS agent_id    TEXT NOT NULL DEFAULT '';
+ALTER TABLE conversation_messages ADD COLUMN IF NOT EXISTS identity_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE conversation_messages ADD COLUMN IF NOT EXISTS chat_id     TEXT NOT NULL DEFAULT '';
+ALTER TABLE conversation_messages ADD COLUMN IF NOT EXISTS thread_id   TEXT NOT NULL DEFAULT '';
+
+CREATE INDEX IF NOT EXISTS idx_conv_messages_composite
+    ON conversation_messages (agent_id, identity_id, chat_id, thread_id, id);
 
 -- user_agent_configs: per-user personal instructions for one Agent. Injected
 -- into the system prompt so the agent can personalise responses to each user.

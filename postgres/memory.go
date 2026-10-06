@@ -16,16 +16,16 @@ const (
 
 var _ domain.Memory = (*Store)(nil)
 
-func (s *Store) History(ctx context.Context, id string) []domain.Message {
+func (s *Store) History(ctx context.Context, key domain.ConversationKey) []domain.Message {
 	rows, err := s.pool.Query(ctx, `
 		SELECT role, content, tool_calls, tool_call_id, name
 		FROM conversation_messages
-		WHERE conv_id = $1
+		WHERE agent_id = $1 AND identity_id = $2 AND chat_id = $3 AND thread_id = $4
 		ORDER BY id DESC
-		LIMIT $2
-	`, id, memoryWindowSize)
+		LIMIT $5
+	`, key.AgentID, key.IdentityID, key.ChatID, key.ThreadID, memoryWindowSize)
 	if err != nil {
-		log.Printf("memory: history %q: %v", id, err)
+		log.Printf("memory: history agent=%s identity=%s chat=%s: %v", key.AgentID, key.IdentityID, key.ChatID, err)
 		return nil
 	}
 	defer rows.Close()
@@ -40,11 +40,11 @@ func (s *Store) History(ctx context.Context, id string) []domain.Message {
 			name       string
 		)
 		if err := rows.Scan(&role, &content, &toolJSON, &toolCallID, &name); err != nil {
-			log.Printf("memory: scan %q: %v", id, err)
+			log.Printf("memory: scan agent=%s chat=%s: %v", key.AgentID, key.ChatID, err)
 			continue
 		}
 		var calls []domain.ToolCall
-		if len(toolJSON) > 2 { // more than just "[]"
+		if len(toolJSON) > 2 {
 			_ = json.Unmarshal(toolJSON, &calls)
 		}
 		reversed = append(reversed, domain.Message{
@@ -56,7 +56,7 @@ func (s *Store) History(ctx context.Context, id string) []domain.Message {
 		})
 	}
 	if err := rows.Err(); err != nil {
-		log.Printf("memory: rows %q: %v", id, err)
+		log.Printf("memory: rows agent=%s chat=%s: %v", key.AgentID, key.ChatID, err)
 	}
 
 	msgs := make([]domain.Message, len(reversed))
@@ -66,18 +66,18 @@ func (s *Store) History(ctx context.Context, id string) []domain.Message {
 	return msgs
 }
 
-func (s *Store) Append(ctx context.Context, id string, messages ...domain.Message) {
+func (s *Store) Append(ctx context.Context, key domain.ConversationKey, messages ...domain.Message) {
 	if len(messages) == 0 {
 		return
 	}
 
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO conversations (id, updated_at)
-		VALUES ($1, NOW())
-		ON CONFLICT (id) DO UPDATE SET updated_at = NOW()
-	`, id)
+		INSERT INTO conversations (agent_id, identity_id, chat_id, thread_id, updated_at)
+		VALUES ($1, $2, $3, $4, NOW())
+		ON CONFLICT (agent_id, identity_id, chat_id, thread_id) DO UPDATE SET updated_at = NOW()
+	`, key.AgentID, key.IdentityID, key.ChatID, key.ThreadID)
 	if err != nil {
-		log.Printf("memory: upsert conversation %q: %v", id, err)
+		log.Printf("memory: upsert conversation agent=%s chat=%s: %v", key.AgentID, key.ChatID, err)
 		return
 	}
 
@@ -95,11 +95,13 @@ func (s *Store) Append(ctx context.Context, id string, messages ...domain.Messag
 		}
 
 		_, err := s.pool.Exec(ctx, `
-			INSERT INTO conversation_messages (conv_id, role, content, tool_calls, tool_call_id, name)
-			VALUES ($1, $2, $3, $4, $5, $6)
-		`, id, string(msg.Role), content, toolJSON, msg.ToolCallID, msg.Name)
+			INSERT INTO conversation_messages
+				(agent_id, identity_id, chat_id, thread_id, role, content, tool_calls, tool_call_id, name)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		`, key.AgentID, key.IdentityID, key.ChatID, key.ThreadID,
+			string(msg.Role), content, toolJSON, msg.ToolCallID, msg.Name)
 		if err != nil {
-			log.Printf("memory: insert %q role=%s: %v", id, msg.Role, err)
+			log.Printf("memory: insert agent=%s chat=%s role=%s: %v", key.AgentID, key.ChatID, msg.Role, err)
 		}
 	}
 }

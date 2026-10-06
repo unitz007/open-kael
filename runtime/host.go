@@ -848,10 +848,15 @@ func (h *Host) HandleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 	// Resolve executor early for streaming delivery.
 	executor, identity, connRef := h.resolveExecutorForConv(ctx, hosted, conv)
 
-	memKey := conv.Provider + ":" + conv.ChatID + ":" + conv.ThreadID
+	convKey := domain.ConversationKey{
+		AgentID:    hosted.Agent.ID,
+		IdentityID: conv.IdentityID,
+		ChatID:     conv.ChatID,
+		ThreadID:   conv.ThreadID,
+	}
 	var prior []domain.Message
 	if hosted.Deps.Memory != nil {
-		prior = hosted.Deps.Memory.History(ctx, memKey)
+		prior = hosted.Deps.Memory.History(ctx, convKey)
 	}
 
 	var userInstructions string
@@ -895,7 +900,7 @@ func (h *Host) HandleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 	}
 
 	if hosted.Deps.Memory != nil && len(final) >= 1+len(prior) {
-		hosted.Deps.Memory.Append(ctx, memKey, final[1+len(prior):]...)
+		hosted.Deps.Memory.Append(ctx, convKey, final[1+len(prior):]...)
 	}
 
 	if err != nil {
