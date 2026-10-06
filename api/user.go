@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"regexp"
 	"time"
@@ -79,8 +80,7 @@ func (s *Server) registerUser(w http.ResponseWriter, r *http.Request) {
 		link := fmt.Sprintf("%s/verify?token=%s", s.appURL, verificationToken)
 		body := verificationEmailHTML(req.FirstName, link)
 		if err := s.mailer.Send(r.Context(), req.Email, "Verify your email address", body); err != nil {
-			// Don't fail the signup — log and let the user request a resend later.
-			_ = err
+			log.Printf("email verification: send to %s: %v", req.Email, err)
 		}
 	}
 
