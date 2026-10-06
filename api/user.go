@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"net/http"
+	"regexp"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -12,9 +13,13 @@ import (
 	"github.com/unitz007/open-kael/domain"
 )
 
+var emailRE = regexp.MustCompile(`^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$`)
+
 type registerRequest struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
+	Email     string `json:"email"`
+	Password  string `json:"password"`
+	FirstName string `json:"first_name"`
+	LastName  string `json:"last_name"`
 }
 
 type loginRequest struct {
@@ -33,8 +38,12 @@ func (s *Server) registerUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	if req.Email == "" || req.Password == "" {
-		writeError(w, http.StatusBadRequest, errors.New("email and password are required"))
+	switch {
+	case req.Email == "" || req.Password == "" || req.FirstName == "" || req.LastName == "":
+		writeError(w, http.StatusBadRequest, errors.New("email, password, first_name, and last_name are required"))
+		return
+	case !emailRE.MatchString(req.Email):
+		writeError(w, http.StatusBadRequest, errors.New("invalid email address"))
 		return
 	}
 
@@ -47,6 +56,8 @@ func (s *Server) registerUser(w http.ResponseWriter, r *http.Request) {
 	user := &domain.User{
 		ID:           newID(),
 		Email:        req.Email,
+		FirstName:    req.FirstName,
+		LastName:     req.LastName,
 		PasswordHash: string(hash),
 	}
 	if err := s.store.SaveUser(r.Context(), user); err != nil {
