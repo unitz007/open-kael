@@ -457,7 +457,11 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 	if h.settingsFlow != nil && isSettingsCommand(msg.Text) {
 		if executor, ok := h.executorForMessage(hosted, msg); ok {
 			if provider, ok := executor.(domain.SettingsMenuProvider); ok {
-				h.settingsFlow.Open(ctx, provider, hosted, msg.Conversation.IdentityID, msg.Conversation.ChatID, msg.Conversation.UserID)
+				sCtx := ctx
+				if identity, ok := hosted.Deps.IdentitiesByID[msg.Conversation.IdentityID]; ok {
+					sCtx = domain.WithBotCredentialRef(ctx, identity.CredentialRef)
+				}
+				h.settingsFlow.Open(sCtx, provider, hosted, msg.Conversation.IdentityID, msg.Conversation.ChatID, msg.Conversation.UserID)
 				return
 			}
 		}
@@ -579,7 +583,11 @@ func (h *Host) handleCallbackQuery(ctx context.Context, hosted *HostedAgent, msg
 		if !ok {
 			return
 		}
-		h.settingsFlow.Handle(ctx, provider, hosted,
+		sCtx := ctx
+		if identity, ok := hosted.Deps.IdentitiesByID[msg.Conversation.IdentityID]; ok {
+			sCtx = domain.WithBotCredentialRef(ctx, identity.CredentialRef)
+		}
+		h.settingsFlow.Handle(sCtx, provider, hosted,
 			msg.Conversation.IdentityID, msg.Conversation.ChatID,
 			cq.MessageID, msg.Conversation.UserID, action)
 

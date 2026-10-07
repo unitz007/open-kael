@@ -237,6 +237,7 @@ type ctxUserID struct{}
 type ctxCallerIdentity struct{}
 type ctxUserToolApprovals struct{}
 type ctxConnectToolName struct{}
+type ctxBotCredentialRef struct{}
 
 // WithConnectionRefs stores a map of identityID → connectionRef in ctx so
 // BoundAction invocations can resolve the current user's credential at call
@@ -331,4 +332,19 @@ func withUserApprovalGate(def *ToolDefinition, inner func(ctx context.Context, i
 		}
 		return inner(ctx, input)
 	}
+}
+
+// WithBotCredentialRef stores the bot identity's credential ref in ctx so
+// messenger provider methods (e.g. PostSettingsMenu) can resolve the bot
+// token without needing the full Identity object passed on the call.
+// The runtime host sets this per-call from the Identity that owns the conversation.
+func WithBotCredentialRef(ctx context.Context, ref string) context.Context {
+	return context.WithValue(ctx, ctxBotCredentialRef{}, ref)
+}
+
+// BotCredentialRefFromContext retrieves the bot credential ref set by
+// WithBotCredentialRef. Returns ("", false) when not set.
+func BotCredentialRefFromContext(ctx context.Context) (string, bool) {
+	ref, ok := ctx.Value(ctxBotCredentialRef{}).(string)
+	return ref, ok && ref != ""
 }
