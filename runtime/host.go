@@ -437,8 +437,10 @@ func (h *Host) SetUserChannelsByIdentityLoader(f func(ctx context.Context, userI
 func (h *Host) OnIntegrationConnected(ctx context.Context, userID, identityID string) {
 	// Replay any turn that was interrupted by the auth gate for this user+identity.
 	key := userID + ":" + identityID
+	log.Printf("runtime: OnIntegrationConnected: user=%q identity=%q key=%q", userID, identityID, key)
 	if val, ok := h.pendingAuthTurns.LoadAndDelete(key); ok {
 		pending := val.(pendingAuthTurn)
+		log.Printf("runtime: OnIntegrationConnected: found pending turn agent=%q message=%q — replaying", pending.agentID, pending.userMessage)
 		h.mu.RLock()
 		hosted := h.agents[pending.agentID]
 		h.mu.RUnlock()
@@ -452,6 +454,7 @@ func (h *Host) OnIntegrationConnected(ctx context.Context, userID, identityID st
 		}
 		return
 	}
+	log.Printf("runtime: OnIntegrationConnected: no pending turn for key=%q — sending connected message", key)
 
 	if h.userChannelsByIdentityLoader == nil {
 		return
@@ -1296,13 +1299,16 @@ func (h *Host) resolveConnectRequester(ctx context.Context, hosted *HostedAgent,
 		// Store the turn for replay once the user connects. The original user
 		// message comes from context (set by listen.go before HandleTurn).
 		userMessage := domain.OriginalMessageFromContext(ctx)
+		key := userID + ":" + identity.ID
 		if userMessage != "" {
-			key := userID + ":" + identity.ID
 			h.pendingAuthTurns.Store(key, pendingAuthTurn{
 				conv:        conv,
 				agentID:     hosted.Agent.ID,
 				userMessage: userMessage,
 			})
+			log.Printf("runtime: auth gate: stored pending turn key=%q message=%q", key, userMessage)
+		} else {
+			log.Printf("runtime: auth gate: no original message in context — turn will NOT be replayed (key=%q)", key)
 		}
 
 		return "", nil // non-blocking — OnIntegrationConnected replays the turn
