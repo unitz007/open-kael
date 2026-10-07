@@ -42,7 +42,7 @@ func HydrateTool(def *ToolDefinition, identity *Identity, integration *Integrati
 	// Auth gate: if identity requires a user connection ref and none is set,
 	// prompt the user to connect their account before executing the tool.
 	if identity != nil {
-		invoke = withAuthGate(identity, invoke)
+		invoke = withAuthGate(identity, def.Name, invoke)
 	}
 	// User-level approval gate runs first (checked at call time from context)
 	// so a user can add approval to any tool regardless of its definition.
@@ -155,6 +155,14 @@ func HydrateSkillTools(skill *Skill, agent *Agent, toolsByID map[string]*ToolDef
 	return bound, nil
 }
 
+// ConnectToolNameFromContext retrieves the name of the tool that triggered the
+// auth gate, set by withAuthGate so the ConnectRequester can craft a contextual
+// connect prompt. Returns empty string when not set.
+func ConnectToolNameFromContext(ctx context.Context) string {
+	name, _ := ctx.Value(ctxConnectToolName{}).(string)
+	return name
+}
+
 // withAuthGate wraps invoke with a just-in-time authentication check. When the
 // user's connectionRef for identity is empty, it asks the user to connect their
 // account (via ConnectRequester from context) and blocks until connected or the
@@ -162,7 +170,9 @@ func HydrateSkillTools(skill *Skill, agent *Agent, toolsByID map[string]*ToolDef
 // so the inner invoke picks it up via ConnectionRefFromContext and calls the
 // executor with the real credential. Falls through silently when no
 // ConnectRequester is attached (e.g. cron/event runs with no user in context).
-func withAuthGate(identity *Identity, inner func(ctx context.Context, input map[string]any) (any, error)) func(ctx context.Context, input map[string]any) (any, error) {
+// toolName is stored in context so the ConnectRequester can reference the
+// triggering tool in its connect prompt.
+func withAuthGate(identity *Identity, toolName string, inner func(ctx context.Context, input map[string]any) (any, error)) func(ctx context.Context, input map[string]any) (any, error) {
 	return func(ctx context.Context, input map[string]any) (any, error) {
 		connectionRef, _ := ConnectionRefFromContext(ctx, identity.ID)
 		if connectionRef != "" {
@@ -177,6 +187,9 @@ func withAuthGate(identity *Identity, inner func(ctx context.Context, input map[
 			return inner(ctx, input)
 		}
 		userID := UserIDFromContext(ctx)
+		if toolName != "" {
+			ctx = context.WithValue(ctx, ctxConnectToolName{}, toolName)
+		}
 		newRef, err := requester.RequestConnect(ctx, conv, identity, userID)
 		if err != nil {
 			return nil, fmt.Errorf("tool requires authentication — %w", err)
@@ -223,6 +236,7 @@ type ctxConnectionRefs struct{}
 type ctxUserID struct{}
 type ctxCallerIdentity struct{}
 type ctxUserToolApprovals struct{}
+type ctxConnectToolName struct{}
 
 // WithConnectionRefs stores a map of identityID → connectionRef in ctx so
 // BoundAction invocations can resolve the current user's credential at call

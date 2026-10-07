@@ -419,7 +419,7 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 						integrationName = name
 					}
 				}
-				text, buttonLabel := h.connectPrompt(ctx, hosted.Agent, hosted.Agent.LLMs, integrationName)
+				text, buttonLabel := h.connectPrompt(ctx, hosted.Agent, hosted.Agent.LLMs, integrationName, "")
 				var extra map[string]any
 				if !isLocalhostURL(connectURL) {
 					extra = map[string]any{

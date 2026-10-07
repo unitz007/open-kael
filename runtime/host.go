@@ -513,22 +513,32 @@ func (h *Host) connectedMessage(ctx context.Context, agent *domain.Agent, llms [
 
 // connectPrompt generates a friendly message asking the user to connect their
 // integration account, using the LLM when one is available.
+// toolName is the name of the tool that triggered the auth gate — when provided
+// the LLM prompt references the specific action so the message is contextual
+// rather than generic.
 // Returns (messageText, buttonLabel).
-func (h *Host) connectPrompt(ctx context.Context, agent *domain.Agent, llms []domain.LLM, integrationName string) (text, buttonLabel string) {
+func (h *Host) connectPrompt(ctx context.Context, agent *domain.Agent, llms []domain.LLM, integrationName, toolName string) (text, buttonLabel string) {
 	buttonLabel = "Connect " + integrationName + " account"
 	if len(llms) > 0 && integrationName != "" {
-		prompt := fmt.Sprintf(
-			"You are %s.", agent.Name,
-		)
+		prompt := fmt.Sprintf("You are %s.", agent.Name)
 		if agent.Description != "" {
 			prompt += " " + agent.Description
 		}
-		prompt += fmt.Sprintf(
-			"\n\nThe user needs to connect their %s account to unlock your full capabilities. "+
-				"Write a short, friendly message (1-2 sentences) asking them to tap the button below to connect it. "+
-				"Plain text only — no markdown.",
-			integrationName,
-		)
+		if toolName != "" {
+			prompt += fmt.Sprintf(
+				"\n\nThe user just tried to use the \"%s\" tool, which requires their %s account. "+
+					"Write a short, friendly message (1-2 sentences) explaining what they were trying to do and asking them to tap the button below to connect their %s account. "+
+					"Plain text only — no markdown.",
+				toolName, integrationName, integrationName,
+			)
+		} else {
+			prompt += fmt.Sprintf(
+				"\n\nThe user needs to connect their %s account to continue. "+
+					"Write a short, friendly message (1-2 sentences) asking them to tap the button below to connect it. "+
+					"Plain text only — no markdown.",
+				integrationName,
+			)
+		}
 		msgs := []domain.Message{{Role: domain.RoleUser, Content: prompt}}
 		if resp, err := llms[0].Call(ctx, msgs, nil); err == nil && resp.Content != "" {
 			return resp.Content, buttonLabel
@@ -1255,7 +1265,8 @@ func (h *Host) resolveConnectRequester(ctx context.Context, hosted *HostedAgent,
 			}
 		}
 
-		promptText, buttonLabel := h.connectPrompt(ctx, hosted.Agent, hosted.Agent.LLMs, integrationName)
+		toolName := domain.ConnectToolNameFromContext(ctx)
+		promptText, buttonLabel := h.connectPrompt(ctx, hosted.Agent, hosted.Agent.LLMs, integrationName, toolName)
 		var extra map[string]any
 		if url != "" && !isLocalhostURL(url) {
 			extra = map[string]any{
