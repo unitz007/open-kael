@@ -176,7 +176,11 @@ func (f *SettingsFlow) buildMainMenu(ctx context.Context, hosted *HostedAgent, a
 	rows = append(rows, domain.SettingsRow{Label: "📝 Personal Instructions", Callback: "kael_sm:instructions"})
 	rows = append(rows, domain.SettingsRow{Label: "Close", Callback: "kael_sm:close"})
 
-	return &domain.SettingsMenu{Title: "⚙️ Agent Settings", Rows: rows}
+	title := "⚙️ Agent Settings\n\n" +
+		"Here you can control how your agent behaves:\n\n" +
+		"• Tap an integration to choose which tools ask for your approval before they run.\n" +
+		"• Set Personal Instructions to tell the agent about yourself."
+	return &domain.SettingsMenu{Title: title, Rows: rows}
 }
 
 // buildToolListMenu constructs the paginated tool-approval screen for one integration.
@@ -214,6 +218,7 @@ func (f *SettingsFlow) buildToolListMenu(hosted *HostedAgent, integrationID stri
 	if totalPages > 1 {
 		title = fmt.Sprintf("%s  (%d/%d)", title, page+1, totalPages)
 	}
+	title += "\n\nTap a tool to toggle whether the agent asks for your approval before using it. ✅ means approval required."
 
 	rows := make([]domain.SettingsRow, 0, len(pageTools)+3)
 	for _, t := range pageTools {
