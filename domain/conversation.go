@@ -59,6 +59,7 @@ const (
 	conversationCtxKey ctxKey = iota
 	approvalRequesterCtxKey
 	connectRequesterCtxKey
+	originalMessageCtxKey
 )
 
 // WithConversation/ConversationFromContext thread the active conversation
@@ -98,8 +99,10 @@ func ApprovalRequesterFromContext(ctx context.Context) (ApprovalRequester, bool)
 // ConnectRequester is what a runtime host attaches to ctx (see
 // WithConnectRequester) so HydrateTool's auth gate can prompt a user to
 // connect their account when a tool needs a connectionRef that isn't set yet.
-// The call blocks until the user connects (or times out), returning the fresh
-// connectionRef on success so the tool can immediately retry.
+// RequestConnect sends the connect prompt and returns immediately — it does
+// NOT block. An empty connectionRef with a nil error means the prompt was
+// delivered and the turn should end gracefully; the host will replay the turn
+// once the user connects via OnIntegrationConnected.
 type ConnectRequester interface {
 	RequestConnect(ctx context.Context, conv ConversationRef, identity *Identity, userID string) (connectionRef string, err error)
 }
@@ -111,6 +114,19 @@ func WithConnectRequester(ctx context.Context, r ConnectRequester) context.Conte
 func ConnectRequesterFromContext(ctx context.Context) (ConnectRequester, bool) {
 	r, ok := ctx.Value(connectRequesterCtxKey).(ConnectRequester)
 	return r, ok
+}
+
+// WithOriginalMessage stores the user's original message text in ctx so the
+// auth gate can pass it to the ConnectRequester for turn replay on connection.
+func WithOriginalMessage(ctx context.Context, text string) context.Context {
+	return context.WithValue(ctx, originalMessageCtxKey, text)
+}
+
+// OriginalMessageFromContext retrieves the user's original message set by
+// WithOriginalMessage. Returns empty string when not set.
+func OriginalMessageFromContext(ctx context.Context) string {
+	text, _ := ctx.Value(originalMessageCtxKey).(string)
+	return text
 }
 
 // InteractiveMessenger is the provider-specific sliver a real,

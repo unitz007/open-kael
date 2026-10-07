@@ -195,7 +195,7 @@ func withAuthGate(identity *Identity, toolName string, inner func(ctx context.Co
 			return nil, fmt.Errorf("tool requires authentication — %w", err)
 		}
 		if newRef == "" {
-			return "authentication required — please connect your account and try again", nil
+			return "connecting — I've sent the user a button to connect their account; once connected the request will be retried automatically. Call finish now.", nil
 		}
 		// Inject the new ref so the inner executor call picks it up.
 		refs, _ := ctx.Value(ctxConnectionRefs{}).(map[string]string)

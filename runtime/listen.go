@@ -504,6 +504,7 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 	if msg.MessageID != "" {
 		msg.Conversation.MessageID = msg.MessageID
 	}
+	ctx = domain.WithOriginalMessage(ctx, msg.Text)
 	if _, err := h.HandleTurn(ctx, hosted, msg.Conversation, msg.Text); err != nil {
 		log.Printf("runtime: agent %q: handling message from identity %s chat %s: %v", hosted.Agent.ID, msg.Conversation.IdentityID, msg.Conversation.ChatID, err)
 	}

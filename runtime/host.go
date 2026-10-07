@@ -18,6 +18,14 @@ import (
 	"github.com/unitz007/open-kael/domain"
 )
 
+// pendingAuthTurn holds the state needed to replay a turn that was interrupted
+// by the auth gate — the original user message, conversation, and agent.
+type pendingAuthTurn struct {
+	conv        domain.ConversationRef
+	agentID     string
+	userMessage string
+}
+
 // AgentDeps is everything a HostedAgent needs beyond domain.Agent itself to
 // actually run — the lookup maps domain.HydrateSkillTools needs, plus an
 // optional Memory. Kept separate from domain.Agent because these are
@@ -144,9 +152,11 @@ type Host struct {
 	// OnIntegrationConnected to deliver post-connection messages.
 	userChannelsByIdentityLoader func(ctx context.Context, userID, identityID string) (channelRefs []string, err error)
 
-	// pendingConnects tracks in-progress just-in-time auth gate waits.
-	// Key is "userID:identityID"; value is chan string (receives connectionRef).
-	pendingConnects sync.Map
+	// pendingAuthTurns tracks turns that were interrupted by the auth gate.
+	// Key is "userID:identityID"; value is pendingAuthTurn.
+	// When OnIntegrationConnected fires, the stored turn is replayed in a
+	// fresh goroutine so the agent can continue where it left off.
+	pendingAuthTurns sync.Map
 
 	// pendingSetups tracks in-progress in-bot credential collection flows.
 	// Key is "identityID:chatID"; value is *pendingCredential.
@@ -420,23 +430,27 @@ func (h *Host) SetUserChannelsByIdentityLoader(f func(ctx context.Context, userI
 }
 
 // OnIntegrationConnected is called after a user successfully connects an
-// integration. If a turn is blocked in an auth gate waiting for this connection,
-// it unblocks it with the fresh connectionRef and returns — the agent will
-// deliver its response naturally. Otherwise it finds the user's channels,
-// generates an LLM confirmation message, and delivers it. Safe to call in a goroutine.
+// integration. If the auth gate stored a pending turn for this user+identity,
+// it replays the turn in a fresh goroutine so the agent continues where it left
+// off. Otherwise it finds the user's channels, generates an LLM confirmation
+// message, and delivers it. Safe to call in a goroutine.
 func (h *Host) OnIntegrationConnected(ctx context.Context, userID, identityID string) {
-	// Unblock any blocked auth gate waiter for this user+identity.
+	// Replay any turn that was interrupted by the auth gate for this user+identity.
 	key := userID + ":" + identityID
-	if val, ok := h.pendingConnects.LoadAndDelete(key); ok {
-		ch := val.(chan string)
-		var newRef string
-		if h.userConnectionRefLoader != nil {
-			if refs, err := h.userConnectionRefLoader(ctx, userID); err == nil {
-				newRef = refs[identityID]
-			}
+	if val, ok := h.pendingAuthTurns.LoadAndDelete(key); ok {
+		pending := val.(pendingAuthTurn)
+		h.mu.RLock()
+		hosted := h.agents[pending.agentID]
+		h.mu.RUnlock()
+		if hosted != nil {
+			replayCtx := domain.WithOriginalMessage(context.Background(), pending.userMessage)
+			go func() {
+				if _, err := h.HandleTurn(replayCtx, hosted, pending.conv, pending.userMessage); err != nil {
+					log.Printf("runtime: replay turn after auth for user %q identity %q: %v", userID, identityID, err)
+				}
+			}()
 		}
-		ch <- newRef
-		return // agent will respond naturally through the tool result
+		return
 	}
 
 	if h.userChannelsByIdentityLoader == nil {
@@ -1244,10 +1258,9 @@ func skillDisplayName(name string) string {
 
 // resolveConnectRequester returns a domain.ConnectRequester for the given turn
 // when the host has a connectURLGenerator and a real user in context. The
-// returned requester generates a connect URL, delivers a prompt to the user,
-// then blocks until OnIntegrationConnected signals for that user+identity (or
-// defaultApprovalTimeout elapses). Returns nil when the host isn't configured
-// for connect flows or there is no user in context.
+// returned requester generates a connect URL, delivers the prompt, stores the
+// pending turn for replay, and returns immediately (non-blocking). Returns nil
+// when the host isn't configured for connect flows or there is no user in context.
 func (h *Host) resolveConnectRequester(ctx context.Context, hosted *HostedAgent, conv domain.ConversationRef, userID string) domain.ConnectRequester {
 	if h.connectURLGenerator == nil || userID == "" {
 		return nil
@@ -1280,24 +1293,19 @@ func (h *Host) resolveConnectRequester(ctx context.Context, hosted *HostedAgent,
 		}
 		h.deliverBestEffort(ctx, hosted, conv, promptText, extra)
 
-		ch := make(chan string, 1)
-		key := userID + ":" + identity.ID
-		h.pendingConnects.Store(key, ch)
-		defer h.pendingConnects.Delete(key)
-
-		waitCtx, cancel := context.WithTimeout(ctx, defaultApprovalTimeout)
-		defer cancel()
-
-		select {
-		case ref := <-ch:
-			return ref, nil
-		case <-waitCtx.Done():
-			what := integrationName
-			if what == "" {
-				what = "the integration"
-			}
-			return "", fmt.Errorf("timed out waiting for %s connection", what)
+		// Store the turn for replay once the user connects. The original user
+		// message comes from context (set by listen.go before HandleTurn).
+		userMessage := domain.OriginalMessageFromContext(ctx)
+		if userMessage != "" {
+			key := userID + ":" + identity.ID
+			h.pendingAuthTurns.Store(key, pendingAuthTurn{
+				conv:        conv,
+				agentID:     hosted.Agent.ID,
+				userMessage: userMessage,
+			})
 		}
+
+		return "", nil // non-blocking — OnIntegrationConnected replays the turn
 	})
 }
 
