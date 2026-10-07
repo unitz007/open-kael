@@ -219,6 +219,14 @@ type Host struct {
 	// instructions prompt (ForceReply or text fallback) and are waiting for
 	// the user's reply. Key is "identityID:chatID"; value is pendingInstructionsState.
 	pendingInstructions sync.Map
+
+	// profileExtractor, when set, is called in a background goroutine after each
+	// successful turn whose user message is long enough to plausibly contain new
+	// personal information. It receives the user's message, the agent's response,
+	// and the user's current stored instructions, and returns the updated profile
+	// (or unchanged=true when nothing new was found). Only called when
+	// userAgentConfigSetter is also set.
+	profileExtractor func(ctx context.Context, userID, agentID, userMessage, agentResponse, currentProfile string) (updatedProfile string, unchanged bool, err error)
 }
 
 // SkillRouter picks the right skill(s) for an inbound message. Any classifier
@@ -374,6 +382,16 @@ func (h *Host) SetUserAgentConfigLoader(f func(ctx context.Context, userID, agen
 // SendInstructionsPrompt as the user's new instructions.
 func (h *Host) SetUserAgentConfigSetter(f func(ctx context.Context, userID, agentID, instructions string) error) {
 	h.userAgentConfigSetter = f
+}
+
+// SetProfileExtractor registers a function that extracts new user facts from a
+// completed turn and updates the stored profile when new information is found.
+// It runs in a background goroutine after each turn whose user message is
+// substantial enough (>= 8 words) to plausibly contain personal information.
+// The function must return unchanged=true when nothing new was found, to avoid
+// spurious writes. Only called when SetUserAgentConfigSetter is also set.
+func (h *Host) SetProfileExtractor(f func(ctx context.Context, userID, agentID, userMessage, agentResponse, currentProfile string) (updatedProfile string, unchanged bool, err error)) {
+	h.profileExtractor = f
 }
 
 // ReloadAgentCommands replaces the Commands slice on a registered HostedAgent.
@@ -999,13 +1017,56 @@ func (h *Host) HandleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 				log.Printf("runtime: agent %q: stream reply failed, falling back: %v", hosted.Agent.ID, serr)
 				h.deliverBestEffort(ctx, hosted, conv, content)
 			}
+			h.maybeExtractProfile(conv.UserID, hosted.Agent.ID, userText, content, userInstructions)
 			return result, nil
 		}
 		log.Printf("runtime: agent %q: executor does not implement StreamingMessenger, using atomic send", hosted.Agent.ID)
 	}
 	h.deliverBestEffort(ctx, hosted, conv, content)
+	h.maybeExtractProfile(conv.UserID, hosted.Agent.ID, userText, content, userInstructions)
 
 	return result, nil
+}
+
+// maybeExtractProfile fires the profileExtractor in a background goroutine when
+// the user's message is long enough to plausibly contain new personal information.
+func (h *Host) maybeExtractProfile(userID, agentID, userMessage, agentResponse, currentProfile string) {
+	if userID == "" || h.profileExtractor == nil || h.userAgentConfigSetter == nil {
+		return
+	}
+	if !isSubstantialMessage(userMessage) {
+		return
+	}
+	go func() {
+		ctx := context.Background()
+		updated, unchanged, err := h.profileExtractor(ctx, userID, agentID, userMessage, agentResponse, currentProfile)
+		if err != nil {
+			log.Printf("runtime: profile extractor user %s agent %s: %v", userID, agentID, err)
+			return
+		}
+		if unchanged || updated == "" {
+			return
+		}
+		if err := h.userAgentConfigSetter(ctx, userID, agentID, updated); err != nil {
+			log.Printf("runtime: profile extractor: save profile user %s agent %s: %v", userID, agentID, err)
+		}
+	}()
+}
+
+// isSubstantialMessage returns true when s is long enough to plausibly contain
+// new personal information worth extracting — a rough proxy to avoid firing the
+// profile extractor on one-word replies and short acknowledgements.
+func isSubstantialMessage(s string) bool {
+	if len(s) < 60 {
+		return false
+	}
+	words := 0
+	for _, r := range s {
+		if r == ' ' || r == '\n' || r == '\t' {
+			words++
+		}
+	}
+	return words >= 7 // >= 8 words (spaces = words-1)
 }
 
 // resolveExecutorForConv looks up the Executor and Identity for a conversation

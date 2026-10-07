@@ -100,6 +100,11 @@ CREATE INDEX IF NOT EXISTS idx_messenger_channels_user_id ON messenger_channels 
 ALTER TABLE messenger_channels ADD COLUMN IF NOT EXISTS onboarding_prompted_at TIMESTAMPTZ;
 ALTER TABLE messenger_channels ADD COLUMN IF NOT EXISTS onboarded_at TIMESTAMPTZ;
 
+-- Backfill: channels that existed before onboarding was introduced have NULL
+-- onboarded_at. Treat them as already onboarded so returning users don't get
+-- the intro prompt. Idempotent — only updates rows that are still NULL.
+UPDATE messenger_channels SET onboarded_at = NOW() WHERE onboarded_at IS NULL;
+
 CREATE TABLE IF NOT EXISTS channel_link_codes (
     code        TEXT PRIMARY KEY,
     identity_id TEXT NOT NULL DEFAULT '',
