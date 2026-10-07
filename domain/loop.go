@@ -25,7 +25,7 @@ const (
 	llmBaseBackoff         = time.Second
 	llmCooldown            = 60 * time.Second
 	maxConsecutiveFailures = 3
-	maxSameActionCalls     = 5
+	maxSameActionCalls     = 15
 	maxToolCallsPerIter    = 10
 )
 
