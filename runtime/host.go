@@ -1045,8 +1045,10 @@ func (h *Host) maybeExtractProfile(userID, agentID, userMessage, agentResponse, 
 			return
 		}
 		if unchanged || updated == "" {
+			log.Printf("runtime: profile extractor user %s agent %s: no new facts", userID, agentID)
 			return
 		}
+		log.Printf("runtime: profile extractor user %s agent %s: new facts found, saving profile (%d chars)", userID, agentID, len(updated))
 		if err := h.userAgentConfigSetter(ctx, userID, agentID, updated); err != nil {
 			log.Printf("runtime: profile extractor: save profile user %s agent %s: %v", userID, agentID, err)
 		}
