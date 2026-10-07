@@ -265,6 +265,9 @@ ALTER TABLE conversation_messages ADD COLUMN IF NOT EXISTS identity_id TEXT NOT 
 ALTER TABLE conversation_messages ADD COLUMN IF NOT EXISTS chat_id     TEXT NOT NULL DEFAULT '';
 ALTER TABLE conversation_messages ADD COLUMN IF NOT EXISTS thread_id   TEXT NOT NULL DEFAULT '';
 
+-- Drop legacy conv_id FK column (references the old conversations.id that no longer exists).
+ALTER TABLE conversation_messages DROP COLUMN IF EXISTS conv_id;
+
 CREATE INDEX IF NOT EXISTS idx_conv_messages_composite
     ON conversation_messages (agent_id, identity_id, chat_id, thread_id, id);
 
