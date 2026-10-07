@@ -272,6 +272,14 @@ CREATE TABLE IF NOT EXISTS user_agent_configs (
     PRIMARY KEY (user_id, agent_id)
 );
 
+-- platform_config: generic key/value store for platform-level settings that
+-- must survive restarts (e.g. rotating OAuth refresh tokens). Keys are
+-- short lowercase identifiers like "slack_configurator_refresh_token".
+CREATE TABLE IF NOT EXISTS platform_config (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT ''
+);
+
 -- user_tool_approvals: per-user approval preferences for tools.
 -- Presence of a row means the user wants a human-approval gate on that tool
 -- even when ToolDefinition.RequiresApproval is false.

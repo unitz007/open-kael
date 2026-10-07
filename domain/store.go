@@ -115,6 +115,12 @@ type Store interface {
 	// messenger_channel row identified by (identityID, channelRef).
 	MarkMessengerChannelOnboarded(ctx context.Context, identityID, channelRef string) error
 
+	// PlatformConfig — generic key/value store for platform-level settings that
+	// must persist across restarts (e.g. rotating OAuth refresh tokens).
+	// GetPlatformConfig returns ErrNotFound when the key has not been set.
+	GetPlatformConfig(ctx context.Context, key string) (string, error)
+	SetPlatformConfig(ctx context.Context, key, value string) error
+
 	// LoadAll is the boot-time bulk loader: returns every Agent (with Skills),
 	// every ToolDefinition keyed by ID, every Identity keyed by ID, and every
 	// Integration keyed by ID (with its Identities and Tools populated).
