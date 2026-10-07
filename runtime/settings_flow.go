@@ -248,6 +248,7 @@ func (f *SettingsFlow) buildToolListMenu(hosted *HostedAgent, integrationID stri
 		})
 	}
 	rows = append(rows, domain.SettingsRow{Label: "← Back", Callback: "kael_sm:nav:main"})
+	rows = append(rows, domain.SettingsRow{Label: "Close", Callback: "kael_sm:close"})
 
 	return &domain.SettingsMenu{Title: title, Rows: rows}
 }
