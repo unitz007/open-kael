@@ -979,6 +979,11 @@ func (h *Host) HandleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 	case content != "":
 		// use as-is
 	case result.Status == domain.LoopStatusComplete:
+		// Empty content on complete means the turn was deliberately silent
+		// (e.g. auth_pending: the connect prompt was already delivered).
+		if content == "" {
+			return result, nil
+		}
 		content = "Done — the task completed, but I didn't leave a summary."
 	default:
 		content = "Sorry, I ran into an error and couldn't finish handling that. Please try again."
