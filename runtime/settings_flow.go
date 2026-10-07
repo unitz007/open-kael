@@ -50,7 +50,7 @@ func (f *SettingsFlow) Open(ctx context.Context, provider domain.SettingsMenuPro
 	}
 	sessionKey := identityID + ":" + channelRef
 	f.sessions.Store(sessionKey, &menuSession{})
-	menu := f.buildMainMenu(hosted, approvals)
+	menu := f.buildMainMenu(ctx, hosted, approvals)
 	if _, err := provider.PostSettingsMenu(ctx, channelRef, menu); err != nil {
 		log.Printf("runtime: settings: post menu channel %s: %v", channelRef, err)
 	}
@@ -71,7 +71,7 @@ func (f *SettingsFlow) Handle(ctx context.Context, provider domain.SettingsMenuP
 	case action == "nav:main":
 		f.sessions.Store(sessionKey, &menuSession{})
 		approvals, _ := f.getApprovals(ctx, userID)
-		menu := f.buildMainMenu(hosted, approvals)
+		menu := f.buildMainMenu(ctx, hosted, approvals)
 		_ = provider.UpdateSettingsMenu(ctx, channelRef, messageID, menu)
 
 	case strings.HasPrefix(action, "nav:tools:"):
@@ -110,20 +110,21 @@ func (f *SettingsFlow) Handle(ctx context.Context, provider domain.SettingsMenuP
 		if sess.integrationID != "" {
 			menu = f.buildToolListMenu(hosted, sess.integrationID, sess.page, approvals)
 		} else {
-			menu = f.buildMainMenu(hosted, approvals)
+			menu = f.buildMainMenu(ctx, hosted, approvals)
 		}
 		_ = provider.UpdateSettingsMenu(ctx, channelRef, messageID, menu)
 	}
 }
 
 // buildMainMenu constructs the top-level settings screen.
-// It lists each integration that has at least one opt-in-able tool.
-func (f *SettingsFlow) buildMainMenu(hosted *HostedAgent, approvals map[string]bool) *domain.SettingsMenu {
+// It lists each integration that the user has connected and that has at least
+// one opt-in-able (non-mandatory) tool. Bot-level messenger integrations
+// (Telegram, Slack, etc.) are excluded since they are not user-configurable.
+func (f *SettingsFlow) buildMainMenu(ctx context.Context, hosted *HostedAgent, approvals map[string]bool) *domain.SettingsMenu {
 	rows := []domain.SettingsRow{}
 
-	// Bot-level integrations (the messenger channels themselves) are not user-
-	// configurable — skip their tools so users only see data integrations they
-	// connected themselves (e.g. FPL), not Telegram/Slack/Discord platform tools.
+	// Bot-level integrations (the messenger channels themselves) are not
+	// user-configurable — skip their tools.
 	botIntegrationIDs := map[string]bool{}
 	for _, identityID := range hosted.Agent.IdentityIDs {
 		if identity, ok := hosted.Deps.IdentitiesByID[identityID]; ok {
@@ -131,7 +132,14 @@ func (f *SettingsFlow) buildMainMenu(hosted *HostedAgent, approvals map[string]b
 		}
 	}
 
-	// Collect integrations that have at least one non-mandatory tool.
+	// Build a map of integrationID → identityID so we can check connection refs.
+	integrationToIdentity := map[string]string{}
+	for _, identity := range hosted.Deps.IdentitiesByID {
+		integrationToIdentity[identity.IntegrationID] = identity.ID
+	}
+
+	// Collect integrations that have at least one non-mandatory tool AND that
+	// the current user has actually connected (non-empty connection ref).
 	type integrationEntry struct {
 		id   string
 		name string
@@ -143,6 +151,11 @@ func (f *SettingsFlow) buildMainMenu(hosted *HostedAgent, approvals map[string]b
 			continue
 		}
 		if seen[tool.IntegrationID] {
+			continue
+		}
+		// Only show integrations the user has connected.
+		identityID := integrationToIdentity[tool.IntegrationID]
+		if ref, _ := domain.ConnectionRefFromContext(ctx, identityID); ref == "" {
 			continue
 		}
 		seen[tool.IntegrationID] = true
