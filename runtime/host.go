@@ -144,6 +144,10 @@ type Host struct {
 	// OnIntegrationConnected to deliver post-connection messages.
 	userChannelsByIdentityLoader func(ctx context.Context, userID, identityID string) (channelRefs []string, err error)
 
+	// pendingConnects tracks in-progress just-in-time auth gate waits.
+	// Key is "userID:identityID"; value is chan string (receives connectionRef).
+	pendingConnects sync.Map
+
 	// pendingSetups tracks in-progress in-bot credential collection flows.
 	// Key is "identityID:chatID"; value is *pendingCredential.
 	pendingSetups sync.Map
@@ -416,9 +420,25 @@ func (h *Host) SetUserChannelsByIdentityLoader(f func(ctx context.Context, userI
 }
 
 // OnIntegrationConnected is called after a user successfully connects an
-// integration. It finds the user's channels for that identity, generates an
-// LLM confirmation message, and delivers it. Safe to call in a goroutine.
+// integration. If a turn is blocked in an auth gate waiting for this connection,
+// it unblocks it with the fresh connectionRef and returns — the agent will
+// deliver its response naturally. Otherwise it finds the user's channels,
+// generates an LLM confirmation message, and delivers it. Safe to call in a goroutine.
 func (h *Host) OnIntegrationConnected(ctx context.Context, userID, identityID string) {
+	// Unblock any blocked auth gate waiter for this user+identity.
+	key := userID + ":" + identityID
+	if val, ok := h.pendingConnects.LoadAndDelete(key); ok {
+		ch := val.(chan string)
+		var newRef string
+		if h.userConnectionRefLoader != nil {
+			if refs, err := h.userConnectionRefLoader(ctx, userID); err == nil {
+				newRef = refs[identityID]
+			}
+		}
+		ch <- newRef
+		return // agent will respond naturally through the tool result
+	}
+
 	if h.userChannelsByIdentityLoader == nil {
 		return
 	}
@@ -851,6 +871,9 @@ func (h *Host) HandleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 	if requester, ok := resolveApprovalRequester(hosted, conv); ok {
 		ctx = domain.WithApprovalRequester(ctx, requester)
 	}
+	if cr := h.resolveConnectRequester(ctx, hosted, conv, conv.UserID); cr != nil {
+		ctx = domain.WithConnectRequester(ctx, cr)
+	}
 
 	// Resolve executor early for streaming delivery.
 	executor, identity, connRef := h.resolveExecutorForConv(ctx, hosted, conv)
@@ -1207,6 +1230,56 @@ func skillDisplayName(name string) string {
 		}
 	}
 	return strings.Join(words, " ")
+}
+
+// resolveConnectRequester returns a domain.ConnectRequester for the given turn
+// when the host has a connectURLGenerator and a real user in context. The
+// returned requester generates a connect URL, delivers a prompt to the user,
+// then blocks until OnIntegrationConnected signals for that user+identity (or
+// defaultApprovalTimeout elapses). Returns nil when the host isn't configured
+// for connect flows or there is no user in context.
+func (h *Host) resolveConnectRequester(ctx context.Context, hosted *HostedAgent, conv domain.ConversationRef, userID string) domain.ConnectRequester {
+	if h.connectURLGenerator == nil || userID == "" {
+		return nil
+	}
+	return connectRequesterFunc(func(ctx context.Context, conv domain.ConversationRef, identity *domain.Identity, userID string) (string, error) {
+		url, err := h.connectURLGenerator(ctx, userID, identity.ID)
+		if err != nil {
+			return "", fmt.Errorf("generate connect URL for identity %q: %w", identity.ID, err)
+		}
+
+		var integrationName string
+		if h.connectIntegrationNameLoader != nil {
+			if name, loadErr := h.connectIntegrationNameLoader(ctx, identity.ID); loadErr == nil {
+				integrationName = name
+			}
+		}
+
+		promptText, _ := h.connectPrompt(ctx, hosted.Agent, hosted.Agent.LLMs, integrationName)
+		if url != "" {
+			promptText += "\n\n" + url
+		}
+		h.deliverBestEffort(ctx, hosted, conv, promptText)
+
+		ch := make(chan string, 1)
+		key := userID + ":" + identity.ID
+		h.pendingConnects.Store(key, ch)
+		defer h.pendingConnects.Delete(key)
+
+		waitCtx, cancel := context.WithTimeout(ctx, defaultApprovalTimeout)
+		defer cancel()
+
+		select {
+		case ref := <-ch:
+			return ref, nil
+		case <-waitCtx.Done():
+			what := integrationName
+			if what == "" {
+				what = "the integration"
+			}
+			return "", fmt.Errorf("timed out waiting for %s connection", what)
+		}
+	})
 }
 
 // deliverBestEffort sends text back to conv via the Identity that received the

@@ -39,6 +39,11 @@ func HydrateTool(def *ToolDefinition, identity *Identity, integration *Integrati
 		}
 		return executor.Execute(ctx, identity, connectionRef, def.Action, input)
 	}
+	// Auth gate: if identity requires a user connection ref and none is set,
+	// prompt the user to connect their account before executing the tool.
+	if identity != nil {
+		invoke = withAuthGate(identity, invoke)
+	}
 	// User-level approval gate runs first (checked at call time from context)
 	// so a user can add approval to any tool regardless of its definition.
 	invoke = withUserApprovalGate(def, invoke)
@@ -150,16 +155,64 @@ func HydrateSkillTools(skill *Skill, agent *Agent, toolsByID map[string]*ToolDef
 	return bound, nil
 }
 
-// resolveIdentityForIntegration picks the first Identity from agent.IdentityIDs
-// whose IntegrationID matches integration.ID. Returns nil when the agent has
-// no identity configured for this integration (tool runs without app-level auth).
-func resolveIdentityForIntegration(agent *Agent, integration *Integration, identitiesByID map[string]*Identity) *Identity {
-	if agent == nil {
-		return nil
+// withAuthGate wraps invoke with a just-in-time authentication check. When the
+// user's connectionRef for identity is empty, it asks the user to connect their
+// account (via ConnectRequester from context) and blocks until connected or the
+// request times out. On success it injects the fresh connectionRef into context
+// so the inner invoke picks it up via ConnectionRefFromContext and calls the
+// executor with the real credential. Falls through silently when no
+// ConnectRequester is attached (e.g. cron/event runs with no user in context).
+func withAuthGate(identity *Identity, inner func(ctx context.Context, input map[string]any) (any, error)) func(ctx context.Context, input map[string]any) (any, error) {
+	return func(ctx context.Context, input map[string]any) (any, error) {
+		connectionRef, _ := ConnectionRefFromContext(ctx, identity.ID)
+		if connectionRef != "" {
+			return inner(ctx, input)
+		}
+		requester, ok := ConnectRequesterFromContext(ctx)
+		if !ok {
+			return inner(ctx, input)
+		}
+		conv, ok := ConversationFromContext(ctx)
+		if !ok {
+			return inner(ctx, input)
+		}
+		userID := UserIDFromContext(ctx)
+		newRef, err := requester.RequestConnect(ctx, conv, identity, userID)
+		if err != nil {
+			return nil, fmt.Errorf("tool requires authentication — %w", err)
+		}
+		if newRef == "" {
+			return "authentication required — please connect your account and try again", nil
+		}
+		// Inject the new ref so the inner executor call picks it up.
+		refs, _ := ctx.Value(ctxConnectionRefs{}).(map[string]string)
+		freshRefs := make(map[string]string, len(refs)+1)
+		for k, v := range refs {
+			freshRefs[k] = v
+		}
+		freshRefs[identity.ID] = newRef
+		return inner(WithConnectionRefs(ctx, freshRefs), input)
 	}
-	for _, identityID := range agent.IdentityIDs {
-		identity, ok := identitiesByID[identityID]
-		if ok && identity.IntegrationID == integration.ID {
+}
+
+// resolveIdentityForIntegration picks the first Identity from agent.IdentityIDs
+// whose IntegrationID matches integration.ID. When no agent-level identity is
+// found (user-auth-only integrations never appear in agent.IdentityIDs), it
+// falls back to searching identitiesByID so the auth gate can still resolve a
+// connectionRef and generate a connect URL for those integrations.
+func resolveIdentityForIntegration(agent *Agent, integration *Integration, identitiesByID map[string]*Identity) *Identity {
+	if agent != nil {
+		for _, identityID := range agent.IdentityIDs {
+			identity, ok := identitiesByID[identityID]
+			if ok && identity.IntegrationID == integration.ID {
+				return identity
+			}
+		}
+	}
+	// Fallback: find any identity for this integration — covers user-auth-only
+	// integrations whose identities are never added to agent.IdentityIDs.
+	for _, identity := range identitiesByID {
+		if identity.IntegrationID == integration.ID {
 			return identity
 		}
 	}

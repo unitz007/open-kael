@@ -58,6 +58,7 @@ type ctxKey int
 const (
 	conversationCtxKey ctxKey = iota
 	approvalRequesterCtxKey
+	connectRequesterCtxKey
 )
 
 // WithConversation/ConversationFromContext thread the active conversation
@@ -91,6 +92,24 @@ func WithApprovalRequester(ctx context.Context, r ApprovalRequester) context.Con
 
 func ApprovalRequesterFromContext(ctx context.Context) (ApprovalRequester, bool) {
 	r, ok := ctx.Value(approvalRequesterCtxKey).(ApprovalRequester)
+	return r, ok
+}
+
+// ConnectRequester is what a runtime host attaches to ctx (see
+// WithConnectRequester) so HydrateTool's auth gate can prompt a user to
+// connect their account when a tool needs a connectionRef that isn't set yet.
+// The call blocks until the user connects (or times out), returning the fresh
+// connectionRef on success so the tool can immediately retry.
+type ConnectRequester interface {
+	RequestConnect(ctx context.Context, conv ConversationRef, identity *Identity, userID string) (connectionRef string, err error)
+}
+
+func WithConnectRequester(ctx context.Context, r ConnectRequester) context.Context {
+	return context.WithValue(ctx, connectRequesterCtxKey, r)
+}
+
+func ConnectRequesterFromContext(ctx context.Context) (ConnectRequester, bool) {
+	r, ok := ctx.Value(connectRequesterCtxKey).(ConnectRequester)
 	return r, ok
 }
 
