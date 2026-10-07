@@ -51,14 +51,18 @@ func (a *approvingExecutor) RequestApproval(_ context.Context, _ domain.Conversa
 }
 
 type memMemory struct {
-	store map[string][]domain.Message
+	store map[domain.ConversationKey][]domain.Message
 }
 
-func newMemMemory() *memMemory { return &memMemory{store: make(map[string][]domain.Message)} }
+func newMemMemory() *memMemory {
+	return &memMemory{store: make(map[domain.ConversationKey][]domain.Message)}
+}
 
-func (m *memMemory) History(_ context.Context, id string) []domain.Message { return m.store[id] }
-func (m *memMemory) Append(_ context.Context, id string, messages ...domain.Message) {
-	m.store[id] = append(m.store[id], messages...)
+func (m *memMemory) History(_ context.Context, key domain.ConversationKey) []domain.Message {
+	return m.store[key]
+}
+func (m *memMemory) Append(_ context.Context, key domain.ConversationKey, messages ...domain.Message) {
+	m.store[key] = append(m.store[key], messages...)
 }
 
 func finishOnlyLLM(content string) *funcLLM {
@@ -116,7 +120,8 @@ func TestHandleTurn_DeliversFinalAnswerAndPersistsMemory(t *testing.T) {
 		t.Fatalf("expected one ActionSendMessage delivering the final answer, got %+v", slackExec.calls)
 	}
 
-	if history := mem.History(context.Background(), "slack:C1:"); len(history) == 0 {
+	key := domain.ConversationKey{AgentID: "a1", ChatID: "C1"}
+	if history := mem.History(context.Background(), key); len(history) == 0 {
 		t.Fatalf("expected memory to have been appended for this conversation")
 	}
 }

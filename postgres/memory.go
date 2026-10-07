@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"log"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/unitz007/open-kael/domain"
 )
 
@@ -17,13 +19,31 @@ const (
 var _ domain.Memory = (*Store)(nil)
 
 func (s *Store) History(ctx context.Context, key domain.ConversationKey) []domain.Message {
-	rows, err := s.pool.Query(ctx, `
-		SELECT role, content, tool_calls, tool_call_id, name
-		FROM conversation_messages
-		WHERE agent_id = $1 AND identity_id = $2 AND chat_id = $3 AND thread_id = $4
-		ORDER BY id DESC
-		LIMIT $5
-	`, key.AgentID, key.IdentityID, key.ChatID, key.ThreadID, memoryWindowSize)
+	var (
+		rows pgx.Rows
+		err  error
+	)
+	// When a user_id is known and we're not inside a thread, fetch the unified
+	// history across all channels — so the agent sees a single conversation
+	// with this person regardless of whether they're on Slack, Telegram, etc.
+	// Inside a Slack thread (ThreadID set) we stay thread-scoped.
+	if key.UserID != "" && key.ThreadID == "" {
+		rows, err = s.pool.Query(ctx, `
+			SELECT role, content, tool_calls, tool_call_id, name
+			FROM conversation_messages
+			WHERE agent_id = $1 AND user_id = $2
+			ORDER BY id DESC
+			LIMIT $3
+		`, key.AgentID, key.UserID, memoryWindowSize)
+	} else {
+		rows, err = s.pool.Query(ctx, `
+			SELECT role, content, tool_calls, tool_call_id, name
+			FROM conversation_messages
+			WHERE agent_id = $1 AND identity_id = $2 AND chat_id = $3 AND thread_id = $4
+			ORDER BY id DESC
+			LIMIT $5
+		`, key.AgentID, key.IdentityID, key.ChatID, key.ThreadID, memoryWindowSize)
+	}
 	if err != nil {
 		log.Printf("memory: history agent=%s identity=%s chat=%s: %v", key.AgentID, key.IdentityID, key.ChatID, err)
 		return nil
@@ -96,9 +116,9 @@ func (s *Store) Append(ctx context.Context, key domain.ConversationKey, messages
 
 		_, err := s.pool.Exec(ctx, `
 			INSERT INTO conversation_messages
-				(agent_id, identity_id, chat_id, thread_id, role, content, tool_calls, tool_call_id, name)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-		`, key.AgentID, key.IdentityID, key.ChatID, key.ThreadID,
+				(agent_id, identity_id, chat_id, thread_id, user_id, role, content, tool_calls, tool_call_id, name)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		`, key.AgentID, key.IdentityID, key.ChatID, key.ThreadID, key.UserID,
 			string(msg.Role), content, toolJSON, msg.ToolCallID, msg.Name)
 		if err != nil {
 			log.Printf("memory: insert agent=%s chat=%s role=%s: %v", key.AgentID, key.ChatID, msg.Role, err)

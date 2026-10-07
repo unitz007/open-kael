@@ -268,8 +268,15 @@ ALTER TABLE conversation_messages ADD COLUMN IF NOT EXISTS thread_id   TEXT NOT 
 -- Drop legacy conv_id FK column (references the old conversations.id that no longer exists).
 ALTER TABLE conversation_messages DROP COLUMN IF EXISTS conv_id;
 
+-- User-scoped memory: store the resolved user_id on every message so history
+-- can be fetched across all channels for a given user (unified across platforms).
+ALTER TABLE conversation_messages ADD COLUMN IF NOT EXISTS user_id TEXT NOT NULL DEFAULT '';
+
 CREATE INDEX IF NOT EXISTS idx_conv_messages_composite
     ON conversation_messages (agent_id, identity_id, chat_id, thread_id, id);
+
+CREATE INDEX IF NOT EXISTS idx_conv_messages_user
+    ON conversation_messages (agent_id, user_id, id);
 
 -- user_profiles: general facts about a user, learned by the agent over time.
 -- Shared across all agents — keyed only by user_id.

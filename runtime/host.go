@@ -991,6 +991,7 @@ func (h *Host) HandleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 		IdentityID: conv.IdentityID,
 		ChatID:     conv.ChatID,
 		ThreadID:   conv.ThreadID,
+		UserID:     conv.UserID,
 	}
 	var prior []domain.Message
 	if hosted.Deps.Memory != nil {
