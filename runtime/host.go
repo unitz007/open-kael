@@ -190,9 +190,9 @@ type Host struct {
 	userAgentConfigLoader func(ctx context.Context, userID, agentID string) (*domain.UserAgentConfig, error)
 
 	// onboardingChecker reports whether the user has already completed the
-	// onboarding intro for (identityID, channelRef). Returns true when
-	// onboarded_at IS NOT NULL on the messenger_channel row.
-	onboardingChecker func(ctx context.Context, identityID, channelRef string) (onboarded bool, err error)
+	// onboarding intro. userID is always the resolved platform user; identityID
+	// and channelRef are provided for implementations that need channel state.
+	onboardingChecker func(ctx context.Context, userID, identityID, channelRef string) (onboarded bool, err error)
 
 	// onboardingCompleter saves the user's intro text as their personal agent
 	// instructions (user_agent_configs) and stamps onboarded_at on the
@@ -204,8 +204,9 @@ type Host struct {
 	pendingOnboardings sync.Map
 
 	// onboardingPromptedChecker reports whether the onboarding prompt was sent
-	// but the user hasn't replied yet. Used to recover pending state after a restart.
-	onboardingPromptedChecker func(ctx context.Context, identityID, channelRef string) (bool, error)
+	// but the user hasn't replied yet. userID is provided so implementations
+	// can short-circuit when the user is already onboarded on another channel.
+	onboardingPromptedChecker func(ctx context.Context, userID, identityID, channelRef string) (bool, error)
 
 	// onboardingPromptedMarker persists the fact that the onboarding prompt was
 	// sent, so pending state survives restarts.
@@ -462,7 +463,7 @@ func (h *Host) ReloadAgentCommands(agentID string, commands []domain.BotCommand)
 // When both are set, the host intercepts the first message on any unboarded
 // channel and prompts the user to introduce themselves before the normal turn.
 func (h *Host) SetOnboardingFlow(
-	checker func(ctx context.Context, identityID, channelRef string) (bool, error),
+	checker func(ctx context.Context, userID, identityID, channelRef string) (bool, error),
 	completer func(ctx context.Context, identityID, channelRef, agentID, userID, instructions string) error,
 ) {
 	h.onboardingChecker = checker
@@ -474,7 +475,7 @@ func (h *Host) SetOnboardingFlow(
 // the pending state survives server restarts: checker returns true when the
 // prompt was sent but onboarding is not yet complete; marker stamps that state.
 func (h *Host) SetOnboardingPendingCallbacks(
-	checker func(ctx context.Context, identityID, channelRef string) (bool, error),
+	checker func(ctx context.Context, userID, identityID, channelRef string) (bool, error),
 	marker func(ctx context.Context, identityID, channelRef string) error,
 ) {
 	h.onboardingPromptedChecker = checker

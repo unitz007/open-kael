@@ -350,7 +350,7 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 		_, inMemPending := h.pendingOnboardings.Load(setupKey)
 		dbPending := false
 		if !inMemPending && h.onboardingPromptedChecker != nil {
-			if p, err := h.onboardingPromptedChecker(ctx, msg.Conversation.IdentityID, msg.Conversation.ChatID); err == nil {
+			if p, err := h.onboardingPromptedChecker(ctx, msg.Conversation.UserID, msg.Conversation.IdentityID, msg.Conversation.ChatID); err == nil {
 				dbPending = p
 			} else {
 				log.Printf("runtime: agent %q: onboarding prompted checker: %v", hosted.Agent.ID, err)
@@ -371,7 +371,7 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 			return
 		}
 
-		onboarded, err := h.onboardingChecker(ctx, msg.Conversation.IdentityID, msg.Conversation.ChatID)
+		onboarded, err := h.onboardingChecker(ctx, msg.Conversation.UserID, msg.Conversation.IdentityID, msg.Conversation.ChatID)
 		if err != nil {
 			log.Printf("runtime: agent %q: onboarding checker: %v", hosted.Agent.ID, err)
 		}
