@@ -212,6 +212,9 @@ ALTER TABLE conversations ADD COLUMN IF NOT EXISTS identity_id TEXT NOT NULL DEF
 ALTER TABLE conversations ADD COLUMN IF NOT EXISTS chat_id     TEXT NOT NULL DEFAULT '';
 ALTER TABLE conversations ADD COLUMN IF NOT EXISTS thread_id   TEXT NOT NULL DEFAULT '';
 
+-- Drop the legacy single-column TEXT primary key if it exists.
+ALTER TABLE conversations DROP COLUMN IF EXISTS id;
+
 DO $$ BEGIN
     ALTER TABLE conversations ADD CONSTRAINT conversations_composite_pk
         PRIMARY KEY (agent_id, identity_id, chat_id, thread_id);
