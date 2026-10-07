@@ -212,8 +212,9 @@ ALTER TABLE conversations ADD COLUMN IF NOT EXISTS identity_id TEXT NOT NULL DEF
 ALTER TABLE conversations ADD COLUMN IF NOT EXISTS chat_id     TEXT NOT NULL DEFAULT '';
 ALTER TABLE conversations ADD COLUMN IF NOT EXISTS thread_id   TEXT NOT NULL DEFAULT '';
 
--- Drop the legacy single-column TEXT primary key if it exists.
-ALTER TABLE conversations DROP COLUMN IF EXISTS id;
+-- Drop the legacy single-column TEXT primary key if it exists (CASCADE removes
+-- any dependent constraints such as the old PRIMARY KEY on that column).
+ALTER TABLE conversations DROP COLUMN IF EXISTS id CASCADE;
 
 DO $$ BEGIN
     ALTER TABLE conversations ADD CONSTRAINT conversations_composite_pk
