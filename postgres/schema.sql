@@ -218,6 +218,16 @@ DO $$ BEGIN
 EXCEPTION WHEN invalid_table_definition OR duplicate_table OR duplicate_object THEN NULL;
 END $$;
 
+-- Deduplicate rows before creating the unique index; keep the most recent
+-- updated_at per (agent_id, identity_id, chat_id, thread_id). This is a
+-- no-op when no duplicates exist.
+DELETE FROM conversations a USING conversations b
+WHERE a.ctid < b.ctid
+  AND a.agent_id    = b.agent_id
+  AND a.identity_id = b.identity_id
+  AND a.chat_id     = b.chat_id
+  AND a.thread_id   = b.thread_id;
+
 -- Ensure a unique index exists even on installations where the composite
 -- PRIMARY KEY migration above was silently skipped (e.g. the table already
 -- had a different primary key). ON CONFLICT (agent_id, ...) in the upsert
