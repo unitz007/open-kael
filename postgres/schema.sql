@@ -218,6 +218,13 @@ DO $$ BEGIN
 EXCEPTION WHEN invalid_table_definition OR duplicate_table OR duplicate_object THEN NULL;
 END $$;
 
+-- Ensure a unique index exists even on installations where the composite
+-- PRIMARY KEY migration above was silently skipped (e.g. the table already
+-- had a different primary key). ON CONFLICT (agent_id, ...) in the upsert
+-- requires at least one unique or exclusion constraint on those columns.
+CREATE UNIQUE INDEX IF NOT EXISTS conversations_composite_uk
+    ON conversations (agent_id, identity_id, chat_id, thread_id);
+
 -- conversation_messages: ordered message history for each conversation.
 -- BIGSERIAL id gives natural insertion order; the last N messages by id
 -- form the sliding window returned by Memory.History.
