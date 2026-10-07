@@ -91,10 +91,21 @@ type Store interface {
 	SetUserToolApproval(ctx context.Context, userID, toolID string, requires bool) error
 	ListUserToolApprovals(ctx context.Context, userID string) (map[string]bool, error)
 
-	// UserAgentConfig — per-user personal instructions for one Agent.
+	// UserAgentConfig — explicit per-agent instructions set by the user (via /instructions).
 	// GetUserAgentConfig returns ErrNotFound when no config exists yet.
 	GetUserAgentConfig(ctx context.Context, userID, agentID string) (*UserAgentConfig, error)
 	SetUserAgentConfig(ctx context.Context, cfg *UserAgentConfig) error
+
+	// UserProfile — general facts about the user learned by the agent over time,
+	// shared across all agents. GetUserProfile returns ErrNotFound when none exists.
+	GetUserProfile(ctx context.Context, userID string) (*UserProfile, error)
+	SetUserProfile(ctx context.Context, userID, notes string) error
+
+	// UserIntegrationNotes — integration-specific facts learned per user.
+	// ListUserIntegrationNotesByUser returns all notes for a user as integrationID → notes.
+	// SetUserIntegrationNotes upserts notes for one (user, integration) pair.
+	ListUserIntegrationNotesByUser(ctx context.Context, userID string) (map[string]string, error)
+	SetUserIntegrationNotes(ctx context.Context, userID, integrationID, notes string) error
 
 	// MarkMessengerChannelOnboardingPrompted stamps onboarding_prompted_at = now()
 	// so the pending onboarding state survives server restarts.

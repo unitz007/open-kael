@@ -247,6 +247,22 @@ ALTER TABLE conversation_messages ADD COLUMN IF NOT EXISTS thread_id   TEXT NOT 
 CREATE INDEX IF NOT EXISTS idx_conv_messages_composite
     ON conversation_messages (agent_id, identity_id, chat_id, thread_id, id);
 
+-- user_profiles: general facts about a user, learned by the agent over time.
+-- Shared across all agents — keyed only by user_id.
+CREATE TABLE IF NOT EXISTS user_profiles (
+    user_id TEXT PRIMARY KEY REFERENCES users (id) ON DELETE CASCADE,
+    notes   TEXT NOT NULL DEFAULT ''
+);
+
+-- user_integration_notes: integration-specific facts about a user.
+-- Shared across all agents that have access to the same integration.
+CREATE TABLE IF NOT EXISTS user_integration_notes (
+    user_id        TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    integration_id TEXT NOT NULL,
+    notes          TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (user_id, integration_id)
+);
+
 -- user_agent_configs: per-user personal instructions for one Agent. Injected
 -- into the system prompt so the agent can personalise responses to each user.
 CREATE TABLE IF NOT EXISTS user_agent_configs (

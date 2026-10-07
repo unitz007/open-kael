@@ -220,13 +220,39 @@ type Host struct {
 	// the user's reply. Key is "identityID:chatID"; value is pendingInstructionsState.
 	pendingInstructions sync.Map
 
+	// userProfileLoader loads the user's general learned profile (user_profiles).
+	userProfileLoader func(ctx context.Context, userID string) (*domain.UserProfile, error)
+	// userProfileSetter upserts the user's general learned profile.
+	userProfileSetter func(ctx context.Context, userID, notes string) error
+
+	// userIntegrationNotesLoader loads all integration-specific notes for a user
+	// as a map of integrationID → notes.
+	userIntegrationNotesLoader func(ctx context.Context, userID string) (map[string]string, error)
+	// userIntegrationNotesSetter upserts notes for one (user, integration) pair.
+	userIntegrationNotesSetter func(ctx context.Context, userID, integrationID, notes string) error
+
 	// profileExtractor, when set, is called in a background goroutine after each
-	// successful turn whose user message is long enough to plausibly contain new
-	// personal information. It receives the user's message, the agent's response,
-	// and the user's current stored instructions, and returns the updated profile
-	// (or unchanged=true when nothing new was found). Only called when
-	// userAgentConfigSetter is also set.
-	profileExtractor func(ctx context.Context, userID, agentID, userMessage, agentResponse, currentProfile string) (updatedProfile string, unchanged bool, err error)
+	// substantial turn. It receives the exchange plus the current profile and
+	// integration notes, and returns what (if anything) should be updated.
+	profileExtractor func(ctx context.Context, userID, agentID string, input ProfileExtractInput) (*ProfileExtractResult, error)
+}
+
+// ProfileExtractInput groups the inputs passed to the profile extractor hook.
+type ProfileExtractInput struct {
+	UserMessage             string
+	AgentResponse           string
+	CurrentProfile          string            // from user_profiles
+	IntegrationIDs          []string          // connected integrations to extract notes for
+	IntegrationNames        map[string]string // integrationID → display name
+	CurrentIntegrationNotes map[string]string // integrationID → current notes
+}
+
+// ProfileExtractResult groups what the profile extractor wants to save.
+// Empty strings mean "no change" for that field; absent map keys mean no change
+// for that integration.
+type ProfileExtractResult struct {
+	UpdatedProfile string            // empty = no change
+	UpdatedNotes   map[string]string // integrationID → updated notes (omit if unchanged)
 }
 
 // SkillRouter picks the right skill(s) for an inbound message. Any classifier
@@ -384,13 +410,36 @@ func (h *Host) SetUserAgentConfigSetter(f func(ctx context.Context, userID, agen
 	h.userAgentConfigSetter = f
 }
 
+// SetUserProfileLoader registers a function that loads the user's general
+// learned profile (user_profiles table, keyed by user_id only).
+func (h *Host) SetUserProfileLoader(f func(ctx context.Context, userID string) (*domain.UserProfile, error)) {
+	h.userProfileLoader = f
+}
+
+// SetUserProfileSetter registers a function that upserts the user's general
+// learned profile.
+func (h *Host) SetUserProfileSetter(f func(ctx context.Context, userID, notes string) error) {
+	h.userProfileSetter = f
+}
+
+// SetUserIntegrationNotesLoader registers a function that loads all
+// integration-specific notes for a user as integrationID → notes.
+func (h *Host) SetUserIntegrationNotesLoader(f func(ctx context.Context, userID string) (map[string]string, error)) {
+	h.userIntegrationNotesLoader = f
+}
+
+// SetUserIntegrationNotesSetter registers a function that upserts notes for
+// one (user, integration) pair.
+func (h *Host) SetUserIntegrationNotesSetter(f func(ctx context.Context, userID, integrationID, notes string) error) {
+	h.userIntegrationNotesSetter = f
+}
+
 // SetProfileExtractor registers a function that extracts new user facts from a
-// completed turn and updates the stored profile when new information is found.
-// It runs in a background goroutine after each turn whose user message is
-// substantial enough (>= 8 words) to plausibly contain personal information.
-// The function must return unchanged=true when nothing new was found, to avoid
-// spurious writes. Only called when SetUserAgentConfigSetter is also set.
-func (h *Host) SetProfileExtractor(f func(ctx context.Context, userID, agentID, userMessage, agentResponse, currentProfile string) (updatedProfile string, unchanged bool, err error)) {
+// completed turn. It runs in a background goroutine after each turn whose user
+// message is substantial enough (>= 8 words) to plausibly contain personal
+// information. Returns a ProfileExtractResult with empty strings / absent map
+// keys meaning "no change". Only fires when userProfileSetter is also set.
+func (h *Host) SetProfileExtractor(f func(ctx context.Context, userID, agentID string, input ProfileExtractInput) (*ProfileExtractResult, error)) {
 	h.profileExtractor = f
 }
 
@@ -657,15 +706,12 @@ func (h *Host) ReloadAgentSkills(ctx context.Context, agentID string, loader fun
 }
 
 // buildSystemPrompt constructs the agent's system prompt dynamically from its
-// name, description, and current skill list. This keeps the prompt in sync
-// with the agent's live configuration — adding, editing, or removing a skill
-// is reflected automatically on the next turn without any manual edit to an
-// instructions field. If the agent has an explicit Instructions override it
-// is appended after the generated block so operators can still inject custom
-// behaviour without giving up the auto-generated foundation. When userInstructions
-// is non-empty (the user's personal intro loaded from user_agent_configs) it is
-// appended last as a <user_instructions> block so the agent knows who it is talking to.
-func buildSystemPrompt(agent *domain.Agent, userInstructions string, messengerSkills []string) string {
+// name, description, and current skill list. Three layers of user context are
+// injected when present:
+//   - userProfile: general facts about the user learned across all agents
+//   - userInstructions: explicit per-agent instructions set by the user
+//   - integrationNotes: integration-specific facts (FPL team, GitHub repos, etc.)
+func buildSystemPrompt(agent *domain.Agent, userProfile, userInstructions string, integrationNotes map[string]string, integrationsByID map[string]*domain.Integration, messengerSkills []string) string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "You are %s.", agent.Name)
@@ -685,8 +731,24 @@ func buildSystemPrompt(agent *domain.Agent, userInstructions string, messengerSk
 		fmt.Fprintf(&b, "\n\n%s", agent.Instructions)
 	}
 
+	if userProfile != "" {
+		fmt.Fprintf(&b, "\n\n<user_profile>\n%s\n</user_profile>", userProfile)
+	}
+
 	if userInstructions != "" {
 		fmt.Fprintf(&b, "\n\n<user_instructions>\n%s\n</user_instructions>", userInstructions)
+	}
+
+	// Inject integration-specific notes, labelled by integration name.
+	for integrationID, notes := range integrationNotes {
+		if notes == "" {
+			continue
+		}
+		name := integrationID
+		if intg, ok := integrationsByID[integrationID]; ok {
+			name = intg.Name
+		}
+		fmt.Fprintf(&b, "\n\n<integration_notes name=%q>\n%s\n</integration_notes>", name, notes)
 	}
 
 	if len(messengerSkills) > 0 {
@@ -942,6 +1004,20 @@ func (h *Host) HandleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 		// ErrNotFound is expected when the user hasn't set instructions yet — silence it.
 	}
 
+	var userProfile string
+	if conv.UserID != "" && h.userProfileLoader != nil {
+		if p, err := h.userProfileLoader(ctx, conv.UserID); err == nil {
+			userProfile = p.Notes
+		}
+	}
+
+	var integrationNotes map[string]string
+	if conv.UserID != "" && h.userIntegrationNotesLoader != nil {
+		if notes, err := h.userIntegrationNotesLoader(ctx, conv.UserID); err == nil {
+			integrationNotes = notes
+		}
+	}
+
 	actions, err := h.actionsFor(ctx, hosted)
 	if err != nil {
 		return nil, err
@@ -962,7 +1038,7 @@ func (h *Host) HandleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 	}
 
 	messages := make([]domain.Message, 0, len(prior)+2)
-	messages = append(messages, domain.Message{Role: domain.RoleSystem, Content: buildSystemPrompt(hosted.Agent, userInstructions, messengerSkills)})
+	messages = append(messages, domain.Message{Role: domain.RoleSystem, Content: buildSystemPrompt(hosted.Agent, userProfile, userInstructions, integrationNotes, hosted.Deps.IntegrationsByID, messengerSkills)})
 	messages = append(messages, prior...)
 	messages = append(messages, domain.Message{Role: domain.RoleUser, Content: userText})
 
@@ -1017,40 +1093,70 @@ func (h *Host) HandleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 				log.Printf("runtime: agent %q: stream reply failed, falling back: %v", hosted.Agent.ID, serr)
 				h.deliverBestEffort(ctx, hosted, conv, content)
 			}
-			h.maybeExtractProfile(conv.UserID, hosted.Agent.ID, userText, content, userInstructions)
+			h.maybeExtractProfile(conv.UserID, hosted.Agent.ID, userText, content, userProfile, integrationNotes, hosted)
 			return result, nil
 		}
 		log.Printf("runtime: agent %q: executor does not implement StreamingMessenger, using atomic send", hosted.Agent.ID)
 	}
 	h.deliverBestEffort(ctx, hosted, conv, content)
-	h.maybeExtractProfile(conv.UserID, hosted.Agent.ID, userText, content, userInstructions)
+	h.maybeExtractProfile(conv.UserID, hosted.Agent.ID, userText, content, userProfile, integrationNotes, hosted)
 
 	return result, nil
 }
 
 // maybeExtractProfile fires the profileExtractor in a background goroutine when
 // the user's message is long enough to plausibly contain new personal information.
-func (h *Host) maybeExtractProfile(userID, agentID, userMessage, agentResponse, currentProfile string) {
-	if userID == "" || h.profileExtractor == nil || h.userAgentConfigSetter == nil {
+func (h *Host) maybeExtractProfile(userID, agentID, userMessage, agentResponse, currentProfile string, currentIntegrationNotes map[string]string, hosted *HostedAgent) {
+	if userID == "" || h.profileExtractor == nil || h.userProfileSetter == nil {
 		return
 	}
 	if !isSubstantialMessage(userMessage) {
 		return
 	}
+
+	// Collect connected integration IDs and names for this agent.
+	integrationIDs := make([]string, 0, len(hosted.Deps.IntegrationsByID))
+	integrationNames := make(map[string]string, len(hosted.Deps.IntegrationsByID))
+	for id, intg := range hosted.Deps.IntegrationsByID {
+		integrationIDs = append(integrationIDs, id)
+		integrationNames[id] = intg.Name
+	}
+
+	input := ProfileExtractInput{
+		UserMessage:             userMessage,
+		AgentResponse:           agentResponse,
+		CurrentProfile:          currentProfile,
+		IntegrationIDs:          integrationIDs,
+		IntegrationNames:        integrationNames,
+		CurrentIntegrationNotes: currentIntegrationNotes,
+	}
+
 	go func() {
 		ctx := context.Background()
-		updated, unchanged, err := h.profileExtractor(ctx, userID, agentID, userMessage, agentResponse, currentProfile)
+		result, err := h.profileExtractor(ctx, userID, agentID, input)
 		if err != nil {
 			log.Printf("runtime: profile extractor user %s agent %s: %v", userID, agentID, err)
 			return
 		}
-		if unchanged || updated == "" {
-			log.Printf("runtime: profile extractor user %s agent %s: no new facts", userID, agentID)
-			return
+		if result.UpdatedProfile != "" {
+			log.Printf("runtime: profile extractor user %s: new profile facts (%d chars)", userID, len(result.UpdatedProfile))
+			if err := h.userProfileSetter(ctx, userID, result.UpdatedProfile); err != nil {
+				log.Printf("runtime: profile extractor: save profile user %s: %v", userID, err)
+			}
 		}
-		log.Printf("runtime: profile extractor user %s agent %s: new facts found, saving profile (%d chars)", userID, agentID, len(updated))
-		if err := h.userAgentConfigSetter(ctx, userID, agentID, updated); err != nil {
-			log.Printf("runtime: profile extractor: save profile user %s agent %s: %v", userID, agentID, err)
+		for integrationID, notes := range result.UpdatedNotes {
+			if notes == "" {
+				continue
+			}
+			log.Printf("runtime: profile extractor user %s integration %s: new notes (%d chars)", userID, integrationID, len(notes))
+			if h.userIntegrationNotesSetter != nil {
+				if err := h.userIntegrationNotesSetter(ctx, userID, integrationID, notes); err != nil {
+					log.Printf("runtime: profile extractor: save notes user %s integration %s: %v", userID, integrationID, err)
+				}
+			}
+		}
+		if result.UpdatedProfile == "" && len(result.UpdatedNotes) == 0 {
+			log.Printf("runtime: profile extractor user %s agent %s: no new facts", userID, agentID)
 		}
 	}()
 }
