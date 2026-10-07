@@ -121,6 +121,16 @@ func (f *SettingsFlow) Handle(ctx context.Context, provider domain.SettingsMenuP
 func (f *SettingsFlow) buildMainMenu(hosted *HostedAgent, approvals map[string]bool) *domain.SettingsMenu {
 	rows := []domain.SettingsRow{}
 
+	// Bot-level integrations (the messenger channels themselves) are not user-
+	// configurable — skip their tools so users only see data integrations they
+	// connected themselves (e.g. FPL), not Telegram/Slack/Discord platform tools.
+	botIntegrationIDs := map[string]bool{}
+	for _, identityID := range hosted.Agent.IdentityIDs {
+		if identity, ok := hosted.Deps.IdentitiesByID[identityID]; ok {
+			botIntegrationIDs[identity.IntegrationID] = true
+		}
+	}
+
 	// Collect integrations that have at least one non-mandatory tool.
 	type integrationEntry struct {
 		id   string
@@ -129,7 +139,7 @@ func (f *SettingsFlow) buildMainMenu(hosted *HostedAgent, approvals map[string]b
 	var integrations []integrationEntry
 	seen := map[string]bool{}
 	for _, tool := range hosted.Deps.ToolsByID {
-		if tool.RequiresApproval {
+		if tool.RequiresApproval || botIntegrationIDs[tool.IntegrationID] {
 			continue
 		}
 		if seen[tool.IntegrationID] {
