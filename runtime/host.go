@@ -1255,11 +1255,19 @@ func (h *Host) resolveConnectRequester(ctx context.Context, hosted *HostedAgent,
 			}
 		}
 
-		promptText, _ := h.connectPrompt(ctx, hosted.Agent, hosted.Agent.LLMs, integrationName)
-		if url != "" {
+		promptText, buttonLabel := h.connectPrompt(ctx, hosted.Agent, hosted.Agent.LLMs, integrationName)
+		var extra map[string]any
+		if url != "" && !isLocalhostURL(url) {
+			extra = map[string]any{
+				"web_app_button": map[string]any{
+					"text": buttonLabel,
+					"url":  url,
+				},
+			}
+		} else if url != "" {
 			promptText += "\n\n" + url
 		}
-		h.deliverBestEffort(ctx, hosted, conv, promptText)
+		h.deliverBestEffort(ctx, hosted, conv, promptText, extra)
 
 		ch := make(chan string, 1)
 		key := userID + ":" + identity.ID
