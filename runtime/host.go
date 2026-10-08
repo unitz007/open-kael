@@ -1290,11 +1290,8 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 		// outside this agent's scope — decline instead of letting the LLM
 		// answer anything. Agents with no skills fall back to the full loop.
 		if len(hosted.Agent.Skills) > 0 {
-			log.Printf("skill-router: no skills matched — out of scope")
-			return &domain.LoopResult{
-				Status:  domain.LoopStatusComplete,
-				Content: outOfScopeMessage(hosted.Agent),
-			}, messages, nil
+			log.Printf("skill-router: no skills matched — out of scope, letting LLM decline")
+			return h.respondDirectly(ctx, hosted, messages, actions)
 		}
 		// No skills defined — use ScopeChecker if available to gate by
 		// the agent's description before running the full NativeLoop.
@@ -1311,11 +1308,8 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 				if serr != nil {
 					log.Printf("skill-router: scope check failed: %v — running NativeLoop", serr)
 				} else if !inScope {
-					log.Printf("skill-router: message out of scope (no skills) — declining")
-					return &domain.LoopResult{
-						Status:  domain.LoopStatusComplete,
-						Content: outOfScopeMessage(hosted.Agent),
-					}, messages, nil
+					log.Printf("skill-router: message out of scope (no skills) — letting LLM decline")
+					return h.respondDirectly(ctx, hosted, messages, actions)
 				}
 			}
 		}
@@ -1359,29 +1353,6 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 	loopActions = append(loopActions, convActions...)
 	loopActions = append(loopActions, buildFinishAction())
 	return h.runNativeLoop(ctx, hosted, messages, loopActions)
-}
-
-// outOfScopeMessage builds a polite decline message that names the agent's
-// area of expertise so the user knows what the agent is for.
-func outOfScopeMessage(agent *domain.Agent) string {
-	if agent.Description != "" {
-		desc := strings.ToLower(strings.TrimRight(strings.TrimSpace(agent.Description), "."))
-		for _, pfx := range []string{"this is an ", "this is a ", "i am an ", "i am a ", "i'm an ", "i'm a "} {
-			if strings.HasPrefix(desc, pfx) {
-				desc = desc[len(pfx):]
-				break
-			}
-		}
-		return fmt.Sprintf("I'm a %s — that's outside what I can help with. Feel free to ask me something within my area of expertise!", desc)
-	}
-	names := make([]string, 0, len(agent.Skills))
-	for _, s := range agent.Skills {
-		names = append(names, s.Name)
-	}
-	if len(names) > 0 {
-		return "That's outside my area of expertise. I can help with: " + strings.Join(names, ", ") + "."
-	}
-	return "That's outside my area of expertise, sorry!"
 }
 
 // respondDirectly runs a turn with only the finish action available — no skill
