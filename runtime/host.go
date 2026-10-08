@@ -1365,7 +1365,14 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 // area of expertise so the user knows what the agent is for.
 func outOfScopeMessage(agent *domain.Agent) string {
 	if agent.Description != "" {
-		return fmt.Sprintf("I'm a %s — that's outside what I can help with. Feel free to ask me something within my area of expertise!", strings.ToLower(strings.TrimRight(agent.Description, ".")))
+		desc := strings.ToLower(strings.TrimRight(strings.TrimSpace(agent.Description), "."))
+		for _, pfx := range []string{"this is an ", "this is a ", "i am an ", "i am a ", "i'm an ", "i'm a "} {
+			if strings.HasPrefix(desc, pfx) {
+				desc = desc[len(pfx):]
+				break
+			}
+		}
+		return fmt.Sprintf("I'm a %s — that's outside what I can help with. Feel free to ask me something within my area of expertise!", desc)
 	}
 	names := make([]string, 0, len(agent.Skills))
 	for _, s := range agent.Skills {
