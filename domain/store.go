@@ -115,6 +115,14 @@ type Store interface {
 	// messenger_channel row identified by (identityID, channelRef).
 	MarkMessengerChannelOnboarded(ctx context.Context, identityID, channelRef string) error
 
+	// SetMessengerChannelEmailLinkState updates the email_link_state column.
+	SetMessengerChannelEmailLinkState(ctx context.Context, identityID, channelRef, state string) error
+
+	// EmailVerification CRUD — short-lived tokens sent to the user's inbox.
+	CreateEmailVerification(ctx context.Context, ev *EmailVerification) error
+	GetEmailVerificationByToken(ctx context.Context, token string) (*EmailVerification, error)
+	DeleteEmailVerification(ctx context.Context, token string) error
+
 	// PlatformConfig — generic key/value store for platform-level settings that
 	// must persist across restarts (e.g. rotating OAuth refresh tokens).
 	// GetPlatformConfig returns ErrNotFound when the key has not been set.

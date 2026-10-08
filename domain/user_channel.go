@@ -18,6 +18,10 @@ type MessengerChannel struct {
 	ChannelRef  string     `json:"channel_ref"` // provider-specific address: Telegram ChatID, Slack UserID, Discord UserID, etc.
 	OnboardingPromptedAt *time.Time `json:"onboarding_prompted_at,omitempty"` // nil until the onboarding prompt has been sent
 	OnboardedAt          *time.Time `json:"onboarded_at,omitempty"`           // nil until the user completes the onboarding intro
+	// EmailLinkState tracks progress through the optional email-linking flow.
+	// Values: "" (not started), "awaiting" (prompt sent, waiting for email),
+	// "sent" (verification email sent), "skipped" (user opted out).
+	EmailLinkState string `json:"email_link_state,omitempty"`
 }
 
 // UserChannel is a deprecated alias kept during migration. Use MessengerChannel.

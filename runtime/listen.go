@@ -397,6 +397,73 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 		}
 	}
 
+	// Email-link flow: runs after onboarding so the user is introduced first.
+	// Prompts for an email address to enable cross-platform identity linking.
+	// Entirely optional — "skip" opts out permanently on this channel.
+	if h.emailLinkChecker != nil && msg.Conversation.UserID != "" {
+		emailKey := msg.Conversation.IdentityID + ":" + msg.Conversation.ChatID
+
+		_, inMemAwaiting := h.pendingEmailLinks.Load(emailKey)
+
+		// If not in memory, check DB state (handles restarts between prompt and reply).
+		dbState := ""
+		if !inMemAwaiting && h.emailLinkStateGetter != nil {
+			if s, err := h.emailLinkStateGetter(ctx, msg.Conversation.IdentityID, msg.Conversation.ChatID); err == nil {
+				dbState = s
+				inMemAwaiting = s == "awaiting"
+			}
+		}
+
+		if inMemAwaiting {
+			h.pendingEmailLinks.Delete(emailKey)
+			text := strings.TrimSpace(msg.Text)
+
+			if strings.EqualFold(text, "skip") {
+				if h.emailLinkStateSetter != nil {
+					_ = h.emailLinkStateSetter(ctx, msg.Conversation.IdentityID, msg.Conversation.ChatID, "skipped")
+				}
+				h.deliverBestEffort(ctx, hosted, msg.Conversation, "No problem — you can always link your account later by sharing your email.")
+				return
+			}
+
+			if !strings.Contains(text, "@") || !strings.Contains(text, ".") {
+				// Re-arm the in-memory awaiting so the next message is treated as the email too.
+				h.pendingEmailLinks.Store(emailKey, true)
+				h.deliverBestEffort(ctx, hosted, msg.Conversation, "That doesn't look like a valid email address. Please try again, or type 'skip'.")
+				return
+			}
+
+			if h.emailLinkInitiator != nil {
+				if err := h.emailLinkInitiator(ctx, msg.Conversation.UserID, msg.Conversation.IdentityID, msg.Conversation.ChatID, text); err != nil {
+					log.Printf("runtime: agent %q: email link initiator: %v", hosted.Agent.ID, err)
+					h.deliverBestEffort(ctx, hosted, msg.Conversation, "Something went wrong sending the verification email. Please try again.")
+					return
+				}
+			}
+			if h.emailLinkStateSetter != nil {
+				_ = h.emailLinkStateSetter(ctx, msg.Conversation.IdentityID, msg.Conversation.ChatID, "sent")
+			}
+			h.deliverBestEffort(ctx, hosted, msg.Conversation, "Check your inbox and click the link to verify your email address. Once verified your account will be linked across platforms.")
+			return
+		}
+
+		// Not awaiting — check whether we should prompt.
+		if dbState != "skipped" && dbState != "sent" {
+			linked, err := h.emailLinkChecker(ctx, msg.Conversation.UserID)
+			if err != nil {
+				log.Printf("runtime: agent %q: email link checker: %v", hosted.Agent.ID, err)
+			}
+			if !linked {
+				h.pendingEmailLinks.Store(emailKey, true)
+				if h.emailLinkStateSetter != nil {
+					_ = h.emailLinkStateSetter(ctx, msg.Conversation.IdentityID, msg.Conversation.ChatID, "awaiting")
+				}
+				h.deliverBestEffort(ctx, hosted, msg.Conversation, "One last thing — want to use this agent across other platforms? Reply with your email address to link your account, or type 'skip'.")
+				return
+			}
+		}
+	}
+
 	// Check whether the user still needs to connect any integrations.
 	if h.setupChecker != nil {
 		missingIDs, err := h.setupChecker(ctx, msg.Conversation.UserID, hosted.Agent)

@@ -99,6 +99,7 @@ CREATE INDEX IF NOT EXISTS idx_messenger_channels_user_id ON messenger_channels 
 
 ALTER TABLE messenger_channels ADD COLUMN IF NOT EXISTS onboarding_prompted_at TIMESTAMPTZ;
 ALTER TABLE messenger_channels ADD COLUMN IF NOT EXISTS onboarded_at TIMESTAMPTZ;
+ALTER TABLE messenger_channels ADD COLUMN IF NOT EXISTS email_link_state TEXT NOT NULL DEFAULT '';
 
 -- Backfill: channels that existed before onboarding was introduced have NULL
 -- onboarded_at. Treat them as already onboarded so returning users don't get
@@ -318,4 +319,17 @@ CREATE TABLE IF NOT EXISTS user_tool_approvals (
     user_id TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
     tool_id TEXT NOT NULL REFERENCES tools (id) ON DELETE CASCADE,
     PRIMARY KEY (user_id, tool_id)
+);
+
+-- email_verifications: short-lived tokens for the in-chat email-linking flow.
+-- Created when the user provides their email via the bot; consumed when they
+-- click the verify link. IdentityID + channel_ref track where to push the
+-- confirmation message once the link is clicked.
+CREATE TABLE IF NOT EXISTS email_verifications (
+    token       TEXT PRIMARY KEY,
+    user_id     TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    identity_id TEXT NOT NULL DEFAULT '',
+    channel_ref TEXT NOT NULL DEFAULT '',
+    email       TEXT NOT NULL DEFAULT '',
+    expires_at  TIMESTAMPTZ NOT NULL
 );

@@ -19,15 +19,25 @@ const (
 var _ domain.Memory = (*Store)(nil)
 
 func (s *Store) History(ctx context.Context, key domain.ConversationKey) []domain.Message {
+	if key.UserID == "" {
+		return nil
+	}
+
+	// Memory is always user-scoped. Within a Slack thread (ThreadID set) we
+	// narrow to that thread so replies stay in context.
 	var (
 		rows pgx.Rows
 		err  error
 	)
-	// When a user_id is known and we're not inside a thread, fetch the unified
-	// history across all channels — so the agent sees a single conversation
-	// with this person regardless of whether they're on Slack, Telegram, etc.
-	// Inside a Slack thread (ThreadID set) we stay thread-scoped.
-	if key.UserID != "" && key.ThreadID == "" {
+	if key.ThreadID != "" {
+		rows, err = s.pool.Query(ctx, `
+			SELECT role, content, tool_calls, tool_call_id, name
+			FROM conversation_messages
+			WHERE agent_id = $1 AND user_id = $2 AND thread_id = $3
+			ORDER BY id DESC
+			LIMIT $4
+		`, key.AgentID, key.UserID, key.ThreadID, memoryWindowSize)
+	} else {
 		rows, err = s.pool.Query(ctx, `
 			SELECT role, content, tool_calls, tool_call_id, name
 			FROM conversation_messages
@@ -35,17 +45,9 @@ func (s *Store) History(ctx context.Context, key domain.ConversationKey) []domai
 			ORDER BY id DESC
 			LIMIT $3
 		`, key.AgentID, key.UserID, memoryWindowSize)
-	} else {
-		rows, err = s.pool.Query(ctx, `
-			SELECT role, content, tool_calls, tool_call_id, name
-			FROM conversation_messages
-			WHERE agent_id = $1 AND identity_id = $2 AND chat_id = $3 AND thread_id = $4
-			ORDER BY id DESC
-			LIMIT $5
-		`, key.AgentID, key.IdentityID, key.ChatID, key.ThreadID, memoryWindowSize)
 	}
 	if err != nil {
-		log.Printf("memory: history agent=%s identity=%s chat=%s: %v", key.AgentID, key.IdentityID, key.ChatID, err)
+		log.Printf("memory: history agent=%s user=%s: %v", key.AgentID, key.UserID, err)
 		return nil
 	}
 	defer rows.Close()
@@ -76,7 +78,7 @@ func (s *Store) History(ctx context.Context, key domain.ConversationKey) []domai
 		})
 	}
 	if err := rows.Err(); err != nil {
-		log.Printf("memory: rows agent=%s chat=%s: %v", key.AgentID, key.ChatID, err)
+		log.Printf("memory: rows agent=%s user=%s: %v", key.AgentID, key.UserID, err)
 	}
 
 	msgs := make([]domain.Message, len(reversed))

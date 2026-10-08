@@ -212,6 +212,23 @@ type Host struct {
 	// sent, so pending state survives restarts.
 	onboardingPromptedMarker func(ctx context.Context, identityID, channelRef string) error
 
+	// emailLinkChecker reports whether the user already has a verified email.
+	emailLinkChecker func(ctx context.Context, userID string) (bool, error)
+
+	// emailLinkStateGetter returns the current email_link_state for a channel.
+	emailLinkStateGetter func(ctx context.Context, identityID, channelRef string) (string, error)
+
+	// emailLinkStateSetter persists email_link_state changes so they survive restarts.
+	emailLinkStateSetter func(ctx context.Context, identityID, channelRef, state string) error
+
+	// emailLinkInitiator validates the email, creates a verification record, and
+	// sends the verification email. Called when the user provides their email address.
+	emailLinkInitiator func(ctx context.Context, userID, identityID, channelRef, email string) error
+
+	// pendingEmailLinks tracks channels that have been prompted for an email and
+	// are waiting for the user's reply. Key is "identityID:chatID".
+	pendingEmailLinks sync.Map
+
 	// userAgentConfigSetter persists a user's personal instructions for one
 	// Agent. When set, the host saves the user's reply after SendInstructionsPrompt.
 	userAgentConfigSetter func(ctx context.Context, userID, agentID, instructions string) error
@@ -480,6 +497,23 @@ func (h *Host) SetOnboardingPendingCallbacks(
 ) {
 	h.onboardingPromptedChecker = checker
 	h.onboardingPromptedMarker = marker
+}
+
+// SetEmailLinkFlow registers the four callbacks that drive the optional
+// in-chat email-linking flow. When set, the host prompts users to share their
+// email address after onboarding completes; a verified email becomes the
+// cross-platform identifier so the same user on Slack and Telegram shares one
+// conversation history.
+func (h *Host) SetEmailLinkFlow(
+	checker func(ctx context.Context, userID string) (bool, error),
+	stateGetter func(ctx context.Context, identityID, channelRef string) (string, error),
+	stateSetter func(ctx context.Context, identityID, channelRef, state string) error,
+	initiator func(ctx context.Context, userID, identityID, channelRef, email string) error,
+) {
+	h.emailLinkChecker = checker
+	h.emailLinkStateGetter = stateGetter
+	h.emailLinkStateSetter = stateSetter
+	h.emailLinkInitiator = initiator
 }
 
 // SetConnectIntegrationNameLoader registers a callback that returns the
