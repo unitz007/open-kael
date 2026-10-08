@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -426,12 +427,14 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 				return
 			}
 
-			if !strings.Contains(text, "@") || !strings.Contains(text, ".") {
+			email := extractEmail(text)
+			if email == "" {
 				// Re-arm the in-memory awaiting so the next message is treated as the email too.
 				h.pendingEmailLinks.Store(emailKey, true)
 				h.deliverBestEffort(ctx, hosted, msg.Conversation, "That doesn't look like a valid email address. Please try again, or type 'skip'.")
 				return
 			}
+			text = email
 
 			if h.emailLinkInitiator != nil {
 				if err := h.emailLinkInitiator(ctx, msg.Conversation.UserID, msg.Conversation.IdentityID, msg.Conversation.ChatID, text); err != nil {
@@ -800,6 +803,15 @@ func extractLinkCode(text string) string {
 		return text
 	}
 	return ""
+}
+
+var emailRegexp = regexp.MustCompile(`[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}`)
+
+// extractEmail pulls the first RFC-5321-ish email address out of arbitrary
+// text. Users often type natural language ("my email is foo@bar.com") so we
+// cannot assume the entire input is an address.
+func extractEmail(text string) string {
+	return emailRegexp.FindString(text)
 }
 
 func recoverFromPanic(agentID, where string) {
