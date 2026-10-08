@@ -1092,7 +1092,8 @@ func (h *Host) HandleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 	var result *domain.LoopResult
 	var final []domain.Message
 
-	if h.skillRouter != nil && len(hosted.Agent.Skills) > 0 {
+	_, routerIsScopeChecker := h.skillRouter.(ScopeChecker)
+	if h.skillRouter != nil && (len(hosted.Agent.Skills) > 0 || routerIsScopeChecker) {
 		result, final, err = h.routeWithJev(ctx, hosted, userText, messages, actions, messengerSkillActions)
 	} else {
 		loop := hosted.Agent.Loop
