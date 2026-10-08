@@ -1274,7 +1274,17 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 	log.Printf("skill-router: skills=%v intent=%q", skillNames, intent)
 
 	if len(skillNames) == 0 {
-		log.Printf("skill-router: no skills matched — running NativeLoop with full actions")
+		// If the agent has skills defined and none matched, the message is
+		// outside this agent's scope — decline instead of letting the LLM
+		// answer anything. Agents with no skills fall back to the full loop.
+		if len(hosted.Agent.Skills) > 0 {
+			log.Printf("skill-router: no skills matched — out of scope")
+			return &domain.LoopResult{
+				Status:  domain.LoopStatusComplete,
+				Content: outOfScopeMessage(hosted.Agent),
+			}, messages, nil
+		}
+		log.Printf("skill-router: no skills matched and no skills configured — running NativeLoop with full actions")
 		return h.runNativeLoop(ctx, hosted, messages, actions)
 	}
 
@@ -1314,6 +1324,22 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 	loopActions = append(loopActions, convActions...)
 	loopActions = append(loopActions, buildFinishAction())
 	return h.runNativeLoop(ctx, hosted, messages, loopActions)
+}
+
+// outOfScopeMessage builds a polite decline message that names the agent's
+// area of expertise so the user knows what the agent is for.
+func outOfScopeMessage(agent *domain.Agent) string {
+	if agent.Description != "" {
+		return fmt.Sprintf("I'm a %s — that's outside what I can help with. Feel free to ask me something within my area of expertise!", strings.ToLower(strings.TrimRight(agent.Description, ".")))
+	}
+	names := make([]string, 0, len(agent.Skills))
+	for _, s := range agent.Skills {
+		names = append(names, s.Name)
+	}
+	if len(names) > 0 {
+		return "That's outside my area of expertise. I can help with: " + strings.Join(names, ", ") + "."
+	}
+	return "That's outside my area of expertise, sorry!"
 }
 
 // respondDirectly runs a turn with only the finish action available — no skill
