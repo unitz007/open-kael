@@ -288,6 +288,17 @@ type SkillRouter interface {
 	PickSkills(ctx context.Context, userText string, skills []*domain.Skill) (skillNames []string, intent string, err error)
 }
 
+// ScopeChecker is an optional extension of SkillRouter. When the configured
+// router also implements ScopeChecker, agents that have no skills use it to
+// gate every inbound message against the agent's description before running
+// the NativeLoop — so a skill-less agent still declines out-of-scope questions.
+type ScopeChecker interface {
+	// IsInScope returns true when userText falls within the agent's described
+	// expertise. agentContext is the agent's description or a short summary of
+	// its purpose, used as the classification context.
+	IsInScope(ctx context.Context, userText, agentContext string) (bool, error)
+}
+
 func NewHost() *Host {
 	return &Host{agents: make(map[string]*HostedAgent), bus: newEventBus()}
 }
@@ -1284,7 +1295,30 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 				Content: outOfScopeMessage(hosted.Agent),
 			}, messages, nil
 		}
-		log.Printf("skill-router: no skills matched and no skills configured — running NativeLoop with full actions")
+		// No skills defined — use ScopeChecker if available to gate by
+		// the agent's description before running the full NativeLoop.
+		if sc, ok := h.skillRouter.(ScopeChecker); ok {
+			agentCtx := hosted.Agent.Description
+			if agentCtx == "" && len(hosted.Agent.Instructions) > 0 {
+				agentCtx = hosted.Agent.Instructions
+				if len(agentCtx) > 500 {
+					agentCtx = agentCtx[:500]
+				}
+			}
+			if agentCtx != "" {
+				inScope, serr := sc.IsInScope(ctx, userText, agentCtx)
+				if serr != nil {
+					log.Printf("skill-router: scope check failed: %v — running NativeLoop", serr)
+				} else if !inScope {
+					log.Printf("skill-router: message out of scope (no skills) — declining")
+					return &domain.LoopResult{
+						Status:  domain.LoopStatusComplete,
+						Content: outOfScopeMessage(hosted.Agent),
+					}, messages, nil
+				}
+			}
+		}
+		log.Printf("skill-router: no skills — running NativeLoop with full actions")
 		return h.runNativeLoop(ctx, hosted, messages, actions)
 	}
 

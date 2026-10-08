@@ -246,6 +246,27 @@ func (c *Client) PickSkills(ctx context.Context, userText string, skills []*doma
 	return skillNames, intent, nil
 }
 
+// IsInScope implements runtime.ScopeChecker. It asks a single Noul question:
+// "is this message within the agent's expertise?" using agentContext (the
+// agent's description or a short summary of its purpose) as classification
+// context. Returns true when the score meets skillApplyThreshold.
+func (c *Client) IsInScope(ctx context.Context, userText, agentContext string) (bool, error) {
+	state := "Agent expertise: " + agentContext + "\n\nUser message: " + userText
+	resp, err := c.SystemOne(ctx, state, map[string]question{
+		"in_scope": Noul{
+			Instructions: "Is the user's message within the scope of this agent's described expertise?",
+		},
+	})
+	if err != nil {
+		return false, err
+	}
+	a, ok := resp.Answers["in_scope"]
+	if !ok {
+		return false, fmt.Errorf("jev: no 'in_scope' answer in response")
+	}
+	return a.Noul >= skillApplyThreshold, nil
+}
+
 func (c *Client) ep() string {
 	if c.endpoint != "" {
 		return c.endpoint
