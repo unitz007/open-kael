@@ -377,13 +377,6 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 			log.Printf("runtime: agent %q: onboarding checker: %v", hosted.Agent.ID, err)
 		}
 		if !onboarded {
-			h.pendingOnboardings.Store(setupKey, true)
-			if h.onboardingPromptedMarker != nil {
-				if err := h.onboardingPromptedMarker(ctx, msg.Conversation.IdentityID, msg.Conversation.ChatID); err != nil {
-					log.Printf("runtime: agent %q: onboarding prompted marker: %v", hosted.Agent.ID, err)
-				}
-			}
-			// Show the agent intro first, then ask for the user's intro.
 			var pubSkills []*domain.Skill
 			for _, s := range hosted.Agent.Skills {
 				if s.Visibility == domain.SkillPublic {
@@ -391,9 +384,41 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 				}
 			}
 			greeting := h.greetingBody(ctx, hosted.Agent, pubSkills, hosted.Agent.LLMs)
-			prompt := greeting + "\n\nBefore we get started — tell me a bit about yourself. " +
-				"Who are you, and what would you most like help with? A sentence or two is perfect."
-			h.deliverBestEffort(ctx, hosted, msg.Conversation, prompt)
+			// Complete onboarding immediately — no "tell me about yourself" step.
+			if h.onboardingCompleter != nil {
+				if err := h.onboardingCompleter(ctx,
+					msg.Conversation.IdentityID, msg.Conversation.ChatID,
+					hosted.Agent.ID, msg.Conversation.UserID, "",
+				); err != nil {
+					log.Printf("runtime: agent %q: onboarding completer: %v", hosted.Agent.ID, err)
+				}
+			}
+			// If the user still needs to link their email, append the prompt to
+			// the greeting so it arrives in one message rather than interrupting
+			// the first real interaction.
+			if h.emailLinkChecker != nil && msg.Conversation.UserID != "" {
+				emailKey := msg.Conversation.IdentityID + ":" + msg.Conversation.ChatID
+				dbEmailState := ""
+				if h.emailLinkStateGetter != nil {
+					if s, err := h.emailLinkStateGetter(ctx, msg.Conversation.IdentityID, msg.Conversation.ChatID); err == nil {
+						dbEmailState = s
+					}
+				}
+				if dbEmailState != "skipped" && dbEmailState != "sent" && dbEmailState != "awaiting" {
+					linked, err := h.emailLinkChecker(ctx, msg.Conversation.UserID)
+					if err != nil {
+						log.Printf("runtime: agent %q: email link checker: %v", hosted.Agent.ID, err)
+					}
+					if !linked {
+						greeting += "\n\nOne last thing — want to use me across other platforms? Reply with your email address to link your account, or type 'skip'."
+						h.pendingEmailLinks.Store(emailKey, true)
+						if h.emailLinkStateSetter != nil {
+							_ = h.emailLinkStateSetter(ctx, msg.Conversation.IdentityID, msg.Conversation.ChatID, "awaiting")
+						}
+					}
+				}
+			}
+			h.deliverBestEffort(ctx, hosted, msg.Conversation, greeting)
 			return
 		}
 	}
