@@ -68,11 +68,17 @@ func (r *IntegrationEventRegistry) EventsFor(service string) []*IntegrationEvent
 // do not create or delete them. Users connect to specific Identities within
 // an Integration via AppAuthorization (API providers) or MessengerChannel
 // (messaging providers) — never to the Integration directly.
+const (
+	IntegrationKindUser   = "user"   // creator-owned app (Slack, GitHub, Telegram, etc.)
+	IntegrationKindSystem = "system" // platform-owned, seeded at startup
+)
+
 type Integration struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
 	Service     string `json:"service"` // "github", "slack", "telegram", "discord", "google", etc.
 	Description string `json:"description,omitempty"`
+	Kind        string `json:"kind,omitempty"` // IntegrationKindUser | IntegrationKindSystem; default "user"
 
 	// Events is the set of named events this Integration can emit via its
 	// webhook source. Skills subscribe to events by name; the runtime

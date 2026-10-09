@@ -14,6 +14,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/unitz007/open-kael/domain"
 )
@@ -817,6 +818,25 @@ func buildSystemPrompt(agent *domain.Agent, userProfile, userInstructions string
 // domain.BindSkill's own local finish action, generalized to free-text
 // content instead of a Skill's typed OutputSchema, the same way
 // kael-platform's end_loop/final_message pairing works at the top level.
+func buildGetCurrentTimeAction() *domain.BoundAction {
+	return &domain.BoundAction{
+		Spec: domain.ActionSpec{
+			Name:        "get_current_time",
+			Description: "Returns the current UTC date and time. Call this when you need to know today's date or the current time.",
+			InputSchema: domain.Schema{Type: domain.SchemaTypeObject},
+		},
+		Invoke: func(_ context.Context, _ map[string]any) (any, error) {
+			now := time.Now().UTC()
+			return map[string]any{
+				"utc":      now.Format(time.RFC3339),
+				"date":     now.Format("2006-01-02"),
+				"time":     now.Format("15:04:05"),
+				"day_of_week": now.Weekday().String(),
+			}, nil
+		},
+	}
+}
+
 func buildFinishAction() *domain.BoundAction {
 	return &domain.BoundAction{
 		Spec: domain.ActionSpec{
@@ -960,7 +980,7 @@ func (h *Host) configureToolApprovalAction(hosted *HostedAgent) *domain.BoundAct
 // When a SkillRouter is configured, query_skill is injected into each
 // multi-tool skill so its nested LLM loop can delegate sub-tasks mid-turn.
 func (h *Host) actionsFor(ctx context.Context, hosted *HostedAgent) ([]*domain.BoundAction, error) {
-	actions := []*domain.BoundAction{buildFinishAction()}
+	actions := []*domain.BoundAction{buildFinishAction(), buildGetCurrentTimeAction()}
 
 	// Inject configure_tool_approval when a user is in context and a setter is
 	// registered — only user turns, never cron/event runs without a human.
