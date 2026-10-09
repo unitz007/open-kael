@@ -60,6 +60,11 @@ type Server struct {
 	// so the runtime (or messenger adapters) can update the platform command menu.
 	onAgentCommandChange func(agentID string, commands []domain.BotCommand)
 
+	// onAgentUpdate, when set, is called after PATCH /agents/{id} saves any
+	// mutable agent fields (e.g. Greeting). Receives the agent ID so the
+	// runtime can reload the in-memory agent.
+	onAgentUpdate func(agentID string)
+
 	// onIntegrationConnected, when set, is called after any AppAuthorization is
 	// successfully saved (POST /users/me/authorizations). Receives the userID
 	// and identityID of the newly connected integration.
@@ -150,6 +155,13 @@ func WithSkillChangeHook(f func(agentID string)) Option {
 // can update the platform's bot command menu.
 func WithAgentCommandChangeHook(f func(agentID string, commands []domain.BotCommand)) Option {
 	return func(s *Server) { s.onAgentCommandChange = f }
+}
+
+// WithAgentUpdateHook registers a callback invoked after PATCH /agents/{id}
+// saves any mutable agent field (e.g. Greeting). The runtime uses it to reload
+// the in-memory agent so the next onboarding message uses the new value.
+func WithAgentUpdateHook(f func(agentID string)) Option {
+	return func(s *Server) { s.onAgentUpdate = f }
 }
 
 // WithRoutePlugin registers a RoutePlugin whose Mount is called from routes()
@@ -279,6 +291,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /agents", ca(s.createAgent))
 	s.mux.HandleFunc("GET /agents", ca(s.listAgents))
 	s.mux.HandleFunc("GET /agents/{id}", ca(s.getAgent))
+	s.mux.HandleFunc("PATCH /agents/{id}", ca(s.patchAgent))
 	s.mux.HandleFunc("DELETE /agents/{id}", ca(s.deleteAgent))
 	s.mux.HandleFunc("PUT /agents/{id}/identities", ca(s.setAgentIdentities))
 	s.mux.HandleFunc("PUT /agents/{id}/commands", ca(s.setAgentCommands))

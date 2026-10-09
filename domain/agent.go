@@ -21,6 +21,11 @@ type Agent struct {
 
 	Instructions string `json:"instructions"`
 
+	// Greeting is the exact message sent to a user on their first interaction
+	// (onboarding). When set, greetingBody returns it verbatim instead of asking
+	// the LLM to compose one — making the intro deterministic.
+	Greeting string `json:"greeting,omitempty"`
+
 	// LLMConfig is the stored LLM preference for this agent — model and
 	// endpoint override. The live LLM client (Agent.LLMs) is built from it
 	// at boot/session time; it is never itself persisted.

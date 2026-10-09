@@ -741,13 +741,14 @@ func (h *Host) Get(agentID string) (*HostedAgent, bool) {
 	return hosted, ok
 }
 
-// ReloadAgentSkills refreshes the Skills slice on a registered HostedAgent by
-// calling loader, then replaces the in-memory agent. Safe to call at runtime —
-// the next turn and the next onboarding message both see the updated skills.
-func (h *Host) ReloadAgentSkills(ctx context.Context, agentID string, loader func(context.Context, string) (*domain.Agent, error)) {
+// ReloadAgent refreshes the mutable fields of a registered HostedAgent
+// (Skills, Greeting, Description, Instructions) by calling loader. Safe to
+// call at runtime — the next turn and the next onboarding message both see the
+// updated values.
+func (h *Host) ReloadAgent(ctx context.Context, agentID string, loader func(context.Context, string) (*domain.Agent, error)) {
 	fresh, err := loader(ctx, agentID)
 	if err != nil {
-		log.Printf("runtime: ReloadAgentSkills agent %q: %v", agentID, err)
+		log.Printf("runtime: ReloadAgent %q: %v", agentID, err)
 		return
 	}
 	h.mu.Lock()
@@ -757,6 +758,14 @@ func (h *Host) ReloadAgentSkills(ctx context.Context, agentID string, loader fun
 		return
 	}
 	hosted.Agent.Skills = fresh.Skills
+	hosted.Agent.Greeting = fresh.Greeting
+	hosted.Agent.Description = fresh.Description
+	hosted.Agent.Instructions = fresh.Instructions
+}
+
+// ReloadAgentSkills is an alias for ReloadAgent kept for backwards compatibility.
+func (h *Host) ReloadAgentSkills(ctx context.Context, agentID string, loader func(context.Context, string) (*domain.Agent, error)) {
+	h.ReloadAgent(ctx, agentID, loader)
 }
 
 // buildSystemPrompt constructs the agent's system prompt dynamically from its
@@ -1488,10 +1497,13 @@ func (h *Host) onboardingMessage(ctx context.Context, agent *domain.Agent, llms 
 	return
 }
 
-// greetingBody produces the conversational part of the onboarding message —
-// the agent intro and capability list — phrased by the LLM when one is
-// available, or by a plain template fallback.
+// greetingBody produces the conversational part of the onboarding message.
+// When agent.Greeting is set it is returned verbatim (deterministic path).
+// Otherwise an LLM composes a greeting, with a plain template as fallback.
 func (h *Host) greetingBody(ctx context.Context, agent *domain.Agent, publicSkills []*domain.Skill, llms []domain.LLM) string {
+	if agent.Greeting != "" {
+		return agent.Greeting
+	}
 	if len(llms) > 0 {
 		var prompt strings.Builder
 		prompt.WriteString("You are " + agent.Name + ".")

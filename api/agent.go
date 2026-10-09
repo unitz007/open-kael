@@ -93,6 +93,51 @@ func (s *Server) deleteAgent(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// patchAgent updates mutable text fields on an agent (Greeting, Description,
+// Instructions). Only fields present in the JSON body are updated.
+// PATCH /agents/{id}
+func (s *Server) patchAgent(w http.ResponseWriter, r *http.Request) {
+	agent, err := s.store.LoadAgent(r.Context(), r.PathValue("id"))
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			writeError(w, http.StatusNotFound, err)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if !agentAccessible(r.Context(), agent) {
+		writeError(w, http.StatusNotFound, domain.ErrNotFound)
+		return
+	}
+	var patch struct {
+		Greeting     *string `json:"greeting"`
+		Description  *string `json:"description"`
+		Instructions *string `json:"instructions"`
+	}
+	if err := decodeJSON(r, &patch); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if patch.Greeting != nil {
+		agent.Greeting = *patch.Greeting
+	}
+	if patch.Description != nil {
+		agent.Description = *patch.Description
+	}
+	if patch.Instructions != nil {
+		agent.Instructions = *patch.Instructions
+	}
+	if err := s.store.SaveAgent(r.Context(), agent); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if s.onAgentUpdate != nil {
+		s.onAgentUpdate(agent.ID)
+	}
+	writeJSON(w, http.StatusOK, agent)
+}
+
 // setAgentIdentities replaces the full set of identity IDs linked to an agent.
 // PUT /agents/{id}/identities — body: {"identity_ids": ["id-1", "id-2"]}
 func (s *Server) setAgentIdentities(w http.ResponseWriter, r *http.Request) {
