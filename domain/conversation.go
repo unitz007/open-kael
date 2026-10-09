@@ -15,6 +15,7 @@ type ConversationRef struct {
 	IdentityID string // set by Listener implementations; identifies which bot received the message
 	UserID     string // optional; resolved by the host from MessengerChannel before HandleTurn
 	MessageID  string // optional; set from InboundMessage.MessageID so ConversationActionProvider can react to the triggering message
+	SenderID   string // optional; stable platform user identity (e.g. Slack user ID, Telegram user ID) — differs from ChatID when the channel is a public workspace channel
 }
 
 // InboundMessage is what a Listener (runtime host, not this package — see

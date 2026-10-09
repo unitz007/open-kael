@@ -100,6 +100,8 @@ CREATE INDEX IF NOT EXISTS idx_messenger_channels_user_id ON messenger_channels 
 ALTER TABLE messenger_channels ADD COLUMN IF NOT EXISTS onboarding_prompted_at TIMESTAMPTZ;
 ALTER TABLE messenger_channels ADD COLUMN IF NOT EXISTS onboarded_at TIMESTAMPTZ;
 ALTER TABLE messenger_channels ADD COLUMN IF NOT EXISTS email_link_state TEXT NOT NULL DEFAULT '';
+ALTER TABLE messenger_channels ADD COLUMN IF NOT EXISTS sender_id TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_messenger_channels_identity_sender ON messenger_channels (identity_id, sender_id) WHERE sender_id <> '';
 
 -- Backfill: channels that existed before onboarding was introduced have NULL
 -- onboarded_at. Treat them as already onboarded so returning users don't get

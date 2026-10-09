@@ -11,17 +11,29 @@ import (
 
 func (s *Store) SaveMessengerChannel(ctx context.Context, ch *domain.MessengerChannel) error {
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO messenger_channels (id, identity_id, user_id, channel_ref)
-		VALUES ($1, $2, $3, $4)
-		ON CONFLICT (identity_id, channel_ref) DO UPDATE SET user_id = EXCLUDED.user_id
-	`, ch.ID, ch.IdentityID, ch.UserID, ch.ChannelRef)
+		INSERT INTO messenger_channels (id, identity_id, user_id, channel_ref, sender_id)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (identity_id, channel_ref) DO UPDATE SET user_id = EXCLUDED.user_id, sender_id = EXCLUDED.sender_id
+	`, ch.ID, ch.IdentityID, ch.UserID, ch.ChannelRef, ch.SenderID)
 	return err
 }
 
 func (s *Store) GetMessengerChannelByIdentityAndRef(ctx context.Context, identityID, channelRef string) (*domain.MessengerChannel, error) {
 	row := s.pool.QueryRow(ctx,
-		`SELECT id, identity_id, user_id, channel_ref, onboarding_prompted_at, onboarded_at FROM messenger_channels WHERE identity_id = $1 AND channel_ref = $2`,
+		`SELECT id, identity_id, user_id, channel_ref, sender_id, onboarding_prompted_at, onboarded_at FROM messenger_channels WHERE identity_id = $1 AND channel_ref = $2`,
 		identityID, channelRef,
+	)
+	ch, err := scanMessengerChannel(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, domain.ErrNotFound
+	}
+	return ch, err
+}
+
+func (s *Store) GetMessengerChannelByIdentityAndSender(ctx context.Context, identityID, senderID string) (*domain.MessengerChannel, error) {
+	row := s.pool.QueryRow(ctx,
+		`SELECT id, identity_id, user_id, channel_ref, sender_id, onboarding_prompted_at, onboarded_at FROM messenger_channels WHERE identity_id = $1 AND sender_id = $2 LIMIT 1`,
+		identityID, senderID,
 	)
 	ch, err := scanMessengerChannel(row)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -40,7 +52,7 @@ func (s *Store) MarkMessengerChannelOnboardingPrompted(ctx context.Context, iden
 
 func (s *Store) ListMessengerChannelsByUser(ctx context.Context, userID string) ([]*domain.MessengerChannel, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, identity_id, user_id, channel_ref, onboarding_prompted_at, onboarded_at FROM messenger_channels WHERE user_id = $1`,
+		`SELECT id, identity_id, user_id, channel_ref, sender_id, onboarding_prompted_at, onboarded_at FROM messenger_channels WHERE user_id = $1`,
 		userID,
 	)
 	if err != nil {
@@ -66,7 +78,7 @@ func (s *Store) DeleteMessengerChannel(ctx context.Context, id string) error {
 
 func scanMessengerChannel(row pgx.Row) (*domain.MessengerChannel, error) {
 	var ch domain.MessengerChannel
-	if err := row.Scan(&ch.ID, &ch.IdentityID, &ch.UserID, &ch.ChannelRef, &ch.OnboardingPromptedAt, &ch.OnboardedAt); err != nil {
+	if err := row.Scan(&ch.ID, &ch.IdentityID, &ch.UserID, &ch.ChannelRef, &ch.SenderID, &ch.OnboardingPromptedAt, &ch.OnboardedAt); err != nil {
 		return nil, err
 	}
 	return &ch, nil

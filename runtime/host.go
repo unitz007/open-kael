@@ -128,8 +128,10 @@ type Host struct {
 	// autoProvisioner, when set, is called when an inbound message arrives from
 	// an unrecognised channelRef. It creates a new platform User and a
 	// MessengerChannel binding, returning the new user's ID so the turn can
-	// proceed immediately without a link-code round-trip.
-	autoProvisioner func(ctx context.Context, identityID, channelRef string) (userID string, err error)
+	// proceed immediately without a link-code round-trip. senderID is the
+	// stable platform user identity (e.g. Slack user ID) — may be empty for
+	// platforms that don't distinguish sender from channel.
+	autoProvisioner func(ctx context.Context, identityID, channelRef, senderID string) (userID string, err error)
 
 	// setupChecker, when set, is called after userID is known. It returns the
 	// identityIDs of the agent's integrations that the user hasn't yet
@@ -377,8 +379,10 @@ func (h *Host) SetLinkCodeGenerator(f func(ctx context.Context, identityID, chan
 // SetAutoProvisioner registers a function that creates a new User and
 // MessengerChannel for a first-time bot user, returning the new user's ID.
 // When set, first messages from unknown users immediately get a user identity
-// instead of a link-code round-trip.
-func (h *Host) SetAutoProvisioner(f func(ctx context.Context, identityID, channelRef string) (string, error)) {
+// instead of a link-code round-trip. senderID is the stable platform user
+// identity (e.g. Slack user ID) — may be empty for platforms where the
+// channel and user are the same (e.g. Telegram DMs).
+func (h *Host) SetAutoProvisioner(f func(ctx context.Context, identityID, channelRef, senderID string) (string, error)) {
 	h.autoProvisioner = f
 }
 

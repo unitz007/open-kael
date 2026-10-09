@@ -296,7 +296,7 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 	// Unlinked user — auto-provision when possible, otherwise send a link code.
 	if msg.Conversation.UserID == "" {
 		if h.autoProvisioner != nil {
-			userID, err := h.autoProvisioner(ctx, msg.Conversation.IdentityID, msg.Conversation.ChatID)
+			userID, err := h.autoProvisioner(ctx, msg.Conversation.IdentityID, msg.Conversation.ChatID, msg.Conversation.SenderID)
 			if err == nil {
 				msg.Conversation.UserID = userID
 			} else {

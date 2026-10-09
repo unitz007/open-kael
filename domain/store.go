@@ -75,6 +75,11 @@ type Store interface {
 	// MessengerChannel CRUD — user's messaging address on a bot Identity.
 	SaveMessengerChannel(ctx context.Context, ch *MessengerChannel) error
 	GetMessengerChannelByIdentityAndRef(ctx context.Context, identityID, channelRef string) (*MessengerChannel, error)
+	// GetMessengerChannelByIdentityAndSender returns any existing channel for a
+	// given (identityID, senderID) pair — used to reuse a user_id across
+	// multiple ChannelRefs (e.g. same Slack user in different workspace channels).
+	// Returns ErrNotFound when no channel exists for this sender yet.
+	GetMessengerChannelByIdentityAndSender(ctx context.Context, identityID, senderID string) (*MessengerChannel, error)
 	ListMessengerChannelsByUser(ctx context.Context, userID string) ([]*MessengerChannel, error)
 	DeleteMessengerChannel(ctx context.Context, id string) error
 
