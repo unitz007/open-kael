@@ -1612,7 +1612,7 @@ func (h *Host) deliverBestEffort(ctx context.Context, hosted *HostedAgent, conv 
 	if identity != nil {
 		connectionRef, _ = domain.ConnectionRefFromContext(ctx, identity.ID)
 	}
-	input := map[string]any{"recipient": conv.ChatID, "text": text}
+	input := map[string]any{"recipient": conv.ChatID, "text": text, "thread_id": conv.ThreadID}
 	for _, e := range extra {
 		for k, v := range e {
 			input[k] = v
