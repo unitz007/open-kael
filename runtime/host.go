@@ -1291,7 +1291,7 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 		// answer anything. Agents with no skills fall back to the full loop.
 		if len(hosted.Agent.Skills) > 0 {
 			log.Printf("skill-router: no skills matched — out of scope, letting LLM decline")
-			return h.respondDirectly(ctx, hosted, messages, actions)
+			return h.respondDirectly(ctx, hosted, withDeclineHint(messages), actions)
 		}
 		// No skills defined — use ScopeChecker if available to gate by
 		// the agent's description before running the full NativeLoop.
@@ -1309,7 +1309,7 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 					log.Printf("skill-router: scope check failed: %v — running NativeLoop", serr)
 				} else if !inScope {
 					log.Printf("skill-router: message out of scope (no skills) — letting LLM decline")
-					return h.respondDirectly(ctx, hosted, messages, actions)
+					return h.respondDirectly(ctx, hosted, withDeclineHint(messages), actions)
 				}
 			}
 		}
@@ -1353,6 +1353,26 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 	loopActions = append(loopActions, convActions...)
 	loopActions = append(loopActions, buildFinishAction())
 	return h.runNativeLoop(ctx, hosted, messages, loopActions)
+}
+
+// withDeclineHint prepends a system-level directive to the message list so
+// the LLM knows it must decline the user's request instead of answering it.
+// Inserted as a second system message right before the user's message so it
+// takes precedence over the general system prompt without replacing it.
+func withDeclineHint(messages []domain.Message) []domain.Message {
+	const hint = "The user's request is outside your defined area of expertise. " +
+		"Politely decline, briefly explain what you can help with, and invite them to ask something relevant."
+	out := make([]domain.Message, 0, len(messages)+1)
+	// Keep everything except the last message (the user turn), inject the
+	// hint, then re-append the user turn so the LLM sees it in context.
+	if len(messages) > 0 {
+		out = append(out, messages[:len(messages)-1]...)
+		out = append(out, domain.Message{Role: domain.RoleSystem, Content: hint})
+		out = append(out, messages[len(messages)-1])
+	} else {
+		out = append(out, domain.Message{Role: domain.RoleSystem, Content: hint})
+	}
+	return out
 }
 
 // respondDirectly runs a turn with only the finish action available — no skill
