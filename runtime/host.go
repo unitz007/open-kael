@@ -82,9 +82,10 @@ type Host struct {
 	llmFactory func(*domain.Agent) []domain.LLM
 
 	// userChannelResolver maps a {identityID, channelRef} pair to the platform
-	// UserID that registered that messenger address. Set via
+	// UserID that registered that messenger address. senderID is the stable
+	// platform user identity (e.g. Slack user ID); may be empty. Set via
 	// SetUserChannelResolver; nil means user scoping is disabled.
-	userChannelResolver func(ctx context.Context, identityID, channelRef string) (string, error)
+	userChannelResolver func(ctx context.Context, identityID, channelRef, senderID string) (string, error)
 
 	// userConnectionRefLoader loads a map of identityID → connectionRef for
 	// a user's AppAuthorizations. Combined with userChannelResolver, this
@@ -315,8 +316,10 @@ func (h *Host) SetSkillRouter(r SkillRouter) {
 
 // SetUserChannelResolver registers a function that maps {identityID, channelRef}
 // to a platform UserID. When set, the host resolves the user on every inbound
-// message and makes their connection refs available to the turn.
-func (h *Host) SetUserChannelResolver(f func(ctx context.Context, identityID, channelRef string) (string, error)) {
+// message and makes their connection refs available to the turn. senderID is
+// the stable platform user identity (e.g. Slack user ID) — use it to look up
+// or merge a user when the same person messages from multiple channels.
+func (h *Host) SetUserChannelResolver(f func(ctx context.Context, identityID, channelRef, senderID string) (string, error)) {
 	h.userChannelResolver = f
 }
 

@@ -288,7 +288,7 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 
 	// Resolve the platform user from the messenger identity.
 	if h.userChannelResolver != nil && msg.Conversation.UserID == "" {
-		if userID, err := h.userChannelResolver(ctx, msg.Conversation.IdentityID, msg.Conversation.ChatID); err == nil {
+		if userID, err := h.userChannelResolver(ctx, msg.Conversation.IdentityID, msg.Conversation.ChatID, msg.Conversation.SenderID); err == nil {
 			msg.Conversation.UserID = userID
 		}
 	}
@@ -631,7 +631,7 @@ func (h *Host) handleCallbackQuery(ctx context.Context, hosted *HostedAgent, msg
 
 	// Resolve the platform user — same as the normal message path.
 	if h.userChannelResolver != nil && msg.Conversation.UserID == "" {
-		if userID, err := h.userChannelResolver(ctx, msg.Conversation.IdentityID, msg.Conversation.ChatID); err == nil {
+		if userID, err := h.userChannelResolver(ctx, msg.Conversation.IdentityID, msg.Conversation.ChatID, msg.Conversation.SenderID); err == nil {
 			msg.Conversation.UserID = userID
 		}
 	}
@@ -723,7 +723,7 @@ func (h *Host) handleInstructionsCallback(ctx context.Context, hosted *HostedAge
 func (h *Host) handleInstructionsSubmission(ctx context.Context, hosted *HostedAgent, msg domain.InboundMessage) {
 	// Resolve user if not already set.
 	if msg.Conversation.UserID == "" && h.userChannelResolver != nil {
-		if userID, err := h.userChannelResolver(ctx, msg.Conversation.IdentityID, msg.Conversation.ChatID); err == nil {
+		if userID, err := h.userChannelResolver(ctx, msg.Conversation.IdentityID, msg.Conversation.ChatID, msg.Conversation.SenderID); err == nil {
 			msg.Conversation.UserID = userID
 		}
 	}
