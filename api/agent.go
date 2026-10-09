@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/unitz007/open-kael/domain"
@@ -116,6 +117,18 @@ func (s *Server) setAgentIdentities(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	oldIDs := agent.IdentityIDs
+	// Reject any identity already claimed by a different agent.
+	for _, id := range body.IdentityIDs {
+		existing, err := s.store.GetAgentByIdentityID(r.Context(), id)
+		if err != nil && !errors.Is(err, domain.ErrNotFound) {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		if existing != nil && existing.ID != agent.ID {
+			writeError(w, http.StatusConflict, fmt.Errorf("identity %q is already linked to another agent", id))
+			return
+		}
+	}
 	agent.IdentityIDs = body.IdentityIDs
 	if err := s.store.SaveAgent(r.Context(), agent); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
