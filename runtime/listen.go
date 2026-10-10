@@ -536,32 +536,6 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 		}
 	}
 
-	// /instructions command: prompt the user to set their personal agent instructions.
-	if isInstructionsCommand(msg.Text) && msg.Conversation.UserID != "" {
-		if executor, ok := h.executorForMessage(hosted, msg); ok {
-			if prompter, ok := executor.(domain.InstructionsPromptProvider); ok {
-				var current string
-				if h.userAgentConfigLoader != nil {
-					if cfg, err := h.userAgentConfigLoader(ctx, msg.Conversation.UserID, hosted.Agent.ID); err == nil {
-						current = cfg.Instructions
-					}
-				}
-				wait, err := prompter.SendInstructionsPrompt(ctx, msg.Conversation.ChatID, current, "")
-				if err != nil {
-					log.Printf("runtime: agent %q: send instructions prompt: %v", hosted.Agent.ID, err)
-					return
-				}
-				if wait {
-					h.pendingInstructions.Store(instrKey, pendingInstructionsState{
-						userID:  msg.Conversation.UserID,
-						agentID: hosted.Agent.ID,
-					})
-				}
-				return
-			}
-		}
-	}
-
 	// Carry the inbound message ID into the ConversationRef so
 	// ConversationActionProvider implementations can react to the triggering
 	// message without the model needing to know or supply the ID.
@@ -773,12 +747,6 @@ func (h *Host) handleLinkAccountCallback(ctx context.Context, hosted *HostedAgen
 func isSettingsCommand(text string) bool {
 	t := strings.ToLower(strings.TrimSpace(text))
 	return t == "/settings" || t == "settings"
-}
-
-// isInstructionsCommand reports whether text is a personal-instructions trigger.
-func isInstructionsCommand(text string) bool {
-	t := strings.ToLower(strings.TrimSpace(text))
-	return t == "/instructions" || t == "instructions"
 }
 
 // matchBotCommand checks whether text matches one of the agent's registered
