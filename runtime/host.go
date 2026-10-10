@@ -355,7 +355,9 @@ func (h *Host) SetUserToolApprovalSetter(f func(ctx context.Context, userID, too
 // and setter are registered. Safe to call multiple times — only creates once.
 func (h *Host) maybeInitSettingsFlow() {
 	if h.userToolApprovalLoader != nil && h.userToolApprovalSetter != nil && h.settingsFlow == nil {
-		h.settingsFlow = newSettingsFlow(h.userToolApprovalLoader, h.userToolApprovalSetter)
+		flow := newSettingsFlow(h.userToolApprovalLoader, h.userToolApprovalSetter)
+		flow.checkLinkedEmail = h.emailLinkChecker
+		h.settingsFlow = flow
 	}
 }
 
@@ -533,6 +535,9 @@ func (h *Host) SetEmailLinkFlow(
 	h.emailLinkStateGetter = stateGetter
 	h.emailLinkStateSetter = stateSetter
 	h.emailLinkInitiator = initiator
+	if h.settingsFlow != nil {
+		h.settingsFlow.checkLinkedEmail = checker
+	}
 }
 
 // SetConnectIntegrationNameLoader registers a callback that returns the

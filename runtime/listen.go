@@ -393,31 +393,6 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 					log.Printf("runtime: agent %q: onboarding completer: %v", hosted.Agent.ID, err)
 				}
 			}
-			// If the user still needs to link their email, append the prompt to
-			// the greeting so it arrives in one message rather than interrupting
-			// the first real interaction.
-			if h.emailLinkChecker != nil && msg.Conversation.UserID != "" {
-				emailKey := msg.Conversation.IdentityID + ":" + msg.Conversation.ChatID
-				dbEmailState := ""
-				if h.emailLinkStateGetter != nil {
-					if s, err := h.emailLinkStateGetter(ctx, msg.Conversation.IdentityID, msg.Conversation.ChatID); err == nil {
-						dbEmailState = s
-					}
-				}
-				if dbEmailState != "skipped" && dbEmailState != "sent" && dbEmailState != "awaiting" {
-					linked, err := h.emailLinkChecker(ctx, msg.Conversation.UserID)
-					if err != nil {
-						log.Printf("runtime: agent %q: email link checker: %v", hosted.Agent.ID, err)
-					}
-					if !linked {
-						greeting += "\n\nOne last thing — want to use me across other platforms? Reply with your email address to link your account, or type 'skip'."
-						h.pendingEmailLinks.Store(emailKey, true)
-						if h.emailLinkStateSetter != nil {
-							_ = h.emailLinkStateSetter(ctx, msg.Conversation.IdentityID, msg.Conversation.ChatID, "awaiting")
-						}
-					}
-				}
-			}
 			h.deliverBestEffort(ctx, hosted, msg.Conversation, greeting)
 			return
 		}
@@ -432,10 +407,8 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 		_, inMemAwaiting := h.pendingEmailLinks.Load(emailKey)
 
 		// If not in memory, check DB state (handles restarts between prompt and reply).
-		dbState := ""
 		if !inMemAwaiting && h.emailLinkStateGetter != nil {
 			if s, err := h.emailLinkStateGetter(ctx, msg.Conversation.IdentityID, msg.Conversation.ChatID); err == nil {
-				dbState = s
 				inMemAwaiting = s == "awaiting"
 			}
 		}
@@ -475,21 +448,7 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 			return
 		}
 
-		// Not awaiting — check whether we should prompt.
-		if dbState != "skipped" && dbState != "sent" {
-			linked, err := h.emailLinkChecker(ctx, msg.Conversation.UserID)
-			if err != nil {
-				log.Printf("runtime: agent %q: email link checker: %v", hosted.Agent.ID, err)
-			}
-			if !linked {
-				h.pendingEmailLinks.Store(emailKey, true)
-				if h.emailLinkStateSetter != nil {
-					_ = h.emailLinkStateSetter(ctx, msg.Conversation.IdentityID, msg.Conversation.ChatID, "awaiting")
-				}
-				h.deliverBestEffort(ctx, hosted, msg.Conversation, "One last thing — want to use this agent across other platforms? Reply with your email address to link your account, or type 'skip'.")
-				return
-			}
-		}
+		// Auto-prompt removed — email linking is now user-initiated via /settings.
 	}
 
 	// Check whether the user still needs to connect any integrations.
@@ -674,6 +633,11 @@ func (h *Host) handleCallbackQuery(ctx context.Context, hosted *HostedAgent, msg
 			return
 		}
 
+		if action == "link_account" {
+			h.handleLinkAccountCallback(ctx, hosted, msg, executor)
+			return
+		}
+
 		if h.settingsFlow == nil {
 			return
 		}
@@ -765,6 +729,34 @@ func (h *Host) handleInstructionsSubmission(ctx context.Context, hosted *HostedA
 		return
 	}
 	h.deliverBestEffort(ctx, hosted, msg.Conversation, "Got it! I've saved your personal instructions and will keep them in mind going forward.")
+}
+
+// handleLinkAccountCallback handles the kael_sm:link_account button tap.
+// It closes the settings menu, sets pending email link state, and prompts the
+// user to type their email address. The existing pendingEmailLinks reply handler
+// then processes their response.
+func (h *Host) handleLinkAccountCallback(ctx context.Context, hosted *HostedAgent, msg domain.InboundMessage, executor domain.Executor) {
+	cq := msg.CallbackQuery
+
+	// Close the settings menu.
+	if provider, ok := executor.(domain.SettingsMenuProvider); ok {
+		if err := provider.DeleteSettingsMenu(ctx, msg.Conversation.ChatID, cq.MessageID); err != nil {
+			log.Printf("runtime: link account: delete settings menu: %v", err)
+		}
+	}
+
+	// Arm the pending email link state.
+	emailKey := msg.Conversation.IdentityID + ":" + msg.Conversation.ChatID
+	h.pendingEmailLinks.Store(emailKey, true)
+	if h.emailLinkStateSetter != nil {
+		_ = h.emailLinkStateSetter(ctx, msg.Conversation.IdentityID, msg.Conversation.ChatID, "awaiting")
+	}
+
+	h.deliverBestEffort(ctx, hosted, msg.Conversation, "Reply with your email address to link your account across platforms, or type 'skip' to cancel.")
+
+	if ack, ok := executor.(domain.CallbackQueryAcknowledger); ok {
+		go func() { _ = ack.AcknowledgeCallbackQuery(context.Background(), cq.QueryID) }()
+	}
 }
 
 // isSettingsCommand reports whether text is a settings-menu trigger.

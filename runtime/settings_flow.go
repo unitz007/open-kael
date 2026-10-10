@@ -29,9 +29,10 @@ type menuSession struct {
 // a stale menu in chat may navigate back to the integration list instead of
 // the last-viewed page; this is acceptable for a settings flow.
 type SettingsFlow struct {
-	getApprovals func(ctx context.Context, userID string) (map[string]bool, error)
-	setApproval  func(ctx context.Context, userID, toolID string, requires bool) error
-	sessions     sync.Map // key: identityID+":"+channelRef → *menuSession
+	getApprovals     func(ctx context.Context, userID string) (map[string]bool, error)
+	setApproval      func(ctx context.Context, userID, toolID string, requires bool) error
+	checkLinkedEmail func(ctx context.Context, userID string) (bool, error)
+	sessions         sync.Map // key: identityID+":"+channelRef → *menuSession
 }
 
 func newSettingsFlow(
@@ -39,6 +40,14 @@ func newSettingsFlow(
 	setApproval func(ctx context.Context, userID, toolID string, requires bool) error,
 ) *SettingsFlow {
 	return &SettingsFlow{getApprovals: getApprovals, setApproval: setApproval}
+}
+
+func (f *SettingsFlow) isEmailLinked(ctx context.Context, userID string) bool {
+	if f.checkLinkedEmail == nil || userID == "" {
+		return true // treat as linked when checker is absent so the button stays hidden
+	}
+	linked, _ := f.checkLinkedEmail(ctx, userID)
+	return linked
 }
 
 // Open posts the settings main menu for the user.
@@ -50,7 +59,7 @@ func (f *SettingsFlow) Open(ctx context.Context, provider domain.SettingsMenuPro
 	}
 	sessionKey := identityID + ":" + channelRef
 	f.sessions.Store(sessionKey, &menuSession{})
-	menu := f.buildMainMenu(ctx, hosted, approvals)
+	menu := f.buildMainMenu(ctx, hosted, approvals, userID)
 	if _, err := provider.PostSettingsMenu(ctx, channelRef, menu); err != nil {
 		log.Printf("runtime: settings: post menu channel %s: %v", channelRef, err)
 	}
@@ -71,7 +80,7 @@ func (f *SettingsFlow) Handle(ctx context.Context, provider domain.SettingsMenuP
 	case action == "nav:main":
 		f.sessions.Store(sessionKey, &menuSession{})
 		approvals, _ := f.getApprovals(ctx, userID)
-		menu := f.buildMainMenu(ctx, hosted, approvals)
+		menu := f.buildMainMenu(ctx, hosted, approvals, userID)
 		_ = provider.UpdateSettingsMenu(ctx, channelRef, messageID, menu)
 
 	case strings.HasPrefix(action, "nav:tools:"):
@@ -110,7 +119,7 @@ func (f *SettingsFlow) Handle(ctx context.Context, provider domain.SettingsMenuP
 		if sess.integrationID != "" {
 			menu = f.buildToolListMenu(hosted, sess.integrationID, sess.page, approvals)
 		} else {
-			menu = f.buildMainMenu(ctx, hosted, approvals)
+			menu = f.buildMainMenu(ctx, hosted, approvals, userID)
 		}
 		_ = provider.UpdateSettingsMenu(ctx, channelRef, messageID, menu)
 	}
@@ -120,7 +129,7 @@ func (f *SettingsFlow) Handle(ctx context.Context, provider domain.SettingsMenuP
 // It lists each integration that the user has connected and that has at least
 // one opt-in-able (non-mandatory) tool. Bot-level messenger integrations
 // (Telegram, Slack, etc.) are excluded since they are not user-configurable.
-func (f *SettingsFlow) buildMainMenu(ctx context.Context, hosted *HostedAgent, approvals map[string]bool) *domain.SettingsMenu {
+func (f *SettingsFlow) buildMainMenu(ctx context.Context, hosted *HostedAgent, approvals map[string]bool, userID string) *domain.SettingsMenu {
 	rows := []domain.SettingsRow{}
 
 	// Bot-level integrations (the messenger channels themselves) are not
@@ -174,12 +183,18 @@ func (f *SettingsFlow) buildMainMenu(ctx context.Context, hosted *HostedAgent, a
 		})
 	}
 	rows = append(rows, domain.SettingsRow{Label: "📝 Personal Instructions", Callback: "kael_sm:instructions"})
+	if f.isEmailLinked(ctx, userID) {
+		rows = append(rows, domain.SettingsRow{Label: "✅ Account Linked"})
+	} else {
+		rows = append(rows, domain.SettingsRow{Label: "🔗 Link Account", Callback: "kael_sm:link_account"})
+	}
 	rows = append(rows, domain.SettingsRow{Label: "Close", Callback: "kael_sm:close"})
 
 	title := "⚙️ Agent Settings\n\n" +
 		"Here you can control how your agent behaves:\n\n" +
 		"• Tap an integration to choose which tools ask for your approval before they run.\n" +
-		"• Set Personal Instructions to tell the agent about yourself."
+		"• Set Personal Instructions to tell the agent about yourself.\n" +
+		"• Link Account to use this agent across multiple platforms."
 	return &domain.SettingsMenu{Title: title, Rows: rows}
 }
 
