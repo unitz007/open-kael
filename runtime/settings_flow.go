@@ -73,6 +73,9 @@ func (f *SettingsFlow) Handle(ctx context.Context, provider domain.SettingsMenuP
 	sessionKey := identityID + ":" + channelRef
 
 	switch {
+	case action == "noop":
+		// Section header button — do nothing; the callback is acknowledged by the host.
+
 	case action == "close":
 		f.sessions.Delete(sessionKey)
 		if err := provider.DeleteSettingsMenu(ctx, channelRef, messageID); err != nil {
