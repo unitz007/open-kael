@@ -384,6 +384,9 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 				}
 			}
 			greeting := h.greetingBody(ctx, hosted.Agent, pubSkills, hosted.Agent.LLMs)
+			if h.settingsFlow != nil {
+				greeting += "\n\nType /settings to manage your preferences or link your account across platforms."
+			}
 			// Complete onboarding immediately — no "tell me about yourself" step.
 			if h.onboardingCompleter != nil {
 				if err := h.onboardingCompleter(ctx,
