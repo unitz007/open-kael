@@ -641,6 +641,13 @@ func (h *Host) handleCallbackQuery(ctx context.Context, hosted *HostedAgent, msg
 			return
 		}
 
+		if action == "account_linked" {
+			if ack, ok := executor.(domain.CallbackQueryAcknowledger); ok {
+				go func() { _ = ack.AcknowledgeCallbackQuery(context.Background(), msg.CallbackQuery.QueryID) }()
+			}
+			return
+		}
+
 		if h.settingsFlow == nil {
 			return
 		}

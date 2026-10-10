@@ -184,7 +184,7 @@ func (f *SettingsFlow) buildMainMenu(ctx context.Context, hosted *HostedAgent, a
 	}
 	rows = append(rows, domain.SettingsRow{Label: "📝 Personal Instructions", Callback: "kael_sm:instructions"})
 	if f.isEmailLinked(ctx, userID) {
-		rows = append(rows, domain.SettingsRow{Label: "✅ Account Linked"})
+		rows = append(rows, domain.SettingsRow{Label: "✅ Account Linked", Callback: "kael_sm:account_linked"})
 	} else {
 		rows = append(rows, domain.SettingsRow{Label: "🔗 Link Account", Callback: "kael_sm:link_account"})
 	}
