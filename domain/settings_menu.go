@@ -31,10 +31,23 @@ type SettingsMenu struct {
 	Rows  []SettingsRow
 }
 
-// SettingsRow is one button row in a SettingsMenu.
-// A row with an empty Callback is rendered as a non-interactive label or
-// visual separator, at the provider's discretion.
+// SettingsRow is one row of one or more buttons in a SettingsMenu.
+// Most rows hold a single button; use two buttons for a compact side-by-side
+// layout (e.g. Back + Close, or a two-column tool grid).
+// A row whose buttons all have an empty Callback is rendered as a
+// non-interactive label or visual separator at the provider's discretion.
 type SettingsRow struct {
-	Label    string // display text shown on the button, e.g. "✅ Make Transfer"
-	Callback string // kael_sm:… callback data; empty for separators
+	Buttons []SettingsButton
 }
+
+// SettingsButton is a single tappable button within a SettingsRow.
+type SettingsButton struct {
+	Label    string // display text, e.g. "✅ Make Transfer"
+	Callback string // kael_sm:… callback data; empty for non-interactive labels
+}
+
+// Row builds a SettingsRow with the given buttons.
+func Row(btns ...SettingsButton) SettingsRow { return SettingsRow{Buttons: btns} }
+
+// Btn builds a SettingsButton with the given label and callback.
+func Btn(label, callback string) SettingsButton { return SettingsButton{Label: label, Callback: callback} }

@@ -77,10 +77,24 @@ func (f *SettingsFlow) Handle(ctx context.Context, provider domain.SettingsMenuP
 			log.Printf("runtime: settings: delete menu channel %s: %v", channelRef, err)
 		}
 
+	case action == "noop":
+		// Section header tapped — nothing to do; the spinner is dismissed by
+		// the caller's AcknowledgeCallbackQuery after Handle returns.
+
 	case action == "nav:main":
 		f.sessions.Store(sessionKey, &menuSession{})
 		approvals, _ := f.getApprovals(ctx, userID)
 		menu := f.buildMainMenu(ctx, hosted, approvals, userID)
+		_ = provider.UpdateSettingsMenu(ctx, channelRef, messageID, menu)
+
+	case action == "nav:instructions":
+		f.sessions.Store(sessionKey, &menuSession{})
+		menu := f.buildInstructionsMenu(hosted)
+		_ = provider.UpdateSettingsMenu(ctx, channelRef, messageID, menu)
+
+	case action == "nav:account":
+		f.sessions.Store(sessionKey, &menuSession{})
+		menu := f.buildAccountMenu(ctx, userID)
 		_ = provider.UpdateSettingsMenu(ctx, channelRef, messageID, menu)
 
 	case strings.HasPrefix(action, "nav:tools:"):
@@ -126,9 +140,6 @@ func (f *SettingsFlow) Handle(ctx context.Context, provider domain.SettingsMenuP
 }
 
 // buildMainMenu constructs the top-level settings screen.
-// It lists each integration that the user has connected and that has at least
-// one opt-in-able (non-mandatory) tool. Bot-level messenger integrations
-// (Telegram, Slack, etc.) are excluded since they are not user-configurable.
 func (f *SettingsFlow) buildMainMenu(ctx context.Context, hosted *HostedAgent, approvals map[string]bool, userID string) *domain.SettingsMenu {
 	rows := []domain.SettingsRow{}
 
@@ -141,14 +152,11 @@ func (f *SettingsFlow) buildMainMenu(ctx context.Context, hosted *HostedAgent, a
 		}
 	}
 
-	// Build a map of integrationID → identityID so we can check connection refs.
 	integrationToIdentity := map[string]string{}
 	for _, identity := range hosted.Deps.IdentitiesByID {
 		integrationToIdentity[identity.IntegrationID] = identity.ID
 	}
 
-	// Collect integrations that have at least one non-mandatory tool AND that
-	// the current user has actually connected (non-empty connection ref).
 	type integrationEntry struct {
 		id   string
 		name string
@@ -162,7 +170,6 @@ func (f *SettingsFlow) buildMainMenu(ctx context.Context, hosted *HostedAgent, a
 		if seen[tool.IntegrationID] {
 			continue
 		}
-		// Only show integrations the user has connected.
 		identityID := integrationToIdentity[tool.IntegrationID]
 		if ref, _ := domain.ConnectionRefFromContext(ctx, identityID); ref == "" {
 			continue
@@ -176,31 +183,32 @@ func (f *SettingsFlow) buildMainMenu(ctx context.Context, hosted *HostedAgent, a
 	}
 	sort.Slice(integrations, func(i, j int) bool { return integrations[i].name < integrations[j].name })
 
-	for _, intg := range integrations {
-		rows = append(rows, domain.SettingsRow{
-			Label:    intg.name + " →",
-			Callback: "kael_sm:nav:tools:" + intg.id + ":0",
-		})
+	if len(integrations) > 0 {
+		rows = append(rows, domain.Row(domain.Btn("── Apps ──", "kael_sm:noop")))
+		for _, intg := range integrations {
+			rows = append(rows, domain.Row(domain.Btn(intg.name+" →", "kael_sm:nav:tools:"+intg.id+":0")))
+		}
 	}
-	rows = append(rows, domain.SettingsRow{Label: "📝 Personal Instructions", Callback: "kael_sm:instructions"})
-	if f.isEmailLinked(ctx, userID) {
-		rows = append(rows, domain.SettingsRow{Label: "✅ Account Linked", Callback: "kael_sm:account_linked"})
-	} else {
-		rows = append(rows, domain.SettingsRow{Label: "🔗 Link Account", Callback: "kael_sm:link_account"})
-	}
-	rows = append(rows, domain.SettingsRow{Label: "Close", Callback: "kael_sm:close"})
 
-	title := "⚙️ Agent Settings\n\n" +
-		"Here you can control how your agent behaves:\n\n" +
-		"• Tap an integration to choose which tools ask for your approval before they run.\n" +
-		"• Set Personal Instructions to tell the agent about yourself.\n" +
-		"• Link Account to use this agent across multiple platforms."
-	return &domain.SettingsMenu{Title: title, Rows: rows}
+	rows = append(rows, domain.Row(domain.Btn("── Preferences ──", "kael_sm:noop")))
+
+	linkLabel := "🔗 Link Account"
+	if f.isEmailLinked(ctx, userID) {
+		linkLabel = "✅ Account Linked"
+	}
+	rows = append(rows, domain.Row(
+		domain.Btn("💬 Instructions", "kael_sm:nav:instructions"),
+		domain.Btn(linkLabel, "kael_sm:nav:account"),
+	))
+
+	rows = append(rows, domain.Row(domain.Btn("✕  Close", "kael_sm:close")))
+
+	return &domain.SettingsMenu{Title: "⚙️ " + hosted.Agent.Name, Rows: rows}
 }
 
-// buildToolListMenu constructs the paginated tool-approval screen for one integration.
+// buildToolListMenu constructs the paginated tool-approval screen for one
+// integration. Tools are shown in a 2-column grid for compact display.
 func (f *SettingsFlow) buildToolListMenu(hosted *HostedAgent, integrationID string, page int, approvals map[string]bool) *domain.SettingsMenu {
-	// Collect opt-in-able tools for this integration, sorted by display name.
 	var tools []*domain.ToolDefinition
 	for _, t := range hosted.Deps.ToolsByID {
 		if t.IntegrationID == integrationID && !t.RequiresApproval {
@@ -233,37 +241,77 @@ func (f *SettingsFlow) buildToolListMenu(hosted *HostedAgent, integrationID stri
 	if totalPages > 1 {
 		title = fmt.Sprintf("%s  (%d/%d)", title, page+1, totalPages)
 	}
-	title += "\n\nTap a tool to toggle whether the agent asks for your approval before using it. ✅ means approval required."
+	title += "\nTap to toggle — ✅ asks for your confirm before the tool runs"
 
-	rows := make([]domain.SettingsRow, 0, len(pageTools)+3)
-	for _, t := range pageTools {
-		label := "◻  " + t.Name
-		newVal := "1"
-		if approvals[t.ID] {
-			label = "✅ " + t.Name
-			newVal = "0"
+	rows := make([]domain.SettingsRow, 0, len(pageTools)/2+3)
+	for i := 0; i < len(pageTools); i += 2 {
+		b1 := toolButton(pageTools[i], approvals)
+		if i+1 < len(pageTools) {
+			rows = append(rows, domain.Row(b1, toolButton(pageTools[i+1], approvals)))
+		} else {
+			rows = append(rows, domain.Row(b1))
 		}
-		rows = append(rows, domain.SettingsRow{
-			Label:    label,
-			Callback: "kael_sm:toggle_approval:" + t.ID + ":" + newVal,
-		})
 	}
 
-	// Pagination row
 	if page > 0 {
-		rows = append(rows, domain.SettingsRow{
-			Label:    "← Prev",
-			Callback: "kael_sm:nav:tools:" + integrationID + ":" + strconv.Itoa(page-1),
-		})
+		rows = append(rows, domain.Row(domain.Btn("← Prev", "kael_sm:nav:tools:"+integrationID+":"+strconv.Itoa(page-1))))
 	}
 	if page < totalPages-1 {
-		rows = append(rows, domain.SettingsRow{
-			Label:    "Next →",
-			Callback: "kael_sm:nav:tools:" + integrationID + ":" + strconv.Itoa(page+1),
-		})
+		rows = append(rows, domain.Row(domain.Btn("Next →", "kael_sm:nav:tools:"+integrationID+":"+strconv.Itoa(page+1))))
 	}
-	rows = append(rows, domain.SettingsRow{Label: "← Back", Callback: "kael_sm:nav:main"})
-	rows = append(rows, domain.SettingsRow{Label: "Close", Callback: "kael_sm:close"})
+	rows = append(rows, domain.Row(
+		domain.Btn("← Back", "kael_sm:nav:main"),
+		domain.Btn("✕  Close", "kael_sm:close"),
+	))
 
 	return &domain.SettingsMenu{Title: title, Rows: rows}
+}
+
+// toolButton builds the SettingsButton for one tool, showing its current
+// approval state and toggling it on tap.
+func toolButton(t *domain.ToolDefinition, approvals map[string]bool) domain.SettingsButton {
+	if approvals[t.ID] {
+		return domain.Btn("✅ "+t.Name, "kael_sm:toggle_approval:"+t.ID+":0")
+	}
+	return domain.Btn("☐  "+t.Name, "kael_sm:toggle_approval:"+t.ID+":1")
+}
+
+// buildInstructionsMenu constructs the personal-instructions sub-screen.
+func (f *SettingsFlow) buildInstructionsMenu(hosted *HostedAgent) *domain.SettingsMenu {
+	return &domain.SettingsMenu{
+		Title: "💬 Personal Instructions\n\nAdd a note about yourself so " + hosted.Agent.Name + " can personalise its responses to you.\n\nTap Update to set or change your instructions.",
+		Rows: []domain.SettingsRow{
+			domain.Row(domain.Btn("✏️ Update Instructions", "kael_sm:instructions")),
+			domain.Row(
+				domain.Btn("← Back", "kael_sm:nav:main"),
+				domain.Btn("✕  Close", "kael_sm:close"),
+			),
+		},
+	}
+}
+
+// buildAccountMenu constructs the link-account sub-screen, showing either
+// the link prompt or a confirmation that the account is already connected.
+func (f *SettingsFlow) buildAccountMenu(ctx context.Context, userID string) *domain.SettingsMenu {
+	if f.isEmailLinked(ctx, userID) {
+		return &domain.SettingsMenu{
+			Title: "✅ Account Linked\n\nYour account is connected — settings and history sync across platforms.",
+			Rows: []domain.SettingsRow{
+				domain.Row(
+					domain.Btn("← Back", "kael_sm:nav:main"),
+					domain.Btn("✕  Close", "kael_sm:close"),
+				),
+			},
+		}
+	}
+	return &domain.SettingsMenu{
+		Title: "🔗 Link Account\n\nConnect this chat to your Kael account to sync settings and history across platforms.\n\nEnter your email and we'll send a one-time code.",
+		Rows: []domain.SettingsRow{
+			domain.Row(domain.Btn("✉️ Enter Email to Link", "kael_sm:link_account")),
+			domain.Row(
+				domain.Btn("← Back", "kael_sm:nav:main"),
+				domain.Btn("✕  Close", "kael_sm:close"),
+			),
+		},
+	}
 }
