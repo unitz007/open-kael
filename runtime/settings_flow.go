@@ -79,10 +79,6 @@ func (f *SettingsFlow) Handle(ctx context.Context, provider domain.SettingsMenuP
 			log.Printf("runtime: settings: delete menu channel %s: %v", channelRef, err)
 		}
 
-	case action == "noop":
-		// Section header tapped — nothing to do; the spinner is dismissed by
-		// the caller's AcknowledgeCallbackQuery after Handle returns.
-
 	case action == "nav:main":
 		f.sessions.Store(sessionKey, &menuSession{})
 		approvals, _ := f.getApprovals(ctx, userID)
@@ -215,13 +211,13 @@ func (f *SettingsFlow) buildMainMenu(ctx context.Context, hosted *HostedAgent, a
 	sort.Slice(integrations, func(i, j int) bool { return integrations[i].name < integrations[j].name })
 
 	if len(integrations) > 0 {
-		rows = append(rows, domain.Row(domain.Btn("── Apps ──", "kael_sm:noop")))
+		rows = append(rows, domain.Hdr("Apps"))
 		for _, intg := range integrations {
 			rows = append(rows, domain.Row(domain.Btn(intg.name+" →", "kael_sm:nav:app:"+intg.id)))
 		}
 	}
 
-	rows = append(rows, domain.Row(domain.Btn("── Preferences ──", "kael_sm:noop")))
+	rows = append(rows, domain.Hdr("Preferences"))
 
 	linkLabel := "🔗 Link Account"
 	if f.isEmailLinked(ctx, userID) {

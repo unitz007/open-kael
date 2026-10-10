@@ -31,13 +31,12 @@ type SettingsMenu struct {
 	Rows  []SettingsRow
 }
 
-// SettingsRow is one row of one or more buttons in a SettingsMenu.
-// Most rows hold a single button; use two buttons for a compact side-by-side
-// layout (e.g. Back + Close, or a two-column tool grid).
-// A row whose buttons all have an empty Callback is rendered as a
-// non-interactive label or visual separator at the provider's discretion.
+// SettingsRow is one row in a SettingsMenu. It is either a section header
+// (Header non-empty) or a row of one or more tappable buttons (Buttons set).
+// Providers render headers as visually distinct labels — not as tappable items.
 type SettingsRow struct {
 	Buttons []SettingsButton
+	Header  string // non-empty → section header label; Buttons is ignored
 }
 
 // SettingsButton is a single tappable button within a SettingsRow.
@@ -48,6 +47,10 @@ type SettingsButton struct {
 
 // Row builds a SettingsRow with the given buttons.
 func Row(btns ...SettingsButton) SettingsRow { return SettingsRow{Buttons: btns} }
+
+// Hdr builds a section-header SettingsRow. Providers render it as a visual
+// label (bold text, a Block Kit header block, etc.) — never as a tappable button.
+func Hdr(label string) SettingsRow { return SettingsRow{Header: label} }
 
 // Btn builds a SettingsButton with the given label and callback.
 func Btn(label, callback string) SettingsButton { return SettingsButton{Label: label, Callback: callback} }
