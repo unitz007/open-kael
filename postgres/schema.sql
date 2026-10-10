@@ -324,6 +324,16 @@ CREATE TABLE IF NOT EXISTS user_tool_approvals (
     PRIMARY KEY (user_id, tool_id)
 );
 
+-- user_app_instructions: per-user per-integration instructions injected as
+-- additional context when tools from that integration are being used.
+CREATE TABLE IF NOT EXISTS user_app_instructions (
+    user_id        TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    integration_id TEXT NOT NULL REFERENCES integrations (id) ON DELETE CASCADE,
+    instructions   TEXT NOT NULL DEFAULT '',
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (user_id, integration_id)
+);
+
 -- email_verifications: short-lived tokens for the in-chat email-linking flow.
 -- Created when the user provides their email via the bot; consumed when they
 -- click the verify link. IdentityID + channel_ref track where to push the

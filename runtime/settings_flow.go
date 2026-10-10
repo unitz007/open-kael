@@ -29,10 +29,12 @@ type menuSession struct {
 // a stale menu in chat may navigate back to the integration list instead of
 // the last-viewed page; this is acceptable for a settings flow.
 type SettingsFlow struct {
-	getApprovals     func(ctx context.Context, userID string) (map[string]bool, error)
-	setApproval      func(ctx context.Context, userID, toolID string, requires bool) error
-	checkLinkedEmail func(ctx context.Context, userID string) (bool, error)
-	sessions         sync.Map // key: identityID+":"+channelRef → *menuSession
+	getApprovals        func(ctx context.Context, userID string) (map[string]bool, error)
+	setApproval         func(ctx context.Context, userID, toolID string, requires bool) error
+	checkLinkedEmail    func(ctx context.Context, userID string) (bool, error)
+	getAppInstructions  func(ctx context.Context, userID, integrationID string) (string, error)
+	setAppInstructions  func(ctx context.Context, userID, integrationID, text string) error
+	sessions            sync.Map // key: identityID+":"+channelRef → *menuSession
 }
 
 func newSettingsFlow(
@@ -95,6 +97,35 @@ func (f *SettingsFlow) Handle(ctx context.Context, provider domain.SettingsMenuP
 	case action == "nav:account":
 		f.sessions.Store(sessionKey, &menuSession{})
 		menu := f.buildAccountMenu(ctx, userID)
+		_ = provider.UpdateSettingsMenu(ctx, channelRef, messageID, menu)
+
+	case strings.HasPrefix(action, "nav:app:") && !strings.HasPrefix(action, "nav:app_instr:"):
+		integrationID := action[len("nav:app:"):]
+		f.sessions.Store(sessionKey, &menuSession{integrationID: integrationID})
+		approvals, _ := f.getApprovals(ctx, userID)
+		menu := f.buildAppMenu(hosted, integrationID, approvals)
+		_ = provider.UpdateSettingsMenu(ctx, channelRef, messageID, menu)
+
+	case strings.HasPrefix(action, "nav:app_instr:"):
+		integrationID := action[len("nav:app_instr:"):]
+		f.sessions.Store(sessionKey, &menuSession{integrationID: integrationID})
+		integrationName := integrationID
+		if intg, ok := hosted.Deps.IntegrationsByID[integrationID]; ok {
+			integrationName = intg.Name
+		}
+		menu := f.buildAppInstructionsMenu(ctx, userID, integrationID, integrationName)
+		_ = provider.UpdateSettingsMenu(ctx, channelRef, messageID, menu)
+
+	case strings.HasPrefix(action, "app_instr_clear:"):
+		integrationID := action[len("app_instr_clear:"):]
+		if f.setAppInstructions != nil {
+			_ = f.setAppInstructions(ctx, userID, integrationID, "")
+		}
+		integrationName := integrationID
+		if intg, ok := hosted.Deps.IntegrationsByID[integrationID]; ok {
+			integrationName = intg.Name
+		}
+		menu := f.buildAppInstructionsMenu(ctx, userID, integrationID, integrationName)
 		_ = provider.UpdateSettingsMenu(ctx, channelRef, messageID, menu)
 
 	case strings.HasPrefix(action, "nav:tools:"):
@@ -186,7 +217,7 @@ func (f *SettingsFlow) buildMainMenu(ctx context.Context, hosted *HostedAgent, a
 	if len(integrations) > 0 {
 		rows = append(rows, domain.Row(domain.Btn("── Apps ──", "kael_sm:noop")))
 		for _, intg := range integrations {
-			rows = append(rows, domain.Row(domain.Btn(intg.name+" →", "kael_sm:nav:tools:"+intg.id+":0")))
+			rows = append(rows, domain.Row(domain.Btn(intg.name+" →", "kael_sm:nav:app:"+intg.id)))
 		}
 	}
 
@@ -260,7 +291,7 @@ func (f *SettingsFlow) buildToolListMenu(hosted *HostedAgent, integrationID stri
 		rows = append(rows, domain.Row(domain.Btn("Next →", "kael_sm:nav:tools:"+integrationID+":"+strconv.Itoa(page+1))))
 	}
 	rows = append(rows, domain.Row(
-		domain.Btn("← Back", "kael_sm:nav:main"),
+		domain.Btn("← Back", "kael_sm:nav:app:"+integrationID),
 		domain.Btn("✕  Close", "kael_sm:close"),
 	))
 
@@ -286,6 +317,72 @@ func (f *SettingsFlow) buildInstructionsMenu(hosted *HostedAgent) *domain.Settin
 				domain.Btn("← Back", "kael_sm:nav:main"),
 				domain.Btn("✕  Close", "kael_sm:close"),
 			),
+		},
+	}
+}
+
+// buildAppMenu constructs the per-integration landing screen. It shows a Tool
+// Approvals button (with a live count) and an App Instructions button.
+func (f *SettingsFlow) buildAppMenu(hosted *HostedAgent, integrationID string, approvals map[string]bool) *domain.SettingsMenu {
+	integrationName := integrationID
+	if intg, ok := hosted.Deps.IntegrationsByID[integrationID]; ok {
+		integrationName = intg.Name
+	}
+
+	var active, total int
+	for _, t := range hosted.Deps.ToolsByID {
+		if t.IntegrationID == integrationID && !t.RequiresApproval {
+			total++
+			if approvals[t.ID] {
+				active++
+			}
+		}
+	}
+
+	approvalLabel := fmt.Sprintf("🔧 Tool Approvals  (%d of %d active) →", active, total)
+
+	return &domain.SettingsMenu{
+		Title: "⚙️ " + integrationName,
+		Rows: []domain.SettingsRow{
+			domain.Row(domain.Btn(approvalLabel, "kael_sm:nav:tools:"+integrationID+":0")),
+			domain.Row(domain.Btn("💬 App Instructions →", "kael_sm:nav:app_instr:"+integrationID)),
+			domain.Row(
+				domain.Btn("← Back", "kael_sm:nav:main"),
+				domain.Btn("✕  Close", "kael_sm:close"),
+			),
+		},
+	}
+}
+
+// buildAppInstructionsMenu constructs the per-app instructions sub-screen.
+// It shows the current instructions (if any) with Update/Clear buttons, or an
+// empty-state prompt when none are set.
+func (f *SettingsFlow) buildAppInstructionsMenu(ctx context.Context, userID, integrationID, integrationName string) *domain.SettingsMenu {
+	var instructions string
+	if f.getAppInstructions != nil {
+		instructions, _ = f.getAppInstructions(ctx, userID, integrationID)
+	}
+
+	backBtn := domain.Btn("← Back", "kael_sm:nav:app:"+integrationID)
+	closeBtn := domain.Btn("✕  Close", "kael_sm:close")
+
+	if instructions == "" {
+		return &domain.SettingsMenu{
+			Title: "💬 " + integrationName + " Instructions\n\nAdd specific instructions for how " + integrationName + " tools should behave — e.g. which calendar to default to, or preferred response format.\n\nNo instructions set yet.",
+			Rows: []domain.SettingsRow{
+				domain.Row(domain.Btn("✏️ Add Instructions", "kael_sm:app_instr_update:"+integrationID)),
+				domain.Row(backBtn, closeBtn),
+			},
+		}
+	}
+	return &domain.SettingsMenu{
+		Title: "💬 " + integrationName + " Instructions\n\n" + instructions,
+		Rows: []domain.SettingsRow{
+			domain.Row(
+				domain.Btn("✏️ Update", "kael_sm:app_instr_update:"+integrationID),
+				domain.Btn("🗑️ Clear", "kael_sm:app_instr_clear:"+integrationID),
+			),
+			domain.Row(backBtn, closeBtn),
 		},
 	}
 }

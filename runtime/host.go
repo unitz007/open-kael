@@ -242,6 +242,15 @@ type Host struct {
 	// the user's reply. Key is "identityID:chatID"; value is pendingInstructionsState.
 	pendingInstructions sync.Map
 
+	// appInstructionsLoader returns per-app instructions for (userID, integrationID).
+	appInstructionsLoader func(ctx context.Context, userID, integrationID string) (string, error)
+	// appInstructionsSetter persists per-app instructions; empty text removes them.
+	appInstructionsSetter func(ctx context.Context, userID, integrationID, text string) error
+
+	// pendingAppInstructions tracks channels awaiting a per-app instructions
+	// reply. Key is "identityID:chatID"; value is pendingAppInstructionsState.
+	pendingAppInstructions sync.Map
+
 	// userProfileLoader loads the user's general learned profile (user_profiles).
 	userProfileLoader func(ctx context.Context, userID string) (*domain.UserProfile, error)
 	// userProfileSetter upserts the user's general learned profile.
@@ -357,6 +366,8 @@ func (h *Host) maybeInitSettingsFlow() {
 	if h.userToolApprovalLoader != nil && h.userToolApprovalSetter != nil && h.settingsFlow == nil {
 		flow := newSettingsFlow(h.userToolApprovalLoader, h.userToolApprovalSetter)
 		flow.checkLinkedEmail = h.emailLinkChecker
+		flow.getAppInstructions = h.appInstructionsLoader
+		flow.setAppInstructions = h.appInstructionsSetter
 		h.settingsFlow = flow
 	}
 }
@@ -447,6 +458,27 @@ func (h *Host) SetUserAgentConfigLoader(f func(ctx context.Context, userID, agen
 // SendInstructionsPrompt as the user's new instructions.
 func (h *Host) SetUserAgentConfigSetter(f func(ctx context.Context, userID, agentID, instructions string) error) {
 	h.userAgentConfigSetter = f
+}
+
+// SetAppInstructionsLoader registers a function that loads per-app instructions
+// for (userID, integrationID). When set, the instructions sub-screen in the
+// app settings menu shows the current text.
+func (h *Host) SetAppInstructionsLoader(f func(ctx context.Context, userID, integrationID string) (string, error)) {
+	h.appInstructionsLoader = f
+	if h.settingsFlow != nil {
+		h.settingsFlow.getAppInstructions = f
+	}
+}
+
+// SetAppInstructionsSetter registers a function that persists per-app
+// instructions for (userID, integrationID). Passing an empty string removes
+// the stored instructions. When set, the host saves the user's reply after a
+// per-app instructions prompt, and the Clear button removes existing text.
+func (h *Host) SetAppInstructionsSetter(f func(ctx context.Context, userID, integrationID, text string) error) {
+	h.appInstructionsSetter = f
+	if h.settingsFlow != nil {
+		h.settingsFlow.setAppInstructions = f
+	}
 }
 
 // SetUserProfileLoader registers a function that loads the user's general

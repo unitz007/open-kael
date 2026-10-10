@@ -234,6 +234,14 @@ type pendingInstructionsState struct {
 	agentID string
 }
 
+// pendingAppInstructionsState tracks a chat waiting for a per-app instructions
+// reply, scoped to one integration.
+type pendingAppInstructionsState struct {
+	userID        string
+	agentID       string
+	integrationID string
+}
+
 func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg domain.InboundMessage) {
 	defer recoverFromPanic(hosted.Agent.ID, "handling inbound message")
 	if msg.ThreadID != "" {
@@ -510,6 +518,21 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 		return
 	}
 
+	// Pending per-app instructions reply.
+	if ps, ok := h.pendingAppInstructions.Load(instrKey); ok {
+		h.pendingAppInstructions.Delete(instrKey)
+		state := ps.(pendingAppInstructionsState)
+		if h.appInstructionsSetter != nil {
+			if err := h.appInstructionsSetter(ctx, state.userID, state.integrationID, msg.Text); err != nil {
+				log.Printf("runtime: agent %q: save app instructions user %s integration %s: %v", hosted.Agent.ID, state.userID, state.integrationID, err)
+				h.deliverBestEffort(ctx, hosted, msg.Conversation, "Sorry, I couldn't save your app instructions. Please try again.")
+				return
+			}
+		}
+		h.deliverBestEffort(ctx, hosted, msg.Conversation, "Got it! I've saved your app-specific instructions and will use them when working with that integration.")
+		return
+	}
+
 	// Settings menu command: intercept before the LLM turn loop.
 	if h.settingsFlow != nil && isSettingsCommand(msg.Text) {
 		if executor, ok := h.executorForMessage(hosted, msg); ok {
@@ -622,6 +645,11 @@ func (h *Host) handleCallbackQuery(ctx context.Context, hosted *HostedAgent, msg
 			return
 		}
 
+		if strings.HasPrefix(action, "app_instr_update:") {
+			h.handleAppInstructionsCallback(ctx, hosted, msg, executor)
+			return
+		}
+
 		if h.settingsFlow == nil {
 			return
 		}
@@ -683,6 +711,50 @@ func (h *Host) handleInstructionsCallback(ctx context.Context, hosted *HostedAge
 		h.pendingInstructions.Store(key, pendingInstructionsState{
 			userID:  msg.Conversation.UserID,
 			agentID: hosted.Agent.ID,
+		})
+	}
+
+	if ack, ok := executor.(domain.CallbackQueryAcknowledger); ok {
+		go func() { _ = ack.AcknowledgeCallbackQuery(context.Background(), cq.QueryID) }()
+	}
+}
+
+// handleAppInstructionsCallback handles the kael_sm:app_instr_update:<integrationID>
+// button tap. It opens the same instructions prompt as personal instructions but
+// scoped to one integration; on reply the text is saved as per-app instructions.
+func (h *Host) handleAppInstructionsCallback(ctx context.Context, hosted *HostedAgent, msg domain.InboundMessage, executor domain.Executor) {
+	cq := msg.CallbackQuery
+	integrationID := strings.TrimPrefix(cq.Data[len("kael_sm:"):], "app_instr_update:")
+
+	prompter, ok := executor.(domain.InstructionsPromptProvider)
+	if !ok {
+		return
+	}
+
+	if provider, ok := executor.(domain.SettingsMenuProvider); ok {
+		if err := provider.DeleteSettingsMenu(ctx, msg.Conversation.ChatID, cq.MessageID); err != nil {
+			log.Printf("runtime: app instructions: delete settings menu: %v", err)
+		}
+	}
+
+	var current string
+	if h.appInstructionsLoader != nil && msg.Conversation.UserID != "" {
+		if instr, err := h.appInstructionsLoader(ctx, msg.Conversation.UserID, integrationID); err == nil {
+			current = instr
+		}
+	}
+
+	wait, err := prompter.SendInstructionsPrompt(ctx, msg.Conversation.ChatID, current, cq.TriggerID)
+	if err != nil {
+		log.Printf("runtime: app instructions: send prompt: %v", err)
+	}
+
+	if wait && msg.Conversation.UserID != "" {
+		key := msg.Conversation.IdentityID + ":" + msg.Conversation.ChatID
+		h.pendingAppInstructions.Store(key, pendingAppInstructionsState{
+			userID:        msg.Conversation.UserID,
+			agentID:       hosted.Agent.ID,
+			integrationID: integrationID,
 		})
 	}
 
