@@ -183,6 +183,12 @@ type Host struct {
 	// so they know where to sign up and get their link code.
 	frontendURL string
 
+	// miniAppBaseURL is the base URL at which the Telegram Mini App is served
+	// (e.g. "https://myapp.fly.dev"). When set, the /settings command sends a
+	// web_app button pointing to <miniAppBaseURL>/miniapp/settings?agent=<agentID>
+	// instead of the inline-keyboard SettingsFlow.
+	miniAppBaseURL string
+
 	// jev, when set, is used to route inbound messages to the correct skill
 	// before the inner skill loop runs — replacing the outer NativeLoop's
 	// LLM-based skill selection with a fast, type-safe Jev classifier.
@@ -384,6 +390,11 @@ func (h *Host) SetChannelRedeemer(f func(ctx context.Context, code, identityID, 
 // SetFrontendURL sets the base URL of the web app. When set, unlinked users
 // who message a bot receive an onboarding reply that includes this URL.
 func (h *Host) SetFrontendURL(url string) { h.frontendURL = url }
+
+// SetMiniAppBaseURL sets the base URL at which the Telegram Mini App is hosted.
+// When set, the /settings command sends a web_app button to the mini app instead
+// of falling back to the inline-keyboard SettingsFlow.
+func (h *Host) SetMiniAppBaseURL(url string) { h.miniAppBaseURL = url }
 
 // SetLinkCodeGenerator registers a function that creates and stores a
 // short-lived ChannelLinkCode for the given (identityID, channelRef) pair

@@ -534,18 +534,32 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 	}
 
 	// Settings menu command: intercept before the LLM turn loop.
-	if h.settingsFlow != nil && isSettingsCommand(msg.Text) {
-		if executor, ok := h.executorForMessage(hosted, msg); ok {
-			if provider, ok := executor.(domain.SettingsMenuProvider); ok {
-				sCtx := ctx
-				if identity, ok := hosted.Deps.IdentitiesByID[msg.Conversation.IdentityID]; ok {
-					sCtx = domain.WithBotCredentialRef(sCtx, identity.CredentialRef)
+	if isSettingsCommand(msg.Text) {
+		// Prefer the Mini App when a base URL is configured.
+		if h.miniAppBaseURL != "" {
+			miniAppURL := h.miniAppBaseURL + "/miniapp/settings?agent=" + hosted.Agent.ID
+			h.deliverBestEffort(ctx, hosted, msg.Conversation, "⚙️ Tap below to open Settings.", map[string]any{
+				"web_app_button": map[string]any{
+					"text": "Open Settings",
+					"url":  miniAppURL,
+				},
+			})
+			return
+		}
+		// Fall back to inline-keyboard SettingsFlow.
+		if h.settingsFlow != nil {
+			if executor, ok := h.executorForMessage(hosted, msg); ok {
+				if provider, ok := executor.(domain.SettingsMenuProvider); ok {
+					sCtx := ctx
+					if identity, ok := hosted.Deps.IdentitiesByID[msg.Conversation.IdentityID]; ok {
+						sCtx = domain.WithBotCredentialRef(sCtx, identity.CredentialRef)
+					}
+					if msg.Conversation.UserID != "" && h.userConnectionRefLoader != nil {
+						sCtx = h.withUserConnectionRefs(sCtx, msg.Conversation.UserID)
+					}
+					h.settingsFlow.Open(sCtx, provider, hosted, msg.Conversation.IdentityID, msg.Conversation.ChatID, msg.Conversation.UserID)
+					return
 				}
-				if msg.Conversation.UserID != "" && h.userConnectionRefLoader != nil {
-					sCtx = h.withUserConnectionRefs(sCtx, msg.Conversation.UserID)
-				}
-				h.settingsFlow.Open(sCtx, provider, hosted, msg.Conversation.IdentityID, msg.Conversation.ChatID, msg.Conversation.UserID)
-				return
 			}
 		}
 	}
