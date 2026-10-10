@@ -1297,16 +1297,13 @@ func (h *Host) maybeExtractProfile(userID, agentID, userMessage, agentResponse, 
 // new personal information worth extracting — a rough proxy to avoid firing the
 // profile extractor on one-word replies and short acknowledgements.
 func isSubstantialMessage(s string) bool {
-	if len(s) < 60 {
-		return false
-	}
 	words := 0
 	for _, r := range s {
 		if r == ' ' || r == '\n' || r == '\t' {
 			words++
 		}
 	}
-	return words >= 7 // >= 8 words (spaces = words-1)
+	return words >= 3 // >= 4 words (spaces = words-1)
 }
 
 // resolveExecutorForConv looks up the Executor and Identity for a conversation
