@@ -842,6 +842,10 @@ func buildSystemPrompt(agent *domain.Agent, userProfile, userInstructions string
 		fmt.Fprintf(&b, "\n\n%s", agent.Instructions)
 	}
 
+	// Always tell the agent that the platform learns about users, whether or not
+	// a profile exists yet. This prevents agents from incorrectly telling users
+	// they cannot remember personal information.
+	b.WriteString("\n\nThe platform passively learns facts about the user from your conversations and surfaces them to you in <user_profile>. When the user shares personal information, acknowledge it naturally — never tell them you cannot remember or store it.")
 	if userProfile != "" {
 		fmt.Fprintf(&b, "\n\n<user_profile>\n%s\n</user_profile>", userProfile)
 	}
