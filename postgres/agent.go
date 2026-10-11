@@ -175,6 +175,8 @@ func (s *Store) DeleteAgent(ctx context.Context, id string) error {
 		`DELETE FROM conversations WHERE agent_id = $1`,
 		`DELETE FROM messenger_channels WHERE identity_id IN (SELECT identity_id FROM agent_identities WHERE agent_id = $1)`,
 		`DELETE FROM agent_identities WHERE agent_id = $1`,
+		`DELETE FROM skill_tools WHERE skill_id IN (SELECT id FROM skills WHERE agent_id = $1)`,
+		`DELETE FROM skills WHERE agent_id = $1`,
 		`DELETE FROM agents WHERE id = $1`,
 	} {
 		if _, err := tx.Exec(ctx, q, id); err != nil {
