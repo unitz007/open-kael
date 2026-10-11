@@ -781,6 +781,15 @@ func (h *Host) Register(hosted *HostedAgent) {
 	h.agents[hosted.Agent.ID] = hosted
 }
 
+// Deregister removes a HostedAgent from the host's in-memory map and stops its
+// identity listeners. Safe to call while the host is running.
+func (h *Host) Deregister(agentID string, identityIDs []string) {
+	h.StopIdentityListeners(agentID, identityIDs)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	delete(h.agents, agentID)
+}
+
 // Get looks up a previously Register'd HostedAgent by Agent.ID.
 func (h *Host) Get(agentID string) (*HostedAgent, bool) {
 	h.mu.RLock()

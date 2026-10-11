@@ -173,6 +173,8 @@ func (s *Store) DeleteAgent(ctx context.Context, id string) error {
 	for _, q := range []string{
 		`DELETE FROM conversation_messages WHERE agent_id = $1`,
 		`DELETE FROM conversations WHERE agent_id = $1`,
+		`DELETE FROM messenger_channels WHERE identity_id IN (SELECT identity_id FROM agent_identities WHERE agent_id = $1)`,
+		`DELETE FROM agent_identities WHERE agent_id = $1`,
 		`DELETE FROM agents WHERE id = $1`,
 	} {
 		if _, err := tx.Exec(ctx, q, id); err != nil {
