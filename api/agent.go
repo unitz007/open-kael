@@ -18,10 +18,7 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	if agent.ID == "" {
-		writeError(w, http.StatusBadRequest, errors.New("id is required"))
-		return
-	}
+	agent.ID = domain.NewID()
 	if user, ok := UserFromContext(r.Context()); ok {
 		agent.CreatedBy = user.ID
 	}
