@@ -1562,26 +1562,20 @@ func (h *Host) greetingBody(ctx context.Context, agent *domain.Agent, publicSkil
 	if agent.Greeting != "" {
 		return agent.Greeting
 	}
-	if len(llms) > 0 {
+	if len(llms) > 0 && len(publicSkills) > 0 {
 		var prompt strings.Builder
 		prompt.WriteString("You are " + agent.Name + ".")
 		if agent.Description != "" {
 			prompt.WriteString("\n\nBackground: " + agent.Description)
 		}
-		if len(publicSkills) > 0 {
-			prompt.WriteString("\n\nYou can help users with:")
-			for _, s := range publicSkills {
-				prompt.WriteString("\n- " + skillDisplayName(s.Name))
-				if s.Description != "" {
-					prompt.WriteString(": " + s.Description)
-				}
+		prompt.WriteString("\n\nYou can help users with:")
+		for _, s := range publicSkills {
+			prompt.WriteString("\n- " + skillDisplayName(s.Name))
+			if s.Description != "" {
+				prompt.WriteString(": " + s.Description)
 			}
 		}
-		if len(publicSkills) > 0 {
-			prompt.WriteString("\n\nWrite a short, friendly greeting introducing yourself and what you can do. Introduce yourself by name only — do not mention the user's name. Plain text only — no markdown, no bullet points, no lists. Two to three sentences maximum.")
-		} else {
-			prompt.WriteString("\n\nWrite a short, friendly greeting introducing yourself. Introduce yourself by name only — do not mention the user's name. Do not mention or invent any specific capabilities — just say hello and introduce who you are. Plain text only — no markdown. Two sentences maximum.")
-		}
+		prompt.WriteString("\n\nWrite a short, friendly greeting introducing yourself and what you can do. Introduce yourself by name only — do not mention the user's name. Plain text only — no markdown, no bullet points, no lists. Two to three sentences maximum.")
 
 		msgs := []domain.Message{{Role: domain.RoleUser, Content: prompt.String()}}
 		if resp, err := llms[0].Call(ctx, msgs, nil); err == nil && resp.Content != "" {
