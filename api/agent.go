@@ -162,8 +162,8 @@ func (s *Server) setAgentIdentities(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	oldIDs := agent.IdentityIDs
-	// Reject any identity already claimed by a different agent.
 	for _, id := range body.IdentityIDs {
+		// Reject any identity already claimed by a different agent.
 		existing, err := s.store.GetAgentByIdentityID(r.Context(), id)
 		if err != nil && !errors.Is(err, domain.ErrNotFound) {
 			writeError(w, http.StatusInternalServerError, err)
@@ -171,6 +171,20 @@ func (s *Server) setAgentIdentities(w http.ResponseWriter, r *http.Request) {
 		}
 		if existing != nil && existing.ID != agent.ID {
 			writeError(w, http.StatusConflict, fmt.Errorf("identity %q is already linked to another agent", id))
+			return
+		}
+		// Reject any identity the requesting creator doesn't own.
+		identity, err := s.store.GetIdentity(r.Context(), id)
+		if err != nil {
+			if errors.Is(err, domain.ErrNotFound) {
+				writeError(w, http.StatusBadRequest, fmt.Errorf("identity %q not found", id))
+				return
+			}
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		if !identityAccessible(r.Context(), identity) {
+			writeError(w, http.StatusForbidden, fmt.Errorf("identity %q is not accessible", id))
 			return
 		}
 	}

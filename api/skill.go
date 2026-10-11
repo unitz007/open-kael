@@ -22,6 +22,20 @@ func (s *Server) createSkill(w http.ResponseWriter, r *http.Request) {
 	}
 	skill.AgentID = r.PathValue("agentID")
 
+	agent, err := s.store.GetAgent(r.Context(), skill.AgentID)
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			writeError(w, http.StatusNotFound, err)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if !agentAccessible(r.Context(), agent) {
+		writeError(w, http.StatusNotFound, domain.ErrNotFound)
+		return
+	}
+
 	if err := s.store.SaveSkill(r.Context(), &skill); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -33,7 +47,21 @@ func (s *Server) createSkill(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listSkillsByAgent(w http.ResponseWriter, r *http.Request) {
-	list, err := s.store.ListSkillsByAgent(r.Context(), r.PathValue("agentID"))
+	agentID := r.PathValue("agentID")
+	agent, err := s.store.GetAgent(r.Context(), agentID)
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			writeError(w, http.StatusNotFound, err)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if !agentAccessible(r.Context(), agent) {
+		writeError(w, http.StatusNotFound, domain.ErrNotFound)
+		return
+	}
+	list, err := s.store.ListSkillsByAgent(r.Context(), agentID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -51,6 +79,12 @@ func (s *Server) getSkill(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	if agent, err := s.store.GetAgent(r.Context(), skill.AgentID); err == nil {
+		if !agentAccessible(r.Context(), agent) {
+			writeError(w, http.StatusNotFound, domain.ErrNotFound)
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, skill)
 }
 
@@ -64,6 +98,12 @@ func (s *Server) updateSkill(w http.ResponseWriter, r *http.Request) {
 		}
 		writeError(w, http.StatusInternalServerError, err)
 		return
+	}
+	if agent, err := s.store.GetAgent(r.Context(), existing.AgentID); err == nil {
+		if !agentAccessible(r.Context(), agent) {
+			writeError(w, http.StatusNotFound, domain.ErrNotFound)
+			return
+		}
 	}
 	var skill domain.Skill
 	if err := decodeJSON(r, &skill); err != nil {
@@ -84,18 +124,27 @@ func (s *Server) updateSkill(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) deleteSkill(w http.ResponseWriter, r *http.Request) {
 	skillID := r.PathValue("id")
-	var agentID string
-	if s.onSkillChange != nil {
-		if sk, err := s.store.GetSkill(r.Context(), skillID); err == nil {
-			agentID = sk.AgentID
+	sk, err := s.store.GetSkill(r.Context(), skillID)
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			writeError(w, http.StatusNotFound, err)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if agent, err := s.store.GetAgent(r.Context(), sk.AgentID); err == nil {
+		if !agentAccessible(r.Context(), agent) {
+			writeError(w, http.StatusNotFound, domain.ErrNotFound)
+			return
 		}
 	}
 	if err := s.store.DeleteSkill(r.Context(), skillID); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	if s.onSkillChange != nil && agentID != "" {
-		s.onSkillChange(agentID)
+	if s.onSkillChange != nil {
+		s.onSkillChange(sk.AgentID)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

@@ -21,7 +21,7 @@ import (
 // rows, and doesn't try to. The caller supplies those before anything
 // here can actually run.
 func (s *Store) LoadAll(ctx context.Context) (agents []*domain.Agent, toolsByID map[string]*domain.ToolDefinition, identitiesByID map[string]*domain.Identity, integrationsByID map[string]*domain.Integration, err error) {
-	identities, err := s.ListIdentities(ctx)
+	identities, err := s.ListIdentities(ctx, "")
 	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("postgres: load all: list identities: %w", err)
 	}

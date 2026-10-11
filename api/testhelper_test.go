@@ -59,7 +59,7 @@ func (noopStore) GetChannelLinkCode(_ context.Context, _ string) (*domain.Channe
 func (noopStore) DeleteChannelLinkCode(_ context.Context, _ string) error { return nil }
 
 func (noopStore) SaveIdentity(_ context.Context, _ *domain.Identity) error { return nil }
-func (noopStore) ListIdentities(_ context.Context) ([]*domain.Identity, error) {
+func (noopStore) ListIdentities(_ context.Context, _ string) ([]*domain.Identity, error) {
 	return nil, nil
 }
 func (noopStore) ListIdentitiesByIntegration(_ context.Context, _ string) ([]*domain.Identity, error) {
@@ -123,6 +123,39 @@ func (noopStore) MarkMessengerChannelOnboardingPrompted(_ context.Context, _, _ 
 	return nil
 }
 func (noopStore) MarkMessengerChannelOnboarded(_ context.Context, _, _ string) error { return nil }
+func (noopStore) SetMessengerChannelEmailLinkState(_ context.Context, _, _, _ string) error {
+	return nil
+}
+func (noopStore) GetMessengerChannelByIdentityAndSender(_ context.Context, _, _ string) (*domain.MessengerChannel, error) {
+	return nil, domain.ErrNotFound
+}
+
+func (noopStore) GetUserByVerificationToken(_ context.Context, _ string) (*domain.User, error) {
+	return nil, domain.ErrNotFound
+}
+
+func (noopStore) GetUserProfile(_ context.Context, _ string) (*domain.UserProfile, error) {
+	return nil, domain.ErrNotFound
+}
+func (noopStore) SetUserProfile(_ context.Context, _, _ string) error { return nil }
+
+func (noopStore) ListUserIntegrationNotesByUser(_ context.Context, _ string) (map[string]string, error) {
+	return nil, nil
+}
+func (noopStore) SetUserIntegrationNotes(_ context.Context, _, _, _ string) error { return nil }
+
+func (noopStore) CreateEmailVerification(_ context.Context, _ *domain.EmailVerification) error {
+	return nil
+}
+func (noopStore) GetEmailVerificationByToken(_ context.Context, _ string) (*domain.EmailVerification, error) {
+	return nil, domain.ErrNotFound
+}
+func (noopStore) DeleteEmailVerification(_ context.Context, _ string) error { return nil }
+
+func (noopStore) GetPlatformConfig(_ context.Context, _ string) (string, error) {
+	return "", domain.ErrNotFound
+}
+func (noopStore) SetPlatformConfig(_ context.Context, _, _ string) error { return nil }
 
 // stubStoreWithUser embeds noopStore but returns a valid session for the
 // "valid-token" bearer token, pointing at a fixed user "u-stub-1". Useful for

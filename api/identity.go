@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 
@@ -60,6 +61,9 @@ func (s *Server) createTelegramIdentity(w http.ResponseWriter, r *http.Request) 
 		Kind:          domain.IdentityKindBot,
 		CredentialRef: ref,
 	}
+	if user, ok := UserFromContext(r.Context()); ok {
+		identity.CreatedBy = user.ID
+	}
 	if err := s.store.SaveIdentity(r.Context(), identity); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -87,6 +91,9 @@ func (s *Server) createSlackIdentity(w http.ResponseWriter, r *http.Request) {
 		IntegrationID: req.IntegrationID,
 		Kind:          domain.IdentityKindBot,
 		CredentialRef: ref,
+	}
+	if user, ok := UserFromContext(r.Context()); ok {
+		identity.CreatedBy = user.ID
 	}
 	if err := s.store.SaveIdentity(r.Context(), identity); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -117,6 +124,9 @@ func (s *Server) createGitHubAppIdentity(w http.ResponseWriter, r *http.Request)
 		AppID:         req.AppID,
 		CredentialRef: ref,
 	}
+	if user, ok := UserFromContext(r.Context()); ok {
+		identity.CreatedBy = user.ID
+	}
 	if err := s.store.SaveIdentity(r.Context(), identity); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -125,7 +135,11 @@ func (s *Server) createGitHubAppIdentity(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) listIdentities(w http.ResponseWriter, r *http.Request) {
-	list, err := s.store.ListIdentities(r.Context())
+	var ownerID string
+	if user, ok := UserFromContext(r.Context()); ok {
+		ownerID = user.ID
+	}
+	list, err := s.store.ListIdentities(r.Context(), ownerID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -143,11 +157,28 @@ func (s *Server) getIdentity(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	if !identityAccessible(r.Context(), identity) {
+		writeError(w, http.StatusNotFound, domain.ErrNotFound)
+		return
+	}
 	writeJSON(w, http.StatusOK, identity)
 }
 
 func (s *Server) deleteIdentity(w http.ResponseWriter, r *http.Request) {
-	if err := s.store.DeleteIdentity(r.Context(), r.PathValue("id")); err != nil {
+	identity, err := s.store.GetIdentity(r.Context(), r.PathValue("id"))
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			writeError(w, http.StatusNotFound, err)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if !identityAccessible(r.Context(), identity) {
+		writeError(w, http.StatusNotFound, domain.ErrNotFound)
+		return
+	}
+	if err := s.store.DeleteIdentity(r.Context(), identity.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -174,11 +205,26 @@ func (s *Server) createOAuthIdentity(w http.ResponseWriter, r *http.Request) {
 		IntegrationID: req.IntegrationID,
 		Kind:          domain.IdentityKindOAuth,
 	}
+	if user, ok := UserFromContext(r.Context()); ok {
+		identity.CreatedBy = user.ID
+	}
 	if err := s.store.SaveIdentity(r.Context(), identity); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, identity)
+}
+
+// identityAccessible returns true when the requesting user may access the
+// identity. Platform-seeded identities (CreatedBy=="") are visible to all.
+// Creator-owned identities are only accessible to their creator.
+// When no session is present (static-token or dev mode) all identities are accessible.
+func identityAccessible(ctx context.Context, identity *domain.Identity) bool {
+	user, ok := UserFromContext(ctx)
+	if !ok {
+		return true
+	}
+	return identity.CreatedBy == "" || identity.CreatedBy == user.ID
 }
 
 // encryptCredential encrypts plaintext using the server's encryptor. On

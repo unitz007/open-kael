@@ -67,6 +67,7 @@ ALTER TABLE identities ADD COLUMN IF NOT EXISTS kind               TEXT NOT NULL
 ALTER TABLE identities ADD COLUMN IF NOT EXISTS app_id             TEXT NOT NULL DEFAULT '';
 ALTER TABLE identities ADD COLUMN IF NOT EXISTS credential_ref     TEXT NOT NULL DEFAULT '';
 ALTER TABLE identities ADD COLUMN IF NOT EXISTS webhook_secret_ref TEXT NOT NULL DEFAULT '';
+ALTER TABLE identities ADD COLUMN IF NOT EXISTS created_by         TEXT REFERENCES users(id);
 
 CREATE INDEX IF NOT EXISTS idx_identities_integration_id ON identities (integration_id);
 

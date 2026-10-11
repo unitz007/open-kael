@@ -46,4 +46,8 @@ type Identity struct {
 	// this identity, populated only for integrations that receive webhooks
 	// (e.g. GitHub App). Empty for identities that don't use webhooks.
 	WebhookSecretRef string `json:"webhook_secret_ref,omitempty"`
+	// CreatedBy is the ID of the User who created this identity. Empty for
+	// platform-seeded identities (OAuth placeholders for FPL, Google, etc.)
+	// that are visible to all creators.
+	CreatedBy string `json:"created_by,omitempty"`
 }

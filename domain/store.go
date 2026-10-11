@@ -24,7 +24,10 @@ type Store interface {
 
 	// Identity CRUD — app/bot credentials belonging to an Integration.
 	SaveIdentity(ctx context.Context, i *Identity) error
-	ListIdentities(ctx context.Context) ([]*Identity, error)
+	// ListIdentities returns identities visible to the given owner: those
+	// created by ownerID plus platform-seeded identities (created_by = "").
+	// Pass ownerID="" to return every identity (used at boot/runtime).
+	ListIdentities(ctx context.Context, ownerID string) ([]*Identity, error)
 	ListIdentitiesByIntegration(ctx context.Context, integrationID string) ([]*Identity, error)
 	GetIdentity(ctx context.Context, id string) (*Identity, error)
 	DeleteIdentity(ctx context.Context, id string) error
