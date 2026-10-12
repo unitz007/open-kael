@@ -1393,10 +1393,15 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 	log.Printf("skill-router: skills=%v intent=%q", skillNames, intent)
 
 	// Schedule intent: delegate to the closed-kael schedule handler so it can
-	// store the cron rule and reply without running the skill loop.
-	if intent == "schedule" && h.scheduleHandler != nil && len(skillNames) > 0 {
+	// create, list, or delete schedules without running the skill loop.
+	// skillName is "" when no skill matched (e.g. "show my schedules").
+	if intent == "schedule" && h.scheduleHandler != nil {
 		if conv, ok := domain.ConversationFromContext(ctx); ok && conv.UserID != "" {
-			reply, herr := h.scheduleHandler(ctx, conv.UserID, hosted.Agent.ID, skillNames[0], userText, conv.IdentityID, conv.ChatID)
+			skillName := ""
+			if len(skillNames) > 0 {
+				skillName = skillNames[0]
+			}
+			reply, herr := h.scheduleHandler(ctx, conv.UserID, hosted.Agent.ID, skillName, userText, conv.IdentityID, conv.ChatID)
 			if herr != nil {
 				log.Printf("skill-router: schedule handler: %v — falling through to skill loop", herr)
 			} else {
