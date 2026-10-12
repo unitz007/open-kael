@@ -2,6 +2,9 @@
 -- throughout) so Migrate can run on every startup rather than needing a
 -- separate migration framework — there's only one schema version so far.
 --
+-- One-off cleanups are appended here; they are safe to re-run (DELETE
+-- with no matching rows is a no-op).
+--
 -- Recursive Schema-shaped fields (input/output schemas) are stored as
 -- JSONB; everything else in the Integration -> Tool -> Skill -> Agent
 -- hierarchy is a real, foreign-keyed relational table, since Tools must be
@@ -347,3 +350,10 @@ CREATE TABLE IF NOT EXISTS email_verifications (
     email       TEXT NOT NULL DEFAULT '',
     expires_at  TIMESTAMPTZ NOT NULL
 );
+
+-- Cleanup: remove bot-kind identities that are no longer linked to any agent.
+-- These accumulate when an agent is deleted (old code left the identity row)
+-- or when agent creation fails after the identity was created.
+DELETE FROM identities
+WHERE kind = 'bot'
+  AND id NOT IN (SELECT identity_id FROM agent_identities);
