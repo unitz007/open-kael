@@ -272,6 +272,11 @@ type Host struct {
 	// substantial turn. It receives the exchange plus the current profile and
 	// integration notes, and returns what (if anything) should be updated.
 	profileExtractor func(ctx context.Context, userID, agentID string, input ProfileExtractInput) (*ProfileExtractResult, error)
+
+	// scheduleHandler, when set, intercepts turns where Jev classifies the
+	// user's intent as "schedule". Called before the skill loop runs; a
+	// non-empty reply string is delivered and the skill loop is skipped.
+	scheduleHandler func(ctx context.Context, userID, agentID, skillName, userText, identityID, channelRef string) (reply string, err error)
 }
 
 // ProfileExtractInput groups the inputs passed to the profile extractor hook.
@@ -523,6 +528,14 @@ func (h *Host) SetUserIntegrationNotesSetter(f func(ctx context.Context, userID,
 // keys meaning "no change". Only fires when userProfileSetter is also set.
 func (h *Host) SetProfileExtractor(f func(ctx context.Context, userID, agentID string, input ProfileExtractInput) (*ProfileExtractResult, error)) {
 	h.profileExtractor = f
+}
+
+// SetScheduleHandler registers a function that handles schedule-intent turns.
+// When Jev classifies the user's message as intent="schedule" and a matching
+// skill is found, this handler is called with the skill name and user text.
+// Return a non-empty reply string to deliver it to the user and skip the loop.
+func (h *Host) SetScheduleHandler(f func(ctx context.Context, userID, agentID, skillName, userText, identityID, channelRef string) (reply string, err error)) {
+	h.scheduleHandler = f
 }
 
 // ReloadAgentCommands replaces the Commands slice on a registered HostedAgent.
@@ -1379,6 +1392,20 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 
 	log.Printf("skill-router: skills=%v intent=%q", skillNames, intent)
 
+	// Schedule intent: delegate to the closed-kael schedule handler so it can
+	// store the cron rule and reply without running the skill loop.
+	if intent == "schedule" && h.scheduleHandler != nil && len(skillNames) > 0 {
+		if conv, ok := domain.ConversationFromContext(ctx); ok && conv.UserID != "" {
+			reply, herr := h.scheduleHandler(ctx, conv.UserID, hosted.Agent.ID, skillNames[0], userText, conv.IdentityID, conv.ChatID)
+			if herr != nil {
+				log.Printf("skill-router: schedule handler: %v — falling through to skill loop", herr)
+			} else {
+				h.deliverBestEffort(ctx, hosted, conv, reply)
+				return &domain.LoopResult{Status: domain.LoopStatusComplete}, nil, nil
+			}
+		}
+	}
+
 	if len(skillNames) == 0 {
 		// If the agent has skills defined and none matched, the message is
 		// outside this agent's scope — decline instead of letting the LLM
@@ -1705,4 +1732,65 @@ func (h *Host) deliverBestEffort(ctx context.Context, hosted *HostedAgent, conv 
 	if _, err := executor.Execute(ctx, identity, connectionRef, domain.ActionSendMessage, input); err != nil {
 		log.Printf("runtime: agent %q: failed to deliver reply: %v", hosted.Agent.ID, err)
 	}
+}
+
+// RunScheduledSkillForUser runs skillName headlessly on behalf of userID,
+// delivering the output to the user's (identityID, channelRef). This is the
+// trigger path for user-created schedules (as opposed to creator-defined cron
+// triggers). It launches in a background goroutine and returns immediately.
+func (h *Host) RunScheduledSkillForUser(ctx context.Context, agentID, skillName, userID, identityID, channelRef string) error {
+	h.mu.RLock()
+	hosted, ok := h.agents[agentID]
+	h.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("RunScheduledSkillForUser: agent %q not registered", agentID)
+	}
+
+	var skill *domain.Skill
+	for _, s := range hosted.Agent.Skills {
+		if s.Name == skillName {
+			skill = s
+			break
+		}
+	}
+	if skill == nil {
+		return fmt.Errorf("RunScheduledSkillForUser: skill %q not in agent %q", skillName, agentID)
+	}
+
+	conv := domain.ConversationRef{
+		IdentityID: identityID,
+		ChatID:     channelRef,
+		UserID:     userID,
+	}
+
+	// Inject user connection refs so tools can act with the user's credentials.
+	if userID != "" && h.userConnectionRefLoader != nil {
+		ctx = h.withUserConnectionRefs(ctx, userID)
+	}
+	ctx = domain.WithConversation(ctx, conv)
+
+	go func() {
+		defer recoverFromPanic(hosted.Agent.ID, "user-scheduled skill "+skillName)
+		tools, err := domain.HydrateSkillTools(
+			skill, hosted.Agent,
+			hosted.Deps.ToolsByID,
+			hosted.Deps.IdentitiesByID,
+			hosted.Deps.IntegrationsByID,
+			hosted.Deps.Executors,
+		)
+		if err != nil {
+			log.Printf("runtime: user-scheduled skill %q agent %q user %q: hydrate: %v", skillName, agentID, userID, err)
+			return
+		}
+		action := domain.BindSkill(hosted.Agent, skill, tools)
+		output, err := action.Invoke(ctx, map[string]any{})
+		if err != nil {
+			log.Printf("runtime: user-scheduled skill %q agent %q user %q: failed: %v", skillName, agentID, userID, err)
+			h.deliverBestEffort(ctx, hosted, conv, fmt.Sprintf("Your scheduled %s task ran into an error: %v", skillName, err))
+			return
+		}
+		log.Printf("runtime: user-scheduled skill %q agent %q user %q: finished", skillName, agentID, userID)
+		h.deliverBestEffort(ctx, hosted, conv, stringifyOutput(output))
+	}()
+	return nil
 }
