@@ -174,6 +174,11 @@ func (s *Store) DeleteAgent(ctx context.Context, id string) error {
 		`DELETE FROM conversation_messages WHERE agent_id = $1`,
 		`DELETE FROM conversations WHERE agent_id = $1`,
 		`DELETE FROM messenger_channels WHERE identity_id IN (SELECT identity_id FROM agent_identities WHERE agent_id = $1)`,
+		// Delete bot-kind identities linked to this agent — they're specific to
+		// the agent (a Telegram token, a Slack bot token) and become dead weight
+		// once the agent is gone. OAuth/token credentials are left intact since
+		// they belong to the creator, not the agent.
+		`DELETE FROM identities WHERE kind = 'bot' AND id IN (SELECT identity_id FROM agent_identities WHERE agent_id = $1)`,
 		`DELETE FROM agent_identities WHERE agent_id = $1`,
 		`DELETE FROM skill_tools WHERE skill_id IN (SELECT id FROM skills WHERE agent_id = $1)`,
 		`DELETE FROM skills WHERE agent_id = $1`,
