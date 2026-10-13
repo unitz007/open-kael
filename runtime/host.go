@@ -189,10 +189,15 @@ type Host struct {
 	// instead of the inline-keyboard SettingsFlow.
 	miniAppBaseURL string
 
-	// jev, when set, is used to route inbound messages to the correct skill
-	// before the inner skill loop runs — replacing the outer NativeLoop's
-	// LLM-based skill selection with a fast, type-safe Jev classifier.
+	// skillRouter, when set, routes inbound messages to the correct skill before
+	// the inner skill loop — replacing the outer NativeLoop's LLM-based skill
+	// selection with a fast, type-safe classifier.
 	skillRouter SkillRouter
+
+	// toolFilter, when set, trims the merged tool list before it is passed to
+	// the LLM — reducing token usage and narrowing the LLM's tool choices to
+	// what is actually relevant for the current turn.
+	toolFilter ToolFilter
 
 	// userAgentConfigLoader loads a user's personal instructions for one Agent.
 	// When set, the instructions are injected as a <user_instructions> block in
@@ -330,6 +335,14 @@ type ScopeChecker interface {
 	IsInScope(ctx context.Context, userText, agentContext string) (bool, error)
 }
 
+// ToolFilter, when set on the Host, trims the merged tool list before it is
+// passed to the LLM. It receives the user's message and the full hydrated list,
+// and returns the subset that is relevant. The filter must never return an empty
+// slice — callers fall back to the full list when it does.
+type ToolFilter interface {
+	FilterTools(ctx context.Context, userText string, tools []*domain.BoundAction) ([]*domain.BoundAction, error)
+}
+
 func NewHost() *Host {
 	return &Host{
 		agents:         make(map[string]*HostedAgent),
@@ -344,6 +357,14 @@ func NewHost() *Host {
 // confidence or no matching skill.
 func (h *Host) SetSkillRouter(r SkillRouter) {
 	h.skillRouter = r
+}
+
+// SetToolFilter registers a tool filter. When set, routeWithJev passes the
+// merged tool list through the filter before handing it to the LLM — trimming
+// irrelevant tools to reduce token usage. Falls back to the full list on error
+// or when the filter returns empty.
+func (h *Host) SetToolFilter(f ToolFilter) {
+	h.toolFilter = f
 }
 
 // SetUserChannelResolver registers a function that maps {identityID, channelRef}
@@ -1482,6 +1503,18 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 	if len(mergedTools) == 0 {
 		log.Printf("skill-router: selected skills yielded no tools — responding directly")
 		return h.respondDirectly(ctx, hosted, messages, actions)
+	}
+
+	// Tool filter: trim irrelevant tools before the LLM call to reduce tokens.
+	// Falls back to the full list on error or empty result.
+	if h.toolFilter != nil {
+		filtered, ferr := h.toolFilter.FilterTools(ctx, userText, mergedTools)
+		if ferr != nil {
+			log.Printf("skill-router: tool filter failed: %v — using full tool list", ferr)
+		} else if len(filtered) > 0 {
+			log.Printf("skill-router: tool filter: %d → %d tool(s)", len(mergedTools), len(filtered))
+			mergedTools = filtered
+		}
 	}
 
 	// Recommend intent: filter to read-only tools so the LLM can fetch data
