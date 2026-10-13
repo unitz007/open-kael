@@ -137,7 +137,8 @@ CREATE TABLE IF NOT EXISTS tools (
     action                   TEXT NOT NULL DEFAULT '',
     requires_approval        BOOLEAN NOT NULL DEFAULT FALSE,
     approval_prompt_template TEXT NOT NULL DEFAULT '',
-    approval_timeout_seconds INT NOT NULL DEFAULT 0
+    approval_timeout_seconds INT NOT NULL DEFAULT 0,
+    read_only                BOOLEAN NOT NULL DEFAULT FALSE
 );
 
 -- Idempotent migrations for tools columns added after initial schema.
@@ -146,6 +147,7 @@ ALTER TABLE tools ADD COLUMN IF NOT EXISTS instructions             TEXT NOT NUL
 ALTER TABLE tools ADD COLUMN IF NOT EXISTS requires_approval        BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE tools ADD COLUMN IF NOT EXISTS approval_prompt_template TEXT NOT NULL DEFAULT '';
 ALTER TABLE tools ADD COLUMN IF NOT EXISTS approval_timeout_seconds INT NOT NULL DEFAULT 0;
+ALTER TABLE tools ADD COLUMN IF NOT EXISTS read_only                BOOLEAN NOT NULL DEFAULT FALSE;
 
 CREATE INDEX IF NOT EXISTS idx_tools_integration_id ON tools (integration_id);
 

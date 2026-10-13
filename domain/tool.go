@@ -56,6 +56,12 @@ type ToolDefinition struct {
 	// "keep waiting" (same stance kael-platform's approval gate takes).
 	// Zero means the runtime host's own default.
 	ApprovalTimeoutSeconds int `json:"approval_timeout_seconds,omitempty"`
+
+	// ReadOnly marks the tool as having no side effects — it only reads or
+	// fetches data. Used by the runtime to decide which tools are safe to
+	// include when the user's intent is advisory (IntentRecommend) rather
+	// than actional (IntentExecute).
+	ReadOnly bool `json:"read_only,omitempty"`
 }
 
 // RenderApprovalPrompt fills ApprovalPromptTemplate's "{{field}}"

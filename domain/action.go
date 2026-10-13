@@ -27,6 +27,9 @@ type ActionSpec struct {
 	// can still call it, but the runtime tells it never to describe or mention
 	// the action to users.
 	Hidden bool `json:"hidden,omitempty"`
+	// ReadOnly mirrors ToolDefinition.ReadOnly — propagated at hydration time
+	// so the runtime can filter actions by intent without re-loading tool defs.
+	ReadOnly bool `json:"read_only,omitempty"`
 }
 
 // BoundAction pairs an ActionSpec with what actually runs it. Invoke is

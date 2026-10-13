@@ -1424,14 +1424,6 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 		}
 	}
 
-	// Recommend intent default: bypass tool hydration entirely and respond
-	// directly. The LLM answers from knowledge; tools aren't needed for advice.
-	// A registered IntentRecommend handler (above) takes precedence when set.
-	if intent == domain.IntentRecommend {
-		log.Printf("skill-router: recommend intent — bypassing tool loop")
-		return h.respondDirectly(ctx, hosted, withRecommendHint(messages), actions)
-	}
-
 	if len(skillNames) == 0 {
 		// If the agent has skills defined and none matched, the message is
 		// outside this agent's scope — decline instead of letting the LLM
@@ -1492,9 +1484,26 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 		return h.respondDirectly(ctx, hosted, messages, actions)
 	}
 
-	// Run the outer loop with full conversation history and merged tools.
-	// Intent is available for future injection (e.g. system hint) if needed.
-	_ = intent
+	// Recommend intent: filter to read-only tools so the LLM can fetch data
+	// but not execute side-effecting actions. Inject a hint so it knows to
+	// prefer advising over acting. If no read-only tools exist, respond without
+	// tools — the LLM answers from knowledge.
+	if intent == domain.IntentRecommend {
+		var readTools []*domain.BoundAction
+		for _, t := range mergedTools {
+			if t.Spec.ReadOnly {
+				readTools = append(readTools, t)
+			}
+		}
+		if len(readTools) == 0 {
+			log.Printf("skill-router: recommend intent — no read-only tools, responding directly")
+			return h.respondDirectly(ctx, hosted, withRecommendHint(messages), actions)
+		}
+		log.Printf("skill-router: recommend intent — running with %d read-only tool(s)", len(readTools))
+		messages = withRecommendHint(messages)
+		mergedTools = readTools
+	}
+
 	loopActions := make([]*domain.BoundAction, 0, len(mergedTools)+len(convActions)+1)
 	loopActions = append(loopActions, mergedTools...)
 	loopActions = append(loopActions, convActions...)

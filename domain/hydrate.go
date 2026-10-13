@@ -66,6 +66,7 @@ func HydrateTool(def *ToolDefinition, identity *Identity, integration *Integrati
 			InputSchema:  def.InputSchema,
 			OutputSchema: def.OutputSchema,
 			MaxCalls:     def.MaxCalls,
+			ReadOnly:     def.ReadOnly,
 		},
 		Invoke: invoke,
 	}, nil

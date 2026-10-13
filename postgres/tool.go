@@ -22,8 +22,8 @@ func (s *Store) SaveTool(ctx context.Context, t *domain.ToolDefinition) error {
 	}
 
 	_, err = s.pool.Exec(ctx, `
-		INSERT INTO tools (id, name, function_name, description, instructions, integration_id, input_schema, output_schema, action, requires_approval, approval_prompt_template, approval_timeout_seconds)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		INSERT INTO tools (id, name, function_name, description, instructions, integration_id, input_schema, output_schema, action, requires_approval, approval_prompt_template, approval_timeout_seconds, read_only)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 		ON CONFLICT (id) DO UPDATE SET
 			name = EXCLUDED.name,
 			function_name = EXCLUDED.function_name,
@@ -35,8 +35,9 @@ func (s *Store) SaveTool(ctx context.Context, t *domain.ToolDefinition) error {
 			action = EXCLUDED.action,
 			requires_approval = EXCLUDED.requires_approval,
 			approval_prompt_template = EXCLUDED.approval_prompt_template,
-			approval_timeout_seconds = EXCLUDED.approval_timeout_seconds
-	`, t.ID, t.Name, t.FunctionName, t.Description, t.Instructions, t.IntegrationID, inputJSON, outputJSON, t.Action, t.RequiresApproval, t.ApprovalPromptTemplate, t.ApprovalTimeoutSeconds)
+			approval_timeout_seconds = EXCLUDED.approval_timeout_seconds,
+			read_only = EXCLUDED.read_only
+	`, t.ID, t.Name, t.FunctionName, t.Description, t.Instructions, t.IntegrationID, inputJSON, outputJSON, t.Action, t.RequiresApproval, t.ApprovalPromptTemplate, t.ApprovalTimeoutSeconds, t.ReadOnly)
 	if err != nil {
 		return fmt.Errorf("postgres: save tool %q: %w", t.ID, err)
 	}
@@ -45,7 +46,7 @@ func (s *Store) SaveTool(ctx context.Context, t *domain.ToolDefinition) error {
 
 func (s *Store) GetTool(ctx context.Context, id string) (*domain.ToolDefinition, error) {
 	row := s.pool.QueryRow(ctx, `
-		SELECT id, name, function_name, description, instructions, integration_id, input_schema, output_schema, action, requires_approval, approval_prompt_template, approval_timeout_seconds
+		SELECT id, name, function_name, description, instructions, integration_id, input_schema, output_schema, action, requires_approval, approval_prompt_template, approval_timeout_seconds, read_only
 		FROM tools WHERE id = $1
 	`, id)
 	t, err := scanTool(row)
@@ -57,7 +58,7 @@ func (s *Store) GetTool(ctx context.Context, id string) (*domain.ToolDefinition,
 
 func (s *Store) ListToolsByIntegration(ctx context.Context, integrationID string) ([]*domain.ToolDefinition, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, name, function_name, description, instructions, integration_id, input_schema, output_schema, action, requires_approval, approval_prompt_template, approval_timeout_seconds
+		SELECT id, name, function_name, description, instructions, integration_id, input_schema, output_schema, action, requires_approval, approval_prompt_template, approval_timeout_seconds, read_only
 		FROM tools WHERE integration_id = $1 ORDER BY id
 	`, integrationID)
 	if err != nil {
@@ -84,7 +85,7 @@ func (s *Store) DeleteTool(ctx context.Context, id string) error {
 func scanTool(row rowScanner) (*domain.ToolDefinition, error) {
 	var t domain.ToolDefinition
 	var inputJSON, outputJSON []byte
-	if err := row.Scan(&t.ID, &t.Name, &t.FunctionName, &t.Description, &t.Instructions, &t.IntegrationID, &inputJSON, &outputJSON, &t.Action, &t.RequiresApproval, &t.ApprovalPromptTemplate, &t.ApprovalTimeoutSeconds); err != nil {
+	if err := row.Scan(&t.ID, &t.Name, &t.FunctionName, &t.Description, &t.Instructions, &t.IntegrationID, &inputJSON, &outputJSON, &t.Action, &t.RequiresApproval, &t.ApprovalPromptTemplate, &t.ApprovalTimeoutSeconds, &t.ReadOnly); err != nil {
 		return nil, err
 	}
 	if err := json.Unmarshal(inputJSON, &t.InputSchema); err != nil {
