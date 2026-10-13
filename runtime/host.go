@@ -273,10 +273,11 @@ type Host struct {
 	// integration notes, and returns what (if anything) should be updated.
 	profileExtractor func(ctx context.Context, userID, agentID string, input ProfileExtractInput) (*ProfileExtractResult, error)
 
-	// scheduleHandler, when set, intercepts turns where Jev classifies the
-	// user's intent as "schedule". Called before the skill loop runs; a
-	// non-empty reply string is delivered and the skill loop is skipped.
-	scheduleHandler func(ctx context.Context, userID, agentID, skillName, userText, identityID, channelRef string) (reply string, err error)
+	// intentHandlers maps a domain.Intent to a handler that intercepts turns
+	// before the skill loop. The handler receives the matched skill name (empty
+	// when no skill was matched) and returns a reply to deliver. When the
+	// handler returns an error the turn falls through to the skill loop.
+	intentHandlers map[domain.Intent]IntentHandler
 }
 
 // ProfileExtractInput groups the inputs passed to the profile extractor hook.
@@ -297,19 +298,25 @@ type ProfileExtractResult struct {
 	UpdatedNotes   map[string]string // integrationID → updated notes (omit if unchanged)
 }
 
+// IntentHandler is a function that handles a turn for a specific intent before
+// the skill loop runs. skillName is the Jev-matched skill (empty when no skill
+// matched). Return a non-empty reply to deliver it and skip the loop; return an
+// error to fall through to the skill loop.
+type IntentHandler func(ctx context.Context, userID, agentID, skillName, userText, identityID, channelRef string) (reply string, err error)
+
 // SkillRouter picks the right skill(s) for an inbound message. Any classifier
 // — a remote API, a local model, a keyword matcher — can implement this;
 // the concrete TypeSafe AI Jev implementation lives in the root jev package.
 type SkillRouter interface {
 	// PickSkill returns the single best-matching skill name, the classifier's
-	// confidence (0–1), and the user's intent. Returns ("", 0, "recommend", nil)
+	// confidence (0–1), and the user's intent. Returns ("", 0, IntentRecommend, nil)
 	// when no skill fits. Used by query_skill for single-skill delegation.
-	PickSkill(ctx context.Context, userText string, skills []*domain.Skill) (skillName string, confidence float64, intent string, err error)
+	PickSkill(ctx context.Context, userText string, skills []*domain.Skill) (skillName string, confidence float64, intent domain.Intent, err error)
 
 	// PickSkills returns all skills that apply to userText and the user's
 	// intent. An empty slice means no skill matched. Used by the main routing
 	// path to load and merge tools from multiple skills into one outer loop.
-	PickSkills(ctx context.Context, userText string, skills []*domain.Skill) (skillNames []string, intent string, err error)
+	PickSkills(ctx context.Context, userText string, skills []*domain.Skill) (skillNames []string, intent domain.Intent, err error)
 }
 
 // ScopeChecker is an optional extension of SkillRouter. When the configured
@@ -324,7 +331,11 @@ type ScopeChecker interface {
 }
 
 func NewHost() *Host {
-	return &Host{agents: make(map[string]*HostedAgent), bus: newEventBus()}
+	return &Host{
+		agents:         make(map[string]*HostedAgent),
+		bus:            newEventBus(),
+		intentHandlers: make(map[domain.Intent]IntentHandler),
+	}
 }
 
 // SetSkillRouter registers a skill router. When set, HandleTurn uses it to
@@ -530,12 +541,12 @@ func (h *Host) SetProfileExtractor(f func(ctx context.Context, userID, agentID s
 	h.profileExtractor = f
 }
 
-// SetScheduleHandler registers a function that handles schedule-intent turns.
-// When Jev classifies the user's message as intent="schedule" and a matching
-// skill is found, this handler is called with the skill name and user text.
-// Return a non-empty reply string to deliver it to the user and skip the loop.
-func (h *Host) SetScheduleHandler(f func(ctx context.Context, userID, agentID, skillName, userText, identityID, channelRef string) (reply string, err error)) {
-	h.scheduleHandler = f
+// SetIntentHandler registers a handler for a specific intent. When the skill
+// router classifies a turn with the given intent, the handler is called before
+// the skill loop. Return a non-empty reply to deliver it and skip the loop;
+// return an error to fall through to the skill loop.
+func (h *Host) SetIntentHandler(intent domain.Intent, handler IntentHandler) {
+	h.intentHandlers[intent] = handler
 }
 
 // ReloadAgentCommands replaces the Commands slice on a registered HostedAgent.
@@ -1392,18 +1403,20 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 
 	log.Printf("skill-router: skills=%v intent=%q", skillNames, intent)
 
-	// Schedule intent: delegate to the closed-kael schedule handler so it can
-	// create, list, or delete schedules without running the skill loop.
+	// Store intent on context so skills and prompt builders can read it.
+	ctx = domain.WithIntent(ctx, intent)
+
+	// Dispatch to a registered intent handler before the skill loop.
 	// skillName is "" when no skill matched (e.g. "show my schedules").
-	if intent == "schedule" && h.scheduleHandler != nil {
+	if handler, ok := h.intentHandlers[intent]; ok {
 		if conv, ok := domain.ConversationFromContext(ctx); ok && conv.UserID != "" {
 			skillName := ""
 			if len(skillNames) > 0 {
 				skillName = skillNames[0]
 			}
-			reply, herr := h.scheduleHandler(ctx, conv.UserID, hosted.Agent.ID, skillName, userText, conv.IdentityID, conv.ChatID)
+			reply, herr := handler(ctx, conv.UserID, hosted.Agent.ID, skillName, userText, conv.IdentityID, conv.ChatID)
 			if herr != nil {
-				log.Printf("skill-router: schedule handler: %v — falling through to skill loop", herr)
+				log.Printf("skill-router: intent handler %q: %v — falling through to skill loop", intent, herr)
 			} else {
 				h.deliverBestEffort(ctx, hosted, conv, reply)
 				return &domain.LoopResult{Status: domain.LoopStatusComplete}, nil, nil
