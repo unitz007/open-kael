@@ -1424,6 +1424,14 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 		}
 	}
 
+	// Recommend intent default: bypass tool hydration entirely and respond
+	// directly. The LLM answers from knowledge; tools aren't needed for advice.
+	// A registered IntentRecommend handler (above) takes precedence when set.
+	if intent == domain.IntentRecommend {
+		log.Printf("skill-router: recommend intent — bypassing tool loop")
+		return h.respondDirectly(ctx, hosted, withRecommendHint(messages), actions)
+	}
+
 	if len(skillNames) == 0 {
 		// If the agent has skills defined and none matched, the message is
 		// outside this agent's scope — decline instead of letting the LLM
@@ -1492,6 +1500,24 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 	loopActions = append(loopActions, convActions...)
 	loopActions = append(loopActions, buildFinishAction())
 	return h.runNativeLoop(ctx, hosted, messages, loopActions)
+}
+
+// withRecommendHint prepends a system-level directive so the LLM knows the
+// user wants advice, not action — it should answer directly without invoking
+// action tools.
+func withRecommendHint(messages []domain.Message) []domain.Message {
+	const hint = "The user wants advice or information, not to take an action right now. " +
+		"Answer directly from your knowledge and capabilities. " +
+		"Do not invoke tools to execute actions on the user's behalf."
+	out := make([]domain.Message, 0, len(messages)+1)
+	if len(messages) > 0 {
+		out = append(out, messages[:len(messages)-1]...)
+		out = append(out, domain.Message{Role: domain.RoleSystem, Content: hint})
+		out = append(out, messages[len(messages)-1])
+	} else {
+		out = append(out, domain.Message{Role: domain.RoleSystem, Content: hint})
+	}
+	return out
 }
 
 // withDeclineHint prepends a system-level directive to the message list so
