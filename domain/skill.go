@@ -42,6 +42,12 @@ type Skill struct {
 	// Visibility and the package doc comment).
 	Tools []ToolBinding `json:"tools"`
 
+	// Integrations is the set of integration IDs this skill is granted access
+	// to. When non-empty, the runtime resolves all tools for those integrations
+	// dynamically at execution time rather than reading the explicit Tools list.
+	// Creators set this via the UI; Tools is then populated at runtime only.
+	Integrations []string `json:"integrations,omitempty"`
+
 	Visibility SkillVisibility `json:"visibility"`
 
 	// Schedulable declares that users may configure a personal schedule for

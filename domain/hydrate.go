@@ -135,8 +135,15 @@ func WrapOneShotGuard(action *BoundAction) *BoundAction {
 // agent supplies the IdentityIDs used to pick the right Identity per
 // integration. toolsByID, identitiesByID, and integrationsByID are plain
 // lookup maps — this function doesn't care where they came from.
+//
+// When skill.Integrations is non-empty, all tools registered for those
+// integration IDs are resolved dynamically (the new creator-UI path). The
+// explicit skill.Tools bindings are still honoured when present, so old and
+// new skills both work through this single call site.
 func HydrateSkillTools(skill *Skill, agent *Agent, toolsByID map[string]*ToolDefinition, identitiesByID map[string]*Identity, integrationsByID map[string]*Integration, registry *ExecutorRegistry) ([]*BoundAction, error) {
-	bound := make([]*BoundAction, 0, len(skill.Tools))
+	bound := make([]*BoundAction, 0, len(skill.Tools)+len(skill.Integrations)*4)
+
+	// Legacy path: explicit tool bindings stored by the creator.
 	for _, binding := range skill.Tools {
 		def, ok := toolsByID[binding.ToolID]
 		if !ok {
@@ -153,6 +160,38 @@ func HydrateSkillTools(skill *Skill, agent *Agent, toolsByID map[string]*ToolDef
 		}
 		bound = append(bound, action)
 	}
+
+	// Integration-grant path: resolve all tools for each granted integration.
+	seen := make(map[string]bool, len(bound))
+	for _, a := range bound {
+		seen[a.Spec.Name] = true
+	}
+	for _, integrationID := range skill.Integrations {
+		integration, ok := integrationsByID[integrationID]
+		if !ok {
+			return nil, fmt.Errorf("skill %q: unknown integration %q", skill.ID, integrationID)
+		}
+		identity := resolveIdentityForIntegration(agent, integration, identitiesByID)
+		for _, def := range toolsByID {
+			if def.IntegrationID != integrationID {
+				continue
+			}
+			name := def.FunctionName
+			if name == "" {
+				name = def.Name
+			}
+			if seen[name] {
+				continue // already bound via explicit tool list
+			}
+			action, err := HydrateTool(def, identity, integration, registry)
+			if err != nil {
+				return nil, fmt.Errorf("skill %q: %w", skill.ID, err)
+			}
+			bound = append(bound, action)
+			seen[name] = true
+		}
+	}
+
 	return bound, nil
 }
 
