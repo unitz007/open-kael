@@ -9,6 +9,12 @@ import "context"
 type PluginDeps struct {
 	Resolver     CredentialResolver
 	KindRegistry *IdentityKindRegistry
+
+	// MCPEndpoints maps a service name to its MCP server HTTP endpoint.
+	// Populated from Integration.MCPEndpoint values loaded from the DB at
+	// startup. Plugin factories read deps.MCPEndpoints[p.Service] to wire
+	// an MCPExecutor fallback without needing env-var access.
+	MCPEndpoints map[string]string
 	// OnAuthRevoked, when set, is called when an executor detects that a stored
 	// credential has been revoked (e.g. invalid_grant from an OAuth provider).
 	// The credentialRef is the raw value from AppAuthorization.CredentialRef.

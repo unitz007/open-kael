@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS integrations (
 -- Idempotent migration: add service for DBs that had the old provider column.
 ALTER TABLE integrations ADD COLUMN IF NOT EXISTS service TEXT NOT NULL DEFAULT '';
 ALTER TABLE integrations ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'user';
+ALTER TABLE integrations ADD COLUMN IF NOT EXISTS mcp_endpoint TEXT NOT NULL DEFAULT '';
 
 -- identities: per-integration app/bot credential.
 CREATE TABLE IF NOT EXISTS identities (
