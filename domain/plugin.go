@@ -9,6 +9,12 @@ import "context"
 type PluginDeps struct {
 	Resolver     CredentialResolver
 	KindRegistry *IdentityKindRegistry
+
+	// MCPEndpoints maps a service name to its MCP server HTTP endpoint.
+	// Populated from Integration.MCPEndpoint values loaded from the DB at
+	// startup. Plugin factories read deps.MCPEndpoints[p.Service] to wire
+	// an MCPExecutor fallback without needing env-var access.
+	MCPEndpoints map[string]string
 	// OnAuthRevoked, when set, is called when an executor detects that a stored
 	// credential has been revoked (e.g. invalid_grant from an OAuth provider).
 	// The credentialRef is the raw value from AppAuthorization.CredentialRef.
@@ -64,4 +70,10 @@ type Plugin struct {
 	// NewExecutor builds this provider's Executor from the shared deps. Nil
 	// if this provider has no Executor (e.g. an event-source-only provider).
 	NewExecutor func(deps PluginDeps) Executor
+
+	// Seed, when non-nil, is called during platform seeding after the static
+	// Tools slice is persisted. Use it to discover and persist tools from a
+	// dynamic source such as an MCP server. The integrationID passed in is
+	// p.Service; saveFn is store.SaveTool. Returning an error aborts startup.
+	Seed func(ctx context.Context, integrationID string, saveFn func(context.Context, *ToolDefinition) error) error
 }

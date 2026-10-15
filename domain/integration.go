@@ -80,6 +80,14 @@ type Integration struct {
 	Description string `json:"description,omitempty"`
 	Kind        string `json:"kind,omitempty"` // IntegrationKindUser | IntegrationKindSystem; default "user"
 
+	// MCPEndpoint, when non-empty, is the streamable-HTTP MCP server URL for
+	// this integration (e.g. "http://localhost:8001"). Set by the platform
+	// operator; not overwritten by seedPlatform so the value persists across
+	// restarts. When set, the runtime wires an MCPExecutor fallback so agents
+	// can call any MCP tool the server exposes, not just the statically declared
+	// tools.
+	MCPEndpoint string `json:"mcp_endpoint,omitempty"`
+
 	// Events is the set of named events this Integration can emit via its
 	// webhook source. Skills subscribe to events by name; the runtime
 	// dispatches an incoming webhook to the first matching IntegrationEvent.
