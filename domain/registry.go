@@ -43,22 +43,24 @@ type AgentRegistry interface {
 type InMemoryRegistry struct {
 	mu sync.RWMutex
 
-	agents       map[string]*Agent
-	tools        map[string]*ToolDefinition
-	identities   map[string]*Identity
-	integrations map[string]*Integration
-	executors    *ExecutorRegistry
+	agents    map[string]*Agent
+	catalog   *Catalog
+	executors *ExecutorRegistry
 }
 
+// NewInMemoryRegistry makes a registry with a catalog of its own.
 func NewInMemoryRegistry(executors *ExecutorRegistry) *InMemoryRegistry {
-	return &InMemoryRegistry{
-		agents:       make(map[string]*Agent),
-		tools:        make(map[string]*ToolDefinition),
-		identities:   make(map[string]*Identity),
-		integrations: make(map[string]*Integration),
-		executors:    executors,
-	}
+	return NewInMemoryRegistryOn(NewCatalog(), executors)
 }
+
+// NewInMemoryRegistryOn makes a registry that reads the given catalog, so what the
+// rest of the system registers there is what delegation between agents sees too.
+func NewInMemoryRegistryOn(catalog *Catalog, executors *ExecutorRegistry) *InMemoryRegistry {
+	return &InMemoryRegistry{agents: make(map[string]*Agent), catalog: catalog, executors: executors}
+}
+
+// Catalog is the list of tools, identities and integrations this registry reads.
+func (r *InMemoryRegistry) Catalog() *Catalog { return r.catalog }
 
 var _ AgentRegistry = (*InMemoryRegistry)(nil)
 
@@ -69,23 +71,9 @@ func (r *InMemoryRegistry) RegisterAgent(a *Agent) {
 	a.Directory = r.DirectoryFor(a.ID)
 }
 
-func (r *InMemoryRegistry) RegisterTool(t *ToolDefinition) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.tools[t.ID] = t
-}
-
-func (r *InMemoryRegistry) RegisterIdentity(i *Identity) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.identities[i.ID] = i
-}
-
-func (r *InMemoryRegistry) RegisterIntegration(i *Integration) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.integrations[i.ID] = i
-}
+func (r *InMemoryRegistry) RegisterTool(t *ToolDefinition)     { r.catalog.PutTool(t) }
+func (r *InMemoryRegistry) RegisterIdentity(i *Identity)       { r.catalog.PutIdentity(i) }
+func (r *InMemoryRegistry) RegisterIntegration(i *Integration) { r.catalog.PutIntegration(i) }
 
 // DirectoryFor reads the registry fresh on every PublicSkills call, so
 // agents/tools/integrations registered later are picked up without
@@ -145,8 +133,8 @@ func (v *inMemoryDirectoryView) PublicSkills(_ context.Context) []*BoundAction {
 // integration owned by a creator other than owner. Caller holds r.mu.
 func (r *InMemoryRegistry) usesOthersIntegration(skill *Skill, owner string) bool {
 	others := func(integrationID string) bool {
-		i, ok := r.integrations[integrationID]
-		return ok && i.CreatedBy != "" && i.CreatedBy != owner
+		i, ok := r.catalog.Integration(integrationID)
+		return ok && !VisibleTo(i, owner)
 	}
 	for _, id := range skill.Integrations {
 		if others(id) {
@@ -154,7 +142,7 @@ func (r *InMemoryRegistry) usesOthersIntegration(skill *Skill, owner string) boo
 		}
 	}
 	for _, b := range skill.Tools {
-		if t, ok := r.tools[b.ToolID]; ok && others(t.IntegrationID) {
+		if t, ok := r.catalog.Tool(b.ToolID); ok && others(t.IntegrationID) {
 			return true
 		}
 	}
@@ -166,7 +154,7 @@ func (r *InMemoryRegistry) usesOthersIntegration(skill *Skill, owner string) boo
 // its nested loop — identical mechanics to a hand-wired delegate call (see
 // delegate.go and loop_test.go's TestDelegation_CallsTargetAgentsOwnLoop).
 func (r *InMemoryRegistry) bindDelegateSkill(owner *Agent, skill *Skill) (*BoundAction, error) {
-	tools, err := HydrateSkillTools(skill, owner, r.tools, r.identities, r.integrations, r.executors)
+	tools, err := r.catalog.HydrateSkill(skill, owner, r.executors)
 	if err != nil {
 		return nil, err
 	}

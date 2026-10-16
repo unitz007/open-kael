@@ -18,6 +18,19 @@ import (
 // multi-tenancy work: the same BoundAction serves every user, each getting
 // their own credential resolved on the fly.
 func HydrateTool(def *ToolDefinition, identity *Identity, integration *Integration, registry *ExecutorRegistry) (*BoundAction, error) {
+	tool, err := BindTool(def, identity, integration, registry)
+	if err != nil {
+		return nil, err
+	}
+	return ActionOf(tool), nil
+}
+
+// BindTool turns a stored tool into something an agent can run: the tool bound to
+// the identity and executor it runs with, behind every gate the contract and the
+// platform require — the input check, the user's own approval setting, the tool's
+// approval, the sign-in check, and the once-per-run guard. The gates are part of
+// the Tool, so nothing that holds a Tool can run it without them.
+func BindTool(def *ToolDefinition, identity *Identity, integration *Integration, registry *ExecutorRegistry) (Tool, error) {
 	if def.IntegrationID != integration.ID {
 		return nil, fmt.Errorf("hydrate tool %q: belongs to integration %q, got %q", def.ID, def.IntegrationID, integration.ID)
 	}
@@ -55,28 +68,12 @@ func HydrateTool(def *ToolDefinition, identity *Identity, integration *Integrati
 		// the model cannot loop on an approved write action.
 		invoke = withOneShotGuard(invoke)
 	}
-
 	// The input contract is the outermost step: a call that doesn't match the
 	// tool's schema is turned back to the model before anyone is asked to approve
 	// it and before any executor sees it.
 	invoke = withInputContract(def, invoke)
 
-	name := def.FunctionName
-	if name == "" {
-		name = def.Name
-	}
-	return &BoundAction{
-		Spec: ActionSpec{
-			Name:         name,
-			Description:  def.Description,
-			Instructions: def.Instructions,
-			InputSchema:  def.InputSchema,
-			OutputSchema: def.OutputSchema,
-			MaxCalls:     def.MaxCalls,
-			ReadOnly:     def.ReadOnly,
-		},
-		Invoke: invoke,
-	}, nil
+	return &boundTool{spec: def.Spec(), invoke: invoke}, nil
 }
 
 // withInputContract checks and normalises a call's input against the tool's schema
