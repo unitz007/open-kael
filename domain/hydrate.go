@@ -56,6 +56,11 @@ func HydrateTool(def *ToolDefinition, identity *Identity, integration *Integrati
 		invoke = withOneShotGuard(invoke)
 	}
 
+	// The input contract is the outermost step: a call that doesn't match the
+	// tool's schema is turned back to the model before anyone is asked to approve
+	// it and before any executor sees it.
+	invoke = withInputContract(def, invoke)
+
 	name := def.FunctionName
 	if name == "" {
 		name = def.Name
@@ -72,6 +77,19 @@ func HydrateTool(def *ToolDefinition, identity *Identity, integration *Integrati
 		},
 		Invoke: invoke,
 	}, nil
+}
+
+// withInputContract checks and normalises a call's input against the tool's schema
+// (see Schema.CheckInput) so everything behind it gets inputs that match what the
+// tool declared. The error is written for the model, which sees it as the result.
+func withInputContract(def *ToolDefinition, inner func(ctx context.Context, input map[string]any) (any, error)) func(ctx context.Context, input map[string]any) (any, error) {
+	return func(ctx context.Context, input map[string]any) (any, error) {
+		clean, err := def.InputSchema.CheckInput(input)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", def.ModelName(), err)
+		}
+		return inner(ctx, clean)
+	}
 }
 
 // withApprovalGate wraps invoke with a human-approval check. A tool marked
