@@ -159,6 +159,10 @@ type Host struct {
 	// Used to generate LLM-phrased connect prompts instead of hardcoded text.
 	connectIntegrationNameLoader func(ctx context.Context, identityID string) (name string, err error)
 
+	// connectPromptHook, when set, is told about every connect prompt sent by
+	// the auth gate (see SetConnectPromptHook).
+	connectPromptHook func(ctx context.Context, p ConnectPrompt)
+
 	// userChannelsByIdentityLoader, when set, returns all MessengerChannel
 	// channel refs for the given (userID, identityID) pair. Used by
 	// OnIntegrationConnected to deliver post-connection messages.
@@ -634,6 +638,24 @@ func (h *Host) SetEmailLinkFlow(
 	if h.settingsFlow != nil {
 		h.settingsFlow.checkLinkedEmail = checker
 	}
+}
+
+// ConnectPrompt describes a "connect your account" message the auth gate just
+// sent: who it went to, where, and which message — so the caller can edit it
+// once the person has connected (see SetConnectPromptHook).
+type ConnectPrompt struct {
+	UserID     string
+	IdentityID string // the integration identity the person is being asked to connect
+	Conv       domain.ConversationRef
+	MessageID  string
+	Text       string
+}
+
+// SetConnectPromptHook registers a callback invoked after the auth gate sends a
+// connect prompt, when the messenger reported the sent message's ID. Typical
+// use: remember it, then retire the Connect button after the user connects.
+func (h *Host) SetConnectPromptHook(f func(ctx context.Context, p ConnectPrompt)) {
+	h.connectPromptHook = f
 }
 
 // SetConnectIntegrationNameLoader registers a callback that returns the
@@ -1783,7 +1805,10 @@ func (h *Host) resolveConnectRequester(ctx context.Context, hosted *HostedAgent,
 		} else if url != "" {
 			promptText += "\n\n" + url
 		}
-		h.deliverBestEffort(ctx, hosted, conv, promptText, extra)
+		messageID := h.deliverBestEffortID(ctx, hosted, conv, promptText, extra)
+		if messageID != "" && h.connectPromptHook != nil {
+			h.connectPromptHook(ctx, ConnectPrompt{UserID: userID, IdentityID: identity.ID, Conv: conv, MessageID: messageID, Text: promptText})
+		}
 
 		// Store the turn for replay once the user connects. The original user
 		// message comes from context (set by listen.go before HandleTurn).
@@ -1811,15 +1836,22 @@ func (h *Host) resolveConnectRequester(ctx context.Context, hosted *HostedAgent,
 // merged into the input so callers can add provider-specific fields (e.g. a
 // Telegram inline keyboard button) without changing the signature for all callers.
 func (h *Host) deliverBestEffort(ctx context.Context, hosted *HostedAgent, conv domain.ConversationRef, text string, extra ...map[string]any) {
+	h.deliverBestEffortID(ctx, hosted, conv, text, extra...)
+}
+
+// deliverBestEffortID is deliverBestEffort that also returns the sent
+// message's ID when the messenger reports one ("" otherwise) — needed to edit
+// the message later, e.g. to retire a Connect button once it has been used.
+func (h *Host) deliverBestEffortID(ctx context.Context, hosted *HostedAgent, conv domain.ConversationRef, text string, extra ...map[string]any) string {
 	identity, integration := resolveIdentityAndIntegration(hosted, conv)
 	if integration == nil {
 		log.Printf("runtime: agent %q: no integration for provider %q, cannot deliver reply", hosted.Agent.ID, conv.Provider)
-		return
+		return ""
 	}
 	executor, ok := hosted.Deps.Executors.For(integration.Service)
 	if !ok {
 		log.Printf("runtime: agent %q: no executor for service %q, cannot deliver reply", hosted.Agent.ID, integration.Service)
-		return
+		return ""
 	}
 	var connectionRef string
 	if identity != nil {
@@ -1831,9 +1863,17 @@ func (h *Host) deliverBestEffort(ctx context.Context, hosted *HostedAgent, conv 
 			input[k] = v
 		}
 	}
-	if _, err := executor.Execute(ctx, identity, connectionRef, domain.ActionSendMessage, input); err != nil {
+	out, err := executor.Execute(ctx, identity, connectionRef, domain.ActionSendMessage, input)
+	if err != nil {
 		log.Printf("runtime: agent %q: failed to deliver reply: %v", hosted.Agent.ID, err)
+		return ""
 	}
+	if m, ok := out.(map[string]any); ok {
+		if id, ok := m["message_id"].(string); ok {
+			return id
+		}
+	}
+	return ""
 }
 
 // RunScheduledSkillForUser runs skillName headlessly on behalf of userID,

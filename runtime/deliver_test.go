@@ -1,0 +1,109 @@
+package runtime
+
+import (
+	"context"
+	"fmt"
+	"testing"
+
+	"github.com/unitz007/open-kael/domain"
+)
+
+type sendExec struct {
+	result any
+	err    error
+	sent   []map[string]any
+}
+
+func (e *sendExec) Execute(_ context.Context, _ *domain.Identity, _ string, _ string, input map[string]any) (any, error) {
+	e.sent = append(e.sent, input)
+	return e.result, e.err
+}
+
+func deliverRig(exec domain.Executor) (*Host, *HostedAgent, domain.ConversationRef) {
+	execs := domain.NewExecutorRegistry()
+	execs.Register("telegram", exec)
+	hosted := &HostedAgent{Agent: &domain.Agent{ID: "a1"}, Deps: AgentDeps{
+		IdentitiesByID:   map[string]*domain.Identity{"bot": {ID: "bot", IntegrationID: "tg"}},
+		IntegrationsByID: map[string]*domain.Integration{"tg": {ID: "tg", Service: "telegram"}},
+		Executors:        execs,
+	}}
+	return NewHost(), hosted, domain.ConversationRef{Provider: "telegram", ChatID: "chat1", IdentityID: "bot"}
+}
+
+func TestDeliverBestEffortID_ReturnsTheSentMessageID(t *testing.T) {
+	exec := &sendExec{result: map[string]any{"message_id": "42", "thread_id": "42"}}
+	h, hosted, conv := deliverRig(exec)
+	if got := h.deliverBestEffortID(context.Background(), hosted, conv, "hello", map[string]any{"web_app_button": "x"}); got != "42" {
+		t.Errorf("want message id 42, got %q", got)
+	}
+	if len(exec.sent) != 1 || exec.sent[0]["recipient"] != "chat1" || exec.sent[0]["web_app_button"] != "x" {
+		t.Errorf("message not sent as expected: %v", exec.sent)
+	}
+}
+
+func TestDeliverBestEffortID_EmptyWhenUnknownOrFailed(t *testing.T) {
+	for name, exec := range map[string]*sendExec{
+		"no id reported": {result: map[string]any{"ok": true}},
+		"not a map":      {result: "sent"},
+		"send failed":    {err: fmt.Errorf("blocked")},
+	} {
+		h, hosted, conv := deliverRig(exec)
+		if got := h.deliverBestEffortID(context.Background(), hosted, conv, "hello"); got != "" {
+			t.Errorf("%s: want empty id, got %q", name, got)
+		}
+	}
+	h, hosted, _ := deliverRig(&sendExec{})
+	if got := h.deliverBestEffortID(context.Background(), hosted, domain.ConversationRef{Provider: "slack", ChatID: "c"}, "x"); got != "" {
+		t.Errorf("unknown provider: want empty id, got %q", got)
+	}
+}
+
+// deliverBestEffort keeps its old contract: it delivers and returns nothing.
+func TestDeliverBestEffort_StillDelivers(t *testing.T) {
+	exec := &sendExec{result: map[string]any{"message_id": "7"}}
+	h, hosted, conv := deliverRig(exec)
+	h.deliverBestEffort(context.Background(), hosted, conv, "hi")
+	if len(exec.sent) != 1 {
+		t.Errorf("expected one send, got %d", len(exec.sent))
+	}
+}
+
+func TestConnectPromptHook_ReportsTheSentPrompt(t *testing.T) {
+	exec := &sendExec{result: map[string]any{"message_id": "99"}}
+	h, hosted, conv := deliverRig(exec)
+	h.connectURLGenerator = func(context.Context, string, string) (string, error) { return "https://app.example/connect?s=x", nil }
+	var got []ConnectPrompt
+	h.SetConnectPromptHook(func(_ context.Context, p ConnectPrompt) { got = append(got, p) })
+
+	req := h.resolveConnectRequester(context.Background(), hosted, conv, "u1")
+	if req == nil {
+		t.Fatal("expected a requester")
+	}
+	ctx := domain.WithOriginalMessage(context.Background(), "show my inbox")
+	if _, err := req.RequestConnect(ctx, conv, &domain.Identity{ID: "gmail-signin"}, "u1"); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("hook should fire once, fired %d times", len(got))
+	}
+	p := got[0]
+	if p.UserID != "u1" || p.IdentityID != "gmail-signin" || p.MessageID != "99" || p.Conv.ChatID != "chat1" || p.Text == "" {
+		t.Errorf("hook got %+v", p)
+	}
+	if btn, _ := exec.sent[0]["web_app_button"].(map[string]any); btn == nil || btn["url"] != "https://app.example/connect?s=x" {
+		t.Errorf("the prompt should carry the Connect button: %v", exec.sent[0])
+	}
+}
+
+func TestConnectPromptHook_NotCalledWithoutAMessageID(t *testing.T) {
+	exec := &sendExec{result: map[string]any{"ok": true}} // messenger reports no id
+	h, hosted, conv := deliverRig(exec)
+	h.connectURLGenerator = func(context.Context, string, string) (string, error) { return "https://app.example/c", nil }
+	called := false
+	h.SetConnectPromptHook(func(context.Context, ConnectPrompt) { called = true })
+	req := h.resolveConnectRequester(context.Background(), hosted, conv, "u1")
+	_, _ = req.RequestConnect(context.Background(), conv, &domain.Identity{ID: "x"}, "u1")
+	if called {
+		t.Errorf("no message id means nothing to edit later, so the hook must not fire")
+	}
+}
