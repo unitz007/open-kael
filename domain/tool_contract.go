@@ -30,7 +30,7 @@ import (
 //
 // Sources register tools through ValidateTool (or ValidateTools) so a tool that
 // breaks the contract is refused where it enters, not discovered when an agent
-// misbehaves. ToolContract below is the same text as data, for tests and docs.
+// misbehaves. How a tool is called is the other half: see Schema.CheckInput.
 
 const (
 	// MaxToolNameLen is the longest name a model will accept for a tool.
