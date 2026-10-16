@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 
@@ -33,6 +34,9 @@ func (s *Server) createSkill(w http.ResponseWriter, r *http.Request) {
 	}
 	if !agentAccessible(r.Context(), agent) {
 		writeError(w, http.StatusNotFound, domain.ErrNotFound)
+		return
+	}
+	if !s.skillRefsAccessible(w, r, &skill) {
 		return
 	}
 
@@ -106,6 +110,9 @@ func (s *Server) updateSkill(w http.ResponseWriter, r *http.Request) {
 	}
 	skill.ID = existing.ID
 	skill.AgentID = existing.AgentID
+	if !s.skillRefsAccessible(w, r, &skill) {
+		return
+	}
 	if err := s.store.SaveSkill(r.Context(), &skill); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -160,4 +167,53 @@ func (s *Server) skillAgentAllowed(w http.ResponseWriter, r *http.Request, agent
 		return false
 	}
 	return true
+}
+
+// skillRefsAccessible rejects a skill that grants an integration (or binds a
+// tool of one) the requesting creator may not see. Without it a creator could
+// name another creator's private connection and run it with that creator's
+// key. Unknown references are reported the same way as inaccessible ones so
+// the response never confirms that someone else's connection exists.
+func (s *Server) skillRefsAccessible(w http.ResponseWriter, r *http.Request, skill *domain.Skill) bool {
+	ok, err := s.refsAccessible(r.Context(), skill)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return false
+	}
+	if !ok {
+		writeError(w, http.StatusBadRequest, errors.New("this skill refers to a connection that doesn't exist or isn't yours"))
+		return false
+	}
+	return true
+}
+
+func (s *Server) refsAccessible(ctx context.Context, skill *domain.Skill) (bool, error) {
+	integrationOK := func(id string) (bool, error) {
+		i, err := s.store.LoadIntegration(ctx, id)
+		if errors.Is(err, domain.ErrNotFound) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		return integrationAccessible(ctx, i), nil
+	}
+	for _, id := range skill.Integrations {
+		if ok, err := integrationOK(id); err != nil || !ok {
+			return false, err
+		}
+	}
+	for _, b := range skill.Tools {
+		tool, err := s.store.GetTool(ctx, b.ToolID)
+		if errors.Is(err, domain.ErrNotFound) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		if ok, err := integrationOK(tool.IntegrationID); err != nil || !ok {
+			return false, err
+		}
+	}
+	return true, nil
 }
