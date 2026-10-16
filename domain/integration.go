@@ -80,6 +80,15 @@ type Integration struct {
 	Description string `json:"description,omitempty"`
 	Kind        string `json:"kind,omitempty"` // IntegrationKindUser | IntegrationKindSystem; default "user"
 
+	// CreatedBy is the ID of the creator who owns this integration. Empty for
+	// platform-seeded integrations, which every creator can see. A creator's
+	// own connection (see Source) is visible only to them.
+	CreatedBy string `json:"created_by,omitempty"`
+
+	// Source describes where a creator-built integration's tools come from.
+	// Nil for platform-seeded integrations, whose tools are declared in code.
+	Source *IntegrationSource `json:"source,omitempty"`
+
 	// Events is the set of named events this Integration can emit via its
 	// webhook source. Skills subscribe to events by name; the runtime
 	// dispatches an incoming webhook to the first matching IntegrationEvent.
@@ -90,4 +99,42 @@ type Integration struct {
 	// LoadIntegration / LoadAll — not persisted on this struct directly.
 	Identities []*Identity       `json:"identities,omitempty"`
 	Tools      []*ToolDefinition `json:"tools,omitempty"`
+}
+
+// Source types for a creator-built integration.
+const (
+	SourceOpenAPI = "openapi" // tools are the operations of an OpenAPI/Swagger description
+	SourceMCP     = "mcp"     // tools are served by a remote MCP server
+)
+
+// Shared-key placements: how the single key is attached to every request.
+const (
+	AuthNone   = "none"
+	AuthBearer = "bearer" // Authorization: Bearer <key>
+	AuthHeader = "header" // <Name>: <key>
+	AuthQuery  = "query"  // ?<Name>=<key>
+	AuthBasic  = "basic"  // Authorization: Basic base64(<username>:<key>)
+)
+
+// IntegrationSource is the non-secret description of a creator-built
+// integration. The key itself is never stored here: it is the CredentialRef of
+// the integration's token-kind Identity, encrypted at rest.
+type IntegrationSource struct {
+	Type string `json:"type"` // SourceOpenAPI | SourceMCP
+	// URL is where the description was fetched from (the spec address) or, for
+	// MCP, the server endpoint. Informational for OpenAPI; the call target is
+	// BaseURL.
+	URL string `json:"url"`
+	// BaseURL is the root every OpenAPI operation path is appended to.
+	BaseURL string     `json:"base_url,omitempty"`
+	Auth    SourceAuth `json:"auth"`
+}
+
+// SourceAuth says how the shared key is sent.
+type SourceAuth struct {
+	Kind string `json:"kind"` // Auth* constant
+	// Name is the header or query-parameter name for AuthHeader / AuthQuery.
+	Name string `json:"name,omitempty"`
+	// Username is the fixed user for AuthBasic; the key is the password.
+	Username string `json:"username,omitempty"`
 }

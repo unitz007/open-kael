@@ -1,6 +1,9 @@
 package domain
 
-import "context"
+import (
+	"context"
+	"sync"
+)
 
 // Executor performs one service's tools — implemented once per service
 // (e.g. "slack", "github", "discord"), not once per tool or identity.
@@ -32,7 +35,9 @@ type MessengerSkillProvider interface {
 // GitHubExecutor, differentiated at call time by which identity and
 // connectionRef are passed in.
 type ExecutorRegistry struct {
+	mu        sync.RWMutex
 	executors map[string]Executor
+	fallback  func(service string) (Executor, bool)
 }
 
 func NewExecutorRegistry() *ExecutorRegistry {
@@ -40,11 +45,32 @@ func NewExecutorRegistry() *ExecutorRegistry {
 }
 
 func (r *ExecutorRegistry) Register(service string, e Executor) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.executors[service] = e
+}
+
+// SetFallback installs a lookup consulted when no executor is registered for a
+// service. It lets services that are created at runtime (for example a
+// creator's own connection) resolve without a restart or a registry entry per
+// service. Registered executors always win over the fallback.
+func (r *ExecutorRegistry) SetFallback(f func(service string) (Executor, bool)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.fallback = f
 }
 
 // For returns the Executor registered for service (e.g. "github", "slack").
 func (r *ExecutorRegistry) For(service string) (Executor, bool) {
+	r.mu.RLock()
 	e, ok := r.executors[service]
-	return e, ok
+	fb := r.fallback
+	r.mu.RUnlock()
+	if ok {
+		return e, true
+	}
+	if fb != nil {
+		return fb(service)
+	}
+	return nil, false
 }

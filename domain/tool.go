@@ -14,10 +14,10 @@ import (
 // resolution stockai_mcp.go's stockAIToolSpec currently does by hand for one
 // hardcoded provider.
 type ToolDefinition struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
+	ID           string `json:"id"`
+	Name         string `json:"name"`
 	FunctionName string `json:"function_name,omitempty"`
-	Description string `json:"description"`
+	Description  string `json:"description"`
 	Instructions string `json:"instructions,omitempty"`
 
 	IntegrationID string `json:"integration_id"`
@@ -62,6 +62,10 @@ type ToolDefinition struct {
 	// include when the user's intent is advisory (IntentRecommend) rather
 	// than actional (IntentExecute).
 	ReadOnly bool `json:"read_only,omitempty"`
+
+	// Disabled turns the tool off: it stays listed for whoever manages the
+	// integration but is never offered to a skill or run.
+	Disabled bool `json:"disabled,omitempty"`
 }
 
 // RenderApprovalPrompt fills ApprovalPromptTemplate's "{{field}}"

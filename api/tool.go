@@ -8,6 +8,10 @@ import (
 )
 
 func (s *Server) listToolsByIntegration(w http.ResponseWriter, r *http.Request) {
+	if !s.integrationVisible(r, r.PathValue("integrationID")) {
+		writeError(w, http.StatusNotFound, domain.ErrNotFound)
+		return
+	}
 	list, err := s.store.ListToolsByIntegration(r.Context(), r.PathValue("integrationID"))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -26,5 +30,20 @@ func (s *Server) getTool(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	if !s.integrationVisible(r, tool.IntegrationID) {
+		writeError(w, http.StatusNotFound, domain.ErrNotFound)
+		return
+	}
 	writeJSON(w, http.StatusOK, tool)
+}
+
+// integrationVisible reports whether the requester may see an integration's
+// tools. An unknown integration is treated as visible so the usual empty or
+// not-found answer is produced by the caller.
+func (s *Server) integrationVisible(r *http.Request, integrationID string) bool {
+	i, err := s.store.LoadIntegration(r.Context(), integrationID)
+	if err != nil {
+		return true
+	}
+	return integrationAccessible(r.Context(), i)
 }

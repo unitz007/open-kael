@@ -234,6 +234,12 @@ func (s *Server) userAuth(next http.HandlerFunc) http.HandlerFunc {
 
 type ctxKeyUser struct{}
 
+// ContextWithUser returns ctx carrying u as the authenticated user — what the
+// session middleware does per request. For route plugins' tests.
+func ContextWithUser(ctx context.Context, u *domain.User) context.Context {
+	return context.WithValue(ctx, ctxKeyUser{}, u)
+}
+
 // UserFromContext retrieves the authenticated *domain.User from the request
 // context. Returns ok=false when no session is present (static-token or
 // unauthenticated dev mode).

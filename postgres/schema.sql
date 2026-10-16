@@ -52,6 +52,8 @@ CREATE TABLE IF NOT EXISTS integrations (
 -- Idempotent migration: add service for DBs that had the old provider column.
 ALTER TABLE integrations ADD COLUMN IF NOT EXISTS service TEXT NOT NULL DEFAULT '';
 ALTER TABLE integrations ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'user';
+ALTER TABLE integrations ADD COLUMN IF NOT EXISTS created_by TEXT REFERENCES users(id);
+ALTER TABLE integrations ADD COLUMN IF NOT EXISTS source JSONB;
 
 -- identities: per-integration app/bot credential.
 CREATE TABLE IF NOT EXISTS identities (
@@ -148,6 +150,7 @@ ALTER TABLE tools ADD COLUMN IF NOT EXISTS requires_approval        BOOLEAN NOT 
 ALTER TABLE tools ADD COLUMN IF NOT EXISTS approval_prompt_template TEXT NOT NULL DEFAULT '';
 ALTER TABLE tools ADD COLUMN IF NOT EXISTS approval_timeout_seconds INT NOT NULL DEFAULT 0;
 ALTER TABLE tools ADD COLUMN IF NOT EXISTS read_only                BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE tools ADD COLUMN IF NOT EXISTS disabled                 BOOLEAN NOT NULL DEFAULT FALSE;
 
 CREATE INDEX IF NOT EXISTS idx_tools_integration_id ON tools (integration_id);
 

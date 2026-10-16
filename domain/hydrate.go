@@ -41,7 +41,9 @@ func HydrateTool(def *ToolDefinition, identity *Identity, integration *Integrati
 	}
 	// Auth gate: if identity requires a user connection ref and none is set,
 	// prompt the user to connect their account before executing the tool.
-	if identity != nil {
+	// Token-kind identities hold one shared key for everybody, so there is no
+	// per-user connection to ask for.
+	if identity != nil && identity.Kind != IdentityKindToken {
 		invoke = withAuthGate(identity, def.Name, invoke)
 	}
 	// User-level approval gate runs first (checked at call time from context)
@@ -149,6 +151,9 @@ func HydrateSkillTools(skill *Skill, agent *Agent, toolsByID map[string]*ToolDef
 		if !ok {
 			return nil, fmt.Errorf("skill %q: unknown tool %q", skill.ID, binding.ToolID)
 		}
+		if def.Disabled {
+			continue
+		}
 		integration, ok := integrationsByID[def.IntegrationID]
 		if !ok {
 			return nil, fmt.Errorf("skill %q: tool %q references unknown integration %q", skill.ID, def.ID, def.IntegrationID)
@@ -173,7 +178,7 @@ func HydrateSkillTools(skill *Skill, agent *Agent, toolsByID map[string]*ToolDef
 		}
 		identity := resolveIdentityForIntegration(agent, integration, identitiesByID)
 		for _, def := range toolsByID {
-			if def.IntegrationID != integrationID {
+			if def.IntegrationID != integrationID || def.Disabled {
 				continue
 			}
 			name := def.FunctionName
