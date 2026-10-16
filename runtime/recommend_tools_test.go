@@ -39,6 +39,12 @@ func (l *recordingLLM) Call(_ context.Context, _ []domain.Message, actions []dom
 	return &domain.LLMResponse{ToolCalls: []domain.ToolCall{{ID: "1", Name: domain.FinishActionName, Arguments: map[string]any{"content": "ok"}}}}, nil
 }
 
+func (l *recordingLLM) reset() {
+	l.mu.Lock()
+	l.seen = nil
+	l.mu.Unlock()
+}
+
 func (l *recordingLLM) offered() map[string]bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()

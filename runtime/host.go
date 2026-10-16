@@ -29,15 +29,22 @@ type pendingAuthTurn struct {
 }
 
 // AgentDeps is everything a HostedAgent needs beyond domain.Agent itself to
-// actually run — the lookup maps domain.HydrateSkillTools needs, plus an
-// optional Memory. Kept separate from domain.Agent because these are
-// runtime wiring (in-memory maps today, a database-backed lookup later),
-// not stored agent data.
+// actually run: the Catalog it reads tools, identities and integrations from,
+// the executors, and an optional Memory. Kept separate from domain.Agent because
+// these are runtime wiring, not stored agent data.
 type AgentDeps struct {
+	// Catalog is the one live list every agent shares. Set it to share a catalog
+	// across agents; when nil, one is built from the three maps below the first time
+	// it is needed.
+	Catalog *domain.Catalog
+
+	// ToolsByID, IdentitiesByID and IntegrationsByID seed a Catalog when Catalog is
+	// nil (tests, small programs). Nothing reads them afterwards.
 	ToolsByID        map[string]*domain.ToolDefinition
 	IdentitiesByID   map[string]*domain.Identity
 	IntegrationsByID map[string]*domain.Integration
-	Executors        *domain.ExecutorRegistry
+
+	Executors *domain.ExecutorRegistry
 	// Memory is optional — nil means every turn starts cold, same as
 	// domain.BindSkill's nested loop does today.
 	Memory domain.Memory
@@ -47,17 +54,74 @@ type AgentDeps struct {
 type HostedAgent struct {
 	Agent *domain.Agent
 	Deps  AgentDeps
+
+	catalogOnce sync.Once
 }
+
+// catalog is the agent's view of tools, identities and integrations. Everything
+// that looks one up goes through it, so a connection added while the server runs is
+// seen everywhere at once.
+func (h *HostedAgent) catalog() *domain.Catalog {
+	h.catalogOnce.Do(func() {
+		if h.Deps.Catalog != nil {
+			return
+		}
+		c := domain.NewCatalog()
+		for _, i := range h.Deps.IntegrationsByID {
+			c.PutIntegration(i)
+		}
+		for _, i := range h.Deps.IdentitiesByID {
+			c.PutIdentity(i)
+		}
+		for _, t := range h.Deps.ToolsByID {
+			c.PutTool(t)
+		}
+		h.Deps.Catalog = c
+	})
+	return h.Deps.Catalog
+}
+
+// Catalog is the catalog this agent reads (shared with every other agent when it
+// came from Boot). Code that adds or removes connections while the server runs
+// registers them here.
+func (h *HostedAgent) Catalog() *domain.Catalog { return h.catalog() }
+
+// owner is the creator this agent belongs to ("" for a platform agent).
+func (h *HostedAgent) owner() string { return h.Agent.CreatedBy }
+
+// View returns what this agent may use, in one consistent pass: every integration
+// its creator may use (the platform's and their own, never another creator's) with
+// those integrations' identities and tools.
+func (h *HostedAgent) View() (tools map[string]*domain.ToolDefinition, identities map[string]*domain.Identity, integrations map[string]*domain.Integration) {
+	c := h.catalog()
+	integrations, identities, tools = c.Integrations(), c.Identities(), c.Tools()
+	for id, i := range integrations {
+		if !domain.VisibleTo(i, h.owner()) {
+			delete(integrations, id)
+		}
+	}
+	for id, i := range identities {
+		if _, ok := integrations[i.IntegrationID]; !ok {
+			delete(identities, id)
+		}
+	}
+	for id, t := range tools {
+		if _, ok := integrations[t.IntegrationID]; !ok {
+			delete(tools, id)
+		}
+	}
+	return tools, identities, integrations
+}
+
+func (h *HostedAgent) integrations() map[string]*domain.Integration { _, _, i := h.View(); return i }
+func (h *HostedAgent) identities() map[string]*domain.Identity      { _, i, _ := h.View(); return i }
+func (h *HostedAgent) tools() map[string]*domain.ToolDefinition     { t, _, _ := h.View(); return t }
 
 // Host runs a set of registered agents' turns, cron schedules, and event
 // dispatch. The zero value is not ready to use — call NewHost.
 type Host struct {
 	mu     sync.RWMutex
 	agents map[string]*HostedAgent
-
-	// live holds integrations, tools and identities created after boot (see
-	// LiveGraph). Set once before serving.
-	live LiveGraph
 
 	// Cron scheduler state, kept in step with the agents (see StartCron).
 	// cronMu is only ever taken after h.mu, never before.
@@ -985,9 +1049,9 @@ func buildGetCurrentTimeAction() *domain.BoundAction {
 		Invoke: func(_ context.Context, _ map[string]any) (any, error) {
 			now := time.Now().UTC()
 			return map[string]any{
-				"utc":      now.Format(time.RFC3339),
-				"date":     now.Format("2006-01-02"),
-				"time":     now.Format("15:04:05"),
+				"utc":         now.Format(time.RFC3339),
+				"date":        now.Format("2006-01-02"),
+				"time":        now.Format("15:04:05"),
 				"day_of_week": now.Weekday().String(),
 			}, nil
 		},
@@ -1105,7 +1169,7 @@ func (h *Host) configureToolApprovalAction(hosted *HostedAgent) *domain.BoundAct
 
 			// Match by FunctionName (LLM-facing) with fallback to Name.
 			var toolID string
-			for _, def := range hosted.Deps.ToolsByID {
+			for _, def := range hosted.tools() {
 				name := def.FunctionName
 				if name == "" {
 					name = def.Name
@@ -1172,15 +1236,15 @@ func (h *Host) actionsFor(ctx context.Context, hosted *HostedAgent) ([]*domain.B
 // IdentityID is not set.
 func resolveIdentityAndIntegration(hosted *HostedAgent, conv domain.ConversationRef) (*domain.Identity, *domain.Integration) {
 	if conv.IdentityID != "" {
-		if identity, ok := hosted.Deps.IdentitiesByID[conv.IdentityID]; ok {
-			if integration, ok := hosted.Deps.IntegrationsByID[identity.IntegrationID]; ok {
+		if identity, ok := hosted.catalog().Identity(conv.IdentityID); ok {
+			if integration, ok := hosted.catalog().Integration(identity.IntegrationID); ok {
 				return identity, integration
 			}
 		}
 	}
 	// Fallback: find the first identity whose integration has this service
-	for _, identity := range hosted.Deps.IdentitiesByID {
-		if intg, ok := hosted.Deps.IntegrationsByID[identity.IntegrationID]; ok {
+	for _, identity := range hosted.identities() {
+		if intg, ok := hosted.catalog().Integration(identity.IntegrationID); ok {
 			if intg.Service == conv.Provider {
 				return identity, intg
 			}
@@ -1268,7 +1332,7 @@ func (h *Host) HandleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 		}
 	}
 
-	_, _, promptIntegrations := h.graphMaps(hosted.Deps)
+	promptIntegrations := hosted.integrations()
 	messages := make([]domain.Message, 0, len(prior)+2)
 	messages = append(messages, domain.Message{Role: domain.RoleSystem, Content: buildSystemPrompt(hosted.Agent, userProfile, userInstructions, integrationNotes, promptIntegrations, messengerSkills)})
 	messages = append(messages, prior...)
@@ -1348,9 +1412,10 @@ func (h *Host) maybeExtractProfile(userID, agentID, userMessage, agentResponse, 
 	}
 
 	// Collect connected integration IDs and names for this agent.
-	integrationIDs := make([]string, 0, len(hosted.Deps.IntegrationsByID))
-	integrationNames := make(map[string]string, len(hosted.Deps.IntegrationsByID))
-	for id, intg := range hosted.Deps.IntegrationsByID {
+	visible := hosted.integrations()
+	integrationIDs := make([]string, 0, len(visible))
+	integrationNames := make(map[string]string, len(visible))
+	for id, intg := range hosted.integrations() {
 		integrationIDs = append(integrationIDs, id)
 		integrationNames[id] = intg.Name
 	}

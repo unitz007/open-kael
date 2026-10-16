@@ -68,11 +68,11 @@ func (h *Host) ListenAndServe(ctx context.Context) error {
 func (h *Host) startListeners(ctx context.Context, hosted *HostedAgent, inbox chan domain.InboundMessage) int {
 	started := 0
 	for _, identityID := range hosted.Agent.IdentityIDs {
-		identity, ok := hosted.Deps.IdentitiesByID[identityID]
+		identity, ok := hosted.catalog().Identity(identityID)
 		if !ok {
 			continue
 		}
-		integration, ok := hosted.Deps.IntegrationsByID[identity.IntegrationID]
+		integration, ok := hosted.catalog().Integration(identity.IntegrationID)
 		if !ok {
 			continue
 		}
@@ -155,14 +155,8 @@ func (h *Host) StartListenerForAgent(agentID string, identity *domain.Identity, 
 	h.mu.Lock()
 	hosted, ok := h.agents[agentID]
 	if ok {
-		if hosted.Deps.IdentitiesByID == nil {
-			hosted.Deps.IdentitiesByID = make(map[string]*domain.Identity)
-		}
-		if hosted.Deps.IntegrationsByID == nil {
-			hosted.Deps.IntegrationsByID = make(map[string]*domain.Integration)
-		}
-		hosted.Deps.IdentitiesByID[identity.ID] = identity
-		hosted.Deps.IntegrationsByID[integration.ID] = integration
+		hosted.catalog().PutIdentity(identity)
+		hosted.catalog().PutIntegration(integration)
 		found := false
 		for _, id := range hosted.Agent.IdentityIDs {
 			if id == identity.ID {
@@ -551,7 +545,7 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 			if executor, ok := h.executorForMessage(hosted, msg); ok {
 				if provider, ok := executor.(domain.SettingsMenuProvider); ok {
 					sCtx := ctx
-					if identity, ok := hosted.Deps.IdentitiesByID[msg.Conversation.IdentityID]; ok {
+					if identity, ok := hosted.catalog().Identity(msg.Conversation.IdentityID); ok {
 						sCtx = domain.WithBotCredentialRef(sCtx, identity.CredentialRef)
 					}
 					if msg.Conversation.UserID != "" && h.userConnectionRefLoader != nil {
@@ -672,7 +666,7 @@ func (h *Host) handleCallbackQuery(ctx context.Context, hosted *HostedAgent, msg
 			return
 		}
 		sCtx := ctx
-		if identity, ok := hosted.Deps.IdentitiesByID[msg.Conversation.IdentityID]; ok {
+		if identity, ok := hosted.catalog().Identity(msg.Conversation.IdentityID); ok {
 			sCtx = domain.WithBotCredentialRef(sCtx, identity.CredentialRef)
 		}
 		if msg.Conversation.UserID != "" && h.userConnectionRefLoader != nil {
@@ -859,11 +853,11 @@ func matchBotCommand(text string, commands []domain.BotCommand) string {
 // executorForMessage returns the Executor registered for the integration that
 // owns msg.Conversation.IdentityID, if one exists.
 func (h *Host) executorForMessage(hosted *HostedAgent, msg domain.InboundMessage) (domain.Executor, bool) {
-	identity, ok := hosted.Deps.IdentitiesByID[msg.Conversation.IdentityID]
+	identity, ok := hosted.catalog().Identity(msg.Conversation.IdentityID)
 	if !ok {
 		return nil, false
 	}
-	integration, ok := hosted.Deps.IntegrationsByID[identity.IntegrationID]
+	integration, ok := hosted.catalog().Integration(identity.IntegrationID)
 	if !ok {
 		return nil, false
 	}

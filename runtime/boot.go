@@ -1,6 +1,10 @@
 package runtime
 
-import "github.com/unitz007/open-kael/domain"
+import (
+	"log"
+
+	"github.com/unitz007/open-kael/domain"
+)
 
 // BootInput is the raw, stored-only graph a loader (postgres.Store.LoadAll,
 // or any other persistence layer) produces — see postgres/boot.go's own
@@ -24,6 +28,10 @@ type BootLive struct {
 	Executors *domain.ExecutorRegistry
 	LLMs      map[string][]domain.LLM
 	Memory    map[string]domain.Memory
+	// Catalog, when set, is the catalog everything is registered in, so code that
+	// adds connections while the server runs can use the same one. Boot makes one
+	// when it is nil.
+	Catalog *domain.Catalog
 }
 
 // Boot wires a BootInput + BootLive into a live domain.InMemoryRegistry
@@ -36,16 +44,12 @@ type BootLive struct {
 // but there's no reason to rely on that laziness to paper over an
 // ordering bug here.
 func Boot(input BootInput, live BootLive) (*domain.InMemoryRegistry, *Host) {
-	registry := domain.NewInMemoryRegistry(live.Executors)
-	for _, identity := range input.IdentitiesByID {
-		registry.RegisterIdentity(identity)
+	cat := live.Catalog
+	if cat == nil {
+		cat = domain.NewCatalog()
 	}
-	for _, integration := range input.IntegrationsByID {
-		registry.RegisterIntegration(integration)
-	}
-	for _, tool := range input.ToolsByID {
-		registry.RegisterTool(tool)
-	}
+	registry := domain.NewInMemoryRegistryOn(cat, live.Executors)
+	seedCatalog(cat, input)
 
 	host := NewHost()
 	for _, agent := range input.Agents {
@@ -55,14 +59,40 @@ func Boot(input BootInput, live BootLive) (*domain.InMemoryRegistry, *Host) {
 		host.Register(&HostedAgent{
 			Agent: agent,
 			Deps: AgentDeps{
-				ToolsByID:        input.ToolsByID,
-				IdentitiesByID:   input.IdentitiesByID,
-				IntegrationsByID: input.IntegrationsByID,
-				Executors:        live.Executors,
-				Memory:           live.Memory[agent.ID],
+				Catalog:   cat,
+				Executors: live.Executors,
+				Memory:    live.Memory[agent.ID],
 			},
 		})
 	}
 
 	return registry, host
+}
+
+// seedCatalog registers everything that was stored, one integration at a time, so
+// each integration's tools are held to the tool contract on the way in. A tool that
+// breaks it is left out and logged; the rest still load.
+func seedCatalog(cat *domain.Catalog, input BootInput) {
+	for id, integration := range input.IntegrationsByID {
+		src := domain.StaticSource{Integ: integration}
+		for _, i := range input.IdentitiesByID {
+			if i.IntegrationID == id {
+				src.Idents = append(src.Idents, i)
+			}
+		}
+		for _, t := range input.ToolsByID {
+			if t.IntegrationID == id {
+				src.ToolDefs = append(src.ToolDefs, t)
+			}
+		}
+		if err := cat.AddSource(src); err != nil {
+			log.Printf("runtime: boot: integration %q has tools that break the tool contract and were left out:\n%v", id, err)
+		}
+	}
+	// Identities whose integration isn't known still belong in the catalog.
+	for _, i := range input.IdentitiesByID {
+		if _, ok := input.IntegrationsByID[i.IntegrationID]; !ok {
+			cat.PutIdentity(i)
+		}
+	}
 }

@@ -29,12 +29,12 @@ type menuSession struct {
 // a stale menu in chat may navigate back to the integration list instead of
 // the last-viewed page; this is acceptable for a settings flow.
 type SettingsFlow struct {
-	getApprovals        func(ctx context.Context, userID string) (map[string]bool, error)
-	setApproval         func(ctx context.Context, userID, toolID string, requires bool) error
-	checkLinkedEmail    func(ctx context.Context, userID string) (bool, error)
-	getAppInstructions  func(ctx context.Context, userID, integrationID string) (string, error)
-	setAppInstructions  func(ctx context.Context, userID, integrationID, text string) error
-	sessions            sync.Map // key: identityID+":"+channelRef → *menuSession
+	getApprovals       func(ctx context.Context, userID string) (map[string]bool, error)
+	setApproval        func(ctx context.Context, userID, toolID string, requires bool) error
+	checkLinkedEmail   func(ctx context.Context, userID string) (bool, error)
+	getAppInstructions func(ctx context.Context, userID, integrationID string) (string, error)
+	setAppInstructions func(ctx context.Context, userID, integrationID, text string) error
+	sessions           sync.Map // key: identityID+":"+channelRef → *menuSession
 }
 
 func newSettingsFlow(
@@ -109,7 +109,7 @@ func (f *SettingsFlow) Handle(ctx context.Context, provider domain.SettingsMenuP
 		integrationID := action[len("nav:app_instr:"):]
 		f.sessions.Store(sessionKey, &menuSession{integrationID: integrationID})
 		integrationName := integrationID
-		if intg, ok := hosted.Deps.IntegrationsByID[integrationID]; ok {
+		if intg, ok := hosted.catalog().Integration(integrationID); ok {
 			integrationName = intg.Name
 		}
 		menu := f.buildAppInstructionsMenu(ctx, userID, integrationID, integrationName)
@@ -121,7 +121,7 @@ func (f *SettingsFlow) Handle(ctx context.Context, provider domain.SettingsMenuP
 			_ = f.setAppInstructions(ctx, userID, integrationID, "")
 		}
 		integrationName := integrationID
-		if intg, ok := hosted.Deps.IntegrationsByID[integrationID]; ok {
+		if intg, ok := hosted.catalog().Integration(integrationID); ok {
 			integrationName = intg.Name
 		}
 		menu := f.buildAppInstructionsMenu(ctx, userID, integrationID, integrationName)
@@ -177,13 +177,13 @@ func (f *SettingsFlow) buildMainMenu(ctx context.Context, hosted *HostedAgent, a
 	// user-configurable — skip their tools.
 	botIntegrationIDs := map[string]bool{}
 	for _, identityID := range hosted.Agent.IdentityIDs {
-		if identity, ok := hosted.Deps.IdentitiesByID[identityID]; ok {
+		if identity, ok := hosted.catalog().Identity(identityID); ok {
 			botIntegrationIDs[identity.IntegrationID] = true
 		}
 	}
 
 	integrationToIdentity := map[string]string{}
-	for _, identity := range hosted.Deps.IdentitiesByID {
+	for _, identity := range hosted.identities() {
 		integrationToIdentity[identity.IntegrationID] = identity.ID
 	}
 
@@ -193,7 +193,7 @@ func (f *SettingsFlow) buildMainMenu(ctx context.Context, hosted *HostedAgent, a
 	}
 	var integrations []integrationEntry
 	seen := map[string]bool{}
-	for _, tool := range hosted.Deps.ToolsByID {
+	for _, tool := range hosted.tools() {
 		if tool.RequiresApproval || botIntegrationIDs[tool.IntegrationID] {
 			continue
 		}
@@ -206,7 +206,7 @@ func (f *SettingsFlow) buildMainMenu(ctx context.Context, hosted *HostedAgent, a
 		}
 		seen[tool.IntegrationID] = true
 		name := tool.IntegrationID
-		if intg, ok := hosted.Deps.IntegrationsByID[tool.IntegrationID]; ok {
+		if intg, ok := hosted.catalog().Integration(tool.IntegrationID); ok {
 			name = intg.Name
 		}
 		integrations = append(integrations, integrationEntry{id: tool.IntegrationID, name: name})
@@ -240,7 +240,7 @@ func (f *SettingsFlow) buildMainMenu(ctx context.Context, hosted *HostedAgent, a
 // integration. Tools are shown in a 2-column grid for compact display.
 func (f *SettingsFlow) buildToolListMenu(hosted *HostedAgent, integrationID string, page int, approvals map[string]bool) *domain.SettingsMenu {
 	var tools []*domain.ToolDefinition
-	for _, t := range hosted.Deps.ToolsByID {
+	for _, t := range hosted.tools() {
 		if t.IntegrationID == integrationID && !t.RequiresApproval {
 			tools = append(tools, t)
 		}
@@ -263,7 +263,7 @@ func (f *SettingsFlow) buildToolListMenu(hosted *HostedAgent, integrationID stri
 	pageTools := tools[start:end]
 
 	integrationName := integrationID
-	if intg, ok := hosted.Deps.IntegrationsByID[integrationID]; ok {
+	if intg, ok := hosted.catalog().Integration(integrationID); ok {
 		integrationName = intg.Name
 	}
 
@@ -324,12 +324,12 @@ func (f *SettingsFlow) buildInstructionsMenu(hosted *HostedAgent) *domain.Settin
 // Approvals button (with a live count) and an App Instructions button.
 func (f *SettingsFlow) buildAppMenu(hosted *HostedAgent, integrationID string, approvals map[string]bool) *domain.SettingsMenu {
 	integrationName := integrationID
-	if intg, ok := hosted.Deps.IntegrationsByID[integrationID]; ok {
+	if intg, ok := hosted.catalog().Integration(integrationID); ok {
 		integrationName = intg.Name
 	}
 
 	var active, total int
-	for _, t := range hosted.Deps.ToolsByID {
+	for _, t := range hosted.tools() {
 		if t.IntegrationID == integrationID && !t.RequiresApproval {
 			total++
 			if approvals[t.ID] {

@@ -15,7 +15,7 @@ import (
 // would produce.
 func TestBoot_WiresDelegationAndTurnHandling(t *testing.T) {
 	// Agent A: one public Skill, single tool, a plain "greet" action.
-	greetTool := &domain.ToolDefinition{ID: "tool_greet", Name: "greet_tool", IntegrationID: "int_local", Action: "greet"}
+	greetTool := &domain.ToolDefinition{ID: "tool_greet", Name: "greet_tool", IntegrationID: "int_local", Action: "greet", Description: "Greets someone.", InputSchema: domain.Schema{Type: domain.SchemaTypeObject}}
 	greetSkill := &domain.Skill{
 		ID: "skill_greet", AgentID: "agent_a", Name: "greet",
 		Description: "Greets someone by name",
@@ -84,5 +84,55 @@ func TestBoot_WiresDelegationAndTurnHandling(t *testing.T) {
 	}
 	if len(slackExec.calls) != 1 || slackExec.calls[0].action != domain.ActionSendMessage {
 		t.Fatalf("expected the turn's reply to be delivered via the slack executor, got %+v", slackExec.calls)
+	}
+}
+
+// Whatever is stored is held to the tool contract on the way in: a badly described
+// tool is left out (and logged), the rest of its integration still loads, and every
+// agent shares the one catalog.
+func TestBoot_HoldsStoredToolsToTheContractAndSharesOneCatalog(t *testing.T) {
+	good := &domain.ToolDefinition{ID: "t_good", Name: "good", IntegrationID: "int_a", Action: "g", Description: "Fine.", InputSchema: domain.Schema{Type: domain.SchemaTypeObject}}
+	bad := &domain.ToolDefinition{ID: "t_bad", Name: "bad", IntegrationID: "int_a", Action: "b"} // no description, no schema
+	execs := domain.NewExecutorRegistry()
+	execs.Register("a", &fakeExecutor{})
+
+	a1 := &domain.Agent{ID: "a1", MaxIterations: 3}
+	a2 := &domain.Agent{ID: "a2", MaxIterations: 3}
+	registry, host := runtime.Boot(runtime.BootInput{
+		Agents:           []*domain.Agent{a1, a2},
+		ToolsByID:        map[string]*domain.ToolDefinition{"t_good": good, "t_bad": bad},
+		IdentitiesByID:   map[string]*domain.Identity{"id_a": {ID: "id_a", IntegrationID: "int_a"}, "id_orphan": {ID: "id_orphan", IntegrationID: "gone"}},
+		IntegrationsByID: map[string]*domain.Integration{"int_a": {ID: "int_a", Service: "a"}},
+	}, runtime.BootLive{Executors: execs})
+
+	cat := registry.Catalog()
+	if _, ok := cat.Tool("t_good"); !ok {
+		t.Fatal("the well described tool loads")
+	}
+	if _, ok := cat.Tool("t_bad"); ok {
+		t.Fatal("a tool that breaks the contract must not load")
+	}
+	if _, ok := cat.Identity("id_a"); !ok {
+		t.Fatal("identities load with their integration")
+	}
+	if _, ok := cat.Identity("id_orphan"); !ok {
+		t.Fatal("an identity whose integration is unknown is kept")
+	}
+
+	// Both agents see what is added to the catalog later, because it is the same catalog.
+	if err := cat.AddSource(domain.StaticSource{
+		Integ:    &domain.Integration{ID: "int_late", Service: "a"},
+		ToolDefs: []*domain.ToolDefinition{{ID: "t_late", Name: "late", IntegrationID: "int_late", Action: "l", Description: "Later.", InputSchema: domain.Schema{Type: domain.SchemaTypeObject}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"a1", "a2"} {
+		hosted, ok := host.Get(id)
+		if !ok {
+			t.Fatalf("agent %s not hosted", id)
+		}
+		if hosted.Deps.Catalog != cat {
+			t.Errorf("agent %s has a catalog of its own", id)
+		}
 	}
 }
