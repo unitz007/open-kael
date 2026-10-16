@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
+	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -151,7 +153,7 @@ func (t *mcpBearerTransport) RoundTrip(r *http.Request) (*http.Response, error) 
 // The ToolDefinition's Action is the MCP tool name — the same value Execute
 // receives as action — so the executor can dispatch it without any extra lookup.
 func toolDefFromMCPTool(integrationID string, t *mcp.Tool) *domain.ToolDefinition {
-	return &domain.ToolDefinition{
+	def := &domain.ToolDefinition{
 		ID:            integrationID + "." + t.Name,
 		Name:          t.Name,
 		FunctionName:  t.Name,
@@ -160,6 +162,79 @@ func toolDefFromMCPTool(integrationID string, t *mcp.Tool) *domain.ToolDefinitio
 		Action:        t.Name,
 		InputSchema:   anyToSchema(t.InputSchema),
 	}
+
+	// Fail safe: a remote tool only runs unattended when its server says, via
+	// the MCP readOnlyHint annotation, that it merely reads. A tool with no
+	// annotation, readOnlyHint=false, or destructiveHint=true can change
+	// something, so it needs a human to approve each call. (Many servers leave
+	// every hint unset — they are treated as "not sure", i.e. gated.)
+	if t.Annotations != nil && t.Annotations.ReadOnlyHint {
+		def.ReadOnly = true
+		return def
+	}
+	def.RequiresApproval = true
+	def.ApprovalPromptTemplate = approvalTemplate(t, def.InputSchema)
+	def.ApprovalTimeoutSeconds = 300
+	return def
+}
+
+// maxApprovalArgs caps how many arguments the approval prompt lists.
+const maxApprovalArgs = 8
+
+// approvalTemplate builds the text a person sees before a remote tool runs:
+// what it is, what it does, and the exact arguments it is about to be called
+// with. Required arguments come first, then the rest alphabetically.
+func approvalTemplate(t *mcp.Tool, schema domain.Schema) string {
+	title := t.Name
+	if t.Annotations != nil && t.Annotations.Title != "" {
+		title = t.Annotations.Title
+	} else if t.Title != "" {
+		title = t.Title
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Approve %q?", title)
+	if d := firstSentence(t.Description, 240); d != "" {
+		b.WriteString("\n\n" + d)
+	}
+
+	required := map[string]bool{}
+	for _, r := range schema.Required {
+		required[r] = true
+	}
+	names := make([]string, 0, len(schema.Properties))
+	for n := range schema.Properties {
+		names = append(names, n)
+	}
+	sort.Slice(names, func(i, j int) bool {
+		if required[names[i]] != required[names[j]] {
+			return required[names[i]]
+		}
+		return names[i] < names[j]
+	})
+	if len(names) > maxApprovalArgs {
+		names = names[:maxApprovalArgs]
+	}
+	if len(names) > 0 {
+		b.WriteString("\n")
+		for _, n := range names {
+			fmt.Fprintf(&b, "\n%s: {{%s}}", n, n)
+		}
+	}
+	b.WriteString("\n\nThis runs on an outside service.")
+	return b.String()
+}
+
+// firstSentence returns up to max characters of s, ending at the first full
+// stop when there is one, with whitespace collapsed.
+func firstSentence(s string, max int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if i := strings.Index(s, ". "); i >= 0 && i < max {
+		return s[:i+1]
+	}
+	if len(s) > max {
+		return s[:max] + "…"
+	}
+	return s
 }
 
 // anyToSchema marshals a raw JSON-Schema-shaped value (as the MCP SDK returns
