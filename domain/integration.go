@@ -114,6 +114,11 @@ const (
 	AuthHeader = "header" // <Name>: <key>
 	AuthQuery  = "query"  // ?<Name>=<key>
 	AuthBasic  = "basic"  // Authorization: Basic base64(<username>:<key>)
+	// AuthOAuth: each person signs in to their own account with the standard
+	// authorization-code handshake and calls go out as Authorization: Bearer
+	// <their access token>. The creator's registered app (OAuthSettings) is
+	// shared; the tokens are per person.
+	AuthOAuth = "oauth"
 )
 
 // IntegrationSource is the non-secret description of a creator-built
@@ -141,4 +146,20 @@ type SourceAuth struct {
 	// sharing one. The key is then stored as that person's AppAuthorization,
 	// and for AuthBasic the person supplies the user name as well.
 	Personal bool `json:"personal,omitempty"`
+	// OAuth holds the creator's registered app when Kind is AuthOAuth. The
+	// client secret is not here: it is the CredentialRef of the connection's
+	// identity, encrypted.
+	OAuth *OAuthSettings `json:"oauth,omitempty"`
+}
+
+// OAuthSettings is the non-secret part of an app the creator registered with the
+// service so that people can sign in to their own accounts.
+type OAuthSettings struct {
+	AuthURL  string   `json:"auth_url"`  // where the person is sent to sign in
+	TokenURL string   `json:"token_url"` // where a sign-in is exchanged for access
+	ClientID string   `json:"client_id"`
+	Scopes   []string `json:"scopes,omitempty"` // permissions to ask for
+	// ClientAuthBasic sends the client id and secret as an HTTP Basic header when
+	// exchanging a sign-in, instead of in the request body.
+	ClientAuthBasic bool `json:"client_auth_basic,omitempty"`
 }
