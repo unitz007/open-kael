@@ -137,4 +137,8 @@ type SourceAuth struct {
 	Name string `json:"name,omitempty"`
 	// Username is the fixed user for AuthBasic; the key is the password.
 	Username string `json:"username,omitempty"`
+	// Personal means every person brings their own key instead of everyone
+	// sharing one. The key is then stored as that person's AppAuthorization,
+	// and for AuthBasic the person supplies the user name as well.
+	Personal bool `json:"personal,omitempty"`
 }
