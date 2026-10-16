@@ -106,6 +106,15 @@ func (v *inMemoryDirectoryView) PublicSkills(_ context.Context) []*BoundAction {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
+	// Whose agent is asking. A skill that runs on something one creator owns (their
+	// own connection, with their key or account) is only offered to that creator's
+	// agents, however public the skill is: platform-provided integrations are shared,
+	// a creator's own are not.
+	caller := ""
+	if self, ok := r.agents[v.selfID]; ok {
+		caller = self.CreatedBy
+	}
+
 	var actions []*BoundAction
 	for _, agent := range r.agents {
 		if agent.ID == v.selfID {
@@ -113,6 +122,9 @@ func (v *inMemoryDirectoryView) PublicSkills(_ context.Context) []*BoundAction {
 		}
 		for _, skill := range agent.Skills {
 			if skill.Visibility != SkillPublic {
+				continue
+			}
+			if r.usesOthersIntegration(skill, caller) {
 				continue
 			}
 			bound, err := r.bindDelegateSkill(agent, skill)
@@ -127,6 +139,26 @@ func (v *inMemoryDirectoryView) PublicSkills(_ context.Context) []*BoundAction {
 		}
 	}
 	return actions
+}
+
+// usesOthersIntegration reports whether a skill grants, or binds a tool of, an
+// integration owned by a creator other than owner. Caller holds r.mu.
+func (r *InMemoryRegistry) usesOthersIntegration(skill *Skill, owner string) bool {
+	others := func(integrationID string) bool {
+		i, ok := r.integrations[integrationID]
+		return ok && i.CreatedBy != "" && i.CreatedBy != owner
+	}
+	for _, id := range skill.Integrations {
+		if others(id) {
+			return true
+		}
+	}
+	for _, b := range skill.Tools {
+		if t, ok := r.tools[b.ToolID]; ok && others(t.IntegrationID) {
+			return true
+		}
+	}
+	return false
 }
 
 // bindDelegateSkill hydrates skill's Tools and wraps the result as a
