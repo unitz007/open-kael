@@ -30,8 +30,9 @@ type EventBus struct {
 }
 
 type eventSub struct {
-	hosted *HostedAgent
-	skill  *domain.Skill
+	agentID string
+	hosted  *HostedAgent
+	skill   *domain.Skill
 }
 
 func newEventBus() *EventBus {
@@ -43,7 +44,48 @@ func newEventBus() *EventBus {
 func (b *EventBus) Subscribe(eventName string, hosted *HostedAgent, skill *domain.Skill) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.subs[eventName] = append(b.subs[eventName], &eventSub{hosted: hosted, skill: skill})
+	b.subs[eventName] = append(b.subs[eventName], &eventSub{agentID: hosted.Agent.ID, hosted: hosted, skill: skill})
+}
+
+// resync replaces every subscription belonging to hosted's agent with one per
+// event-triggered Skill it has right now. Called whenever an agent is
+// registered, reloaded or removed, so a deleted skill stops firing, an edited
+// trigger takes effect, and a new skill starts firing — all without a restart.
+// The caller must hold whatever protects hosted.Agent.Skills.
+func (b *EventBus) resync(hosted *HostedAgent) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.dropLocked(hosted.Agent.ID)
+	for _, skill := range hosted.Agent.Skills {
+		if skill.Trigger == nil || skill.Trigger.Type != domain.TriggerTypeEvent {
+			continue
+		}
+		b.subs[skill.Trigger.Value] = append(b.subs[skill.Trigger.Value], &eventSub{agentID: hosted.Agent.ID, hosted: hosted, skill: skill})
+		log.Printf("runtime: agent %q: skill %q subscribed to event %q", hosted.Agent.ID, skill.Name, skill.Trigger.Value)
+	}
+}
+
+// drop removes every subscription belonging to agentID.
+func (b *EventBus) drop(agentID string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.dropLocked(agentID)
+}
+
+func (b *EventBus) dropLocked(agentID string) {
+	for name, subs := range b.subs {
+		kept := subs[:0:0]
+		for _, sub := range subs {
+			if sub.agentID != agentID {
+				kept = append(kept, sub)
+			}
+		}
+		if len(kept) == 0 {
+			delete(b.subs, name)
+		} else {
+			b.subs[name] = kept
+		}
+	}
 }
 
 // emit delivers eventName to all subscribed Skills, running each in its own
@@ -94,15 +136,12 @@ func (h *Host) RegisterEventSources(mux *http.ServeMux, sources *domain.EventSou
 	}
 	h.mu.RUnlock()
 
-	// Build bus subscriptions from every event-triggered skill.
+	// Build bus subscriptions from every event-triggered skill. Safe to repeat:
+	// resync replaces an agent's subscriptions rather than adding to them.
 	for _, hosted := range hostedAgents {
-		for _, skill := range hosted.Agent.Skills {
-			if skill.Trigger == nil || skill.Trigger.Type != domain.TriggerTypeEvent {
-				continue
-			}
-			h.bus.Subscribe(skill.Trigger.Value, hosted, skill)
-			log.Printf("runtime: agent %q: skill %q subscribed to event %q", hosted.Agent.ID, skill.Name, skill.Trigger.Value)
-		}
+		h.mu.RLock()
+		h.bus.resync(hosted)
+		h.mu.RUnlock()
 	}
 
 	// Register one HTTP handler per source path.

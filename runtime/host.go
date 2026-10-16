@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/robfig/cron/v3"
 	"github.com/unitz007/open-kael/domain"
 )
 
@@ -53,6 +54,13 @@ type HostedAgent struct {
 type Host struct {
 	mu     sync.RWMutex
 	agents map[string]*HostedAgent
+
+	// Cron scheduler state, kept in step with the agents (see StartCron).
+	// cronMu is only ever taken after h.mu, never before.
+	cronMu      sync.Mutex
+	sched       *cron.Cron
+	cronCtx     context.Context
+	cronEntries map[string][]cron.EntryID // agentID -> its scheduled entries
 
 	// listenerCancels stores a cancel func for each running listener goroutine,
 	// keyed by "agentID:identityID". Allows individual listeners to be stopped
@@ -824,6 +832,9 @@ func (h *Host) Register(hosted *HostedAgent) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.agents[hosted.Agent.ID] = hosted
+	// A new (or replaced) agent's event and cron skills take effect at once.
+	h.bus.resync(hosted)
+	h.syncCron(hosted)
 }
 
 // Deregister removes a HostedAgent from the host's in-memory map and stops its
@@ -833,6 +844,8 @@ func (h *Host) Deregister(agentID string, identityIDs []string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	delete(h.agents, agentID)
+	h.bus.drop(agentID)
+	h.dropCron(agentID)
 }
 
 // Get looks up a previously Register'd HostedAgent by Agent.ID.
@@ -863,6 +876,9 @@ func (h *Host) ReloadAgent(ctx context.Context, agentID string, loader func(cont
 	hosted.Agent.Greeting = fresh.Greeting
 	hosted.Agent.Description = fresh.Description
 	hosted.Agent.Instructions = fresh.Instructions
+	// Skills changed: bring event subscriptions and cron entries into line.
+	h.bus.resync(hosted)
+	h.syncCron(hosted)
 }
 
 // ReloadAgentSkills is an alias for ReloadAgent kept for backwards compatibility.

@@ -79,11 +79,8 @@ func (s *Server) getSkill(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	if agent, err := s.store.GetAgent(r.Context(), skill.AgentID); err == nil {
-		if !agentAccessible(r.Context(), agent) {
-			writeError(w, http.StatusNotFound, domain.ErrNotFound)
-			return
-		}
+	if !s.skillAgentAllowed(w, r, skill.AgentID) {
+		return
 	}
 	writeJSON(w, http.StatusOK, skill)
 }
@@ -99,11 +96,8 @@ func (s *Server) updateSkill(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	if agent, err := s.store.GetAgent(r.Context(), existing.AgentID); err == nil {
-		if !agentAccessible(r.Context(), agent) {
-			writeError(w, http.StatusNotFound, domain.ErrNotFound)
-			return
-		}
+	if !s.skillAgentAllowed(w, r, existing.AgentID) {
+		return
 	}
 	var skill domain.Skill
 	if err := decodeJSON(r, &skill); err != nil {
@@ -133,11 +127,8 @@ func (s *Server) deleteSkill(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	if agent, err := s.store.GetAgent(r.Context(), sk.AgentID); err == nil {
-		if !agentAccessible(r.Context(), agent) {
-			writeError(w, http.StatusNotFound, domain.ErrNotFound)
-			return
-		}
+	if !s.skillAgentAllowed(w, r, sk.AgentID) {
+		return
 	}
 	if err := s.store.DeleteSkill(r.Context(), skillID); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -147,4 +138,26 @@ func (s *Server) deleteSkill(w http.ResponseWriter, r *http.Request) {
 		s.onSkillChange(sk.AgentID)
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// skillAgentAllowed checks that the caller may touch a skill belonging to
+// agentID, writing the error response and returning false when not. It fails
+// closed: if the owning agent can't be loaded (missing, or a store error) the
+// caller is refused, rather than skipping the ownership check — a skipped
+// check is the multi-tenancy boundary quietly disappearing.
+func (s *Server) skillAgentAllowed(w http.ResponseWriter, r *http.Request, agentID string) bool {
+	agent, err := s.store.GetAgent(r.Context(), agentID)
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			writeError(w, http.StatusNotFound, domain.ErrNotFound)
+		} else {
+			writeError(w, http.StatusInternalServerError, err)
+		}
+		return false
+	}
+	if !agentAccessible(r.Context(), agent) {
+		writeError(w, http.StatusNotFound, domain.ErrNotFound)
+		return false
+	}
+	return true
 }
