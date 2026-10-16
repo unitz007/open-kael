@@ -55,6 +55,10 @@ type Host struct {
 	mu     sync.RWMutex
 	agents map[string]*HostedAgent
 
+	// live holds integrations, tools and identities created after boot (see
+	// LiveGraph). Set once before serving.
+	live LiveGraph
+
 	// Cron scheduler state, kept in step with the agents (see StartCron).
 	// cronMu is only ever taken after h.mu, never before.
 	cronMu      sync.Mutex
@@ -1142,7 +1146,7 @@ func (h *Host) actionsFor(ctx context.Context, hosted *HostedAgent) ([]*domain.B
 	}
 
 	for _, skill := range hosted.Agent.Skills {
-		tools, err := domain.HydrateSkillTools(skill, hosted.Agent, hosted.Deps.ToolsByID, hosted.Deps.IdentitiesByID, hosted.Deps.IntegrationsByID, hosted.Deps.Executors)
+		tools, err := h.hydrate(hosted, skill)
 		if err != nil {
 			return nil, fmt.Errorf("hosting agent %q: skill %q: %w", hosted.Agent.ID, skill.ID, err)
 		}
@@ -1264,8 +1268,9 @@ func (h *Host) HandleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 		}
 	}
 
+	_, _, promptIntegrations := h.graphMaps(hosted.Deps)
 	messages := make([]domain.Message, 0, len(prior)+2)
-	messages = append(messages, domain.Message{Role: domain.RoleSystem, Content: buildSystemPrompt(hosted.Agent, userProfile, userInstructions, integrationNotes, hosted.Deps.IntegrationsByID, messengerSkills)})
+	messages = append(messages, domain.Message{Role: domain.RoleSystem, Content: buildSystemPrompt(hosted.Agent, userProfile, userInstructions, integrationNotes, promptIntegrations, messengerSkills)})
 	messages = append(messages, prior...)
 	messages = append(messages, domain.Message{Role: domain.RoleUser, Content: userText})
 
@@ -1523,7 +1528,7 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 			if skill.Name != name {
 				continue
 			}
-			tools, err := domain.HydrateSkillTools(skill, hosted.Agent, hosted.Deps.ToolsByID, hosted.Deps.IdentitiesByID, hosted.Deps.IntegrationsByID, hosted.Deps.Executors)
+			tools, err := h.hydrate(hosted, skill)
 			if err != nil {
 				log.Printf("skill-router: hydrate skill %q: %v — skipping", name, err)
 				continue
@@ -1913,13 +1918,7 @@ func (h *Host) RunScheduledSkillForUser(ctx context.Context, agentID, skillName,
 
 	go func() {
 		defer recoverFromPanic(hosted.Agent.ID, "user-scheduled skill "+skillName)
-		tools, err := domain.HydrateSkillTools(
-			skill, hosted.Agent,
-			hosted.Deps.ToolsByID,
-			hosted.Deps.IdentitiesByID,
-			hosted.Deps.IntegrationsByID,
-			hosted.Deps.Executors,
-		)
+		tools, err := h.hydrate(hosted, skill)
 		if err != nil {
 			log.Printf("runtime: user-scheduled skill %q agent %q user %q: hydrate: %v", skillName, agentID, userID, err)
 			return

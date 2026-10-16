@@ -104,7 +104,7 @@ func (h *Host) mcpSkillHandler(hosted *HostedAgent, skill *domain.Skill) mcp.Too
 			}
 		}
 
-		tools, err := domain.HydrateSkillTools(skill, hosted.Agent, hosted.Deps.ToolsByID, hosted.Deps.IdentitiesByID, hosted.Deps.IntegrationsByID, hosted.Deps.Executors)
+		tools, err := h.hydrate(hosted, skill)
 		if err != nil {
 			return mcpErrorResult(fmt.Sprintf("hydrate skill %q: %v", skill.Name, err)), nil
 		}

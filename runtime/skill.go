@@ -40,13 +40,7 @@ func withQuerySkillDepth(ctx context.Context, d int) context.Context {
 func (h *Host) runSkill(ctx context.Context, hosted *HostedAgent, skill *domain.Skill, input map[string]any) {
 	defer recoverFromPanic(hosted.Agent.ID, "triggered skill "+skill.Name)
 
-	tools, err := domain.HydrateSkillTools(
-		skill, hosted.Agent,
-		hosted.Deps.ToolsByID,
-		hosted.Deps.IdentitiesByID,
-		hosted.Deps.IntegrationsByID,
-		hosted.Deps.Executors,
-	)
+	tools, err := h.hydrate(hosted, skill)
 	if err != nil {
 		log.Printf("runtime: agent %q: skill %q: hydrate: %v", hosted.Agent.ID, skill.Name, err)
 		return
@@ -82,13 +76,7 @@ func (h *Host) runSkill(ctx context.Context, hosted *HostedAgent, skill *domain.
 // Unlike runSkill (fire-and-forget for cron/event triggers), this captures the
 // result so querySkillAction can return it to the calling skill's LLM mid-turn.
 func (h *Host) runSkillQuery(ctx context.Context, hosted *HostedAgent, skill *domain.Skill, input map[string]any) (string, error) {
-	tools, err := domain.HydrateSkillTools(
-		skill, hosted.Agent,
-		hosted.Deps.ToolsByID,
-		hosted.Deps.IdentitiesByID,
-		hosted.Deps.IntegrationsByID,
-		hosted.Deps.Executors,
-	)
+	tools, err := h.hydrate(hosted, skill)
 	if err != nil {
 		return "", fmt.Errorf("query_skill: hydrate %q: %w", skill.Name, err)
 	}
