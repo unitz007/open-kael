@@ -351,13 +351,11 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 			log.Printf("runtime: agent %q: onboarding checker: %v", hosted.Agent.ID, err)
 		}
 		if !onboarded {
-			var pubSkills []*domain.Skill
-			for _, s := range hosted.Agent.Skills {
-				if s.Visibility == domain.SkillPublic {
-					pubSkills = append(pubSkills, s)
-				}
+			greeting := greetingBody(hosted.Agent)
+			btn := h.gettingStartedButton(msg.Conversation, hosted.Agent.ID)
+			if btn != nil {
+				greeting += "\n\nTap Get started below to tell me your name and time zone and to connect what I need."
 			}
-			greeting := greetingBody(hosted.Agent, pubSkills)
 			if h.miniAppBaseURL != "" || h.settingsFlow != nil {
 				greeting += "\n\nType /settings to manage your preferences."
 			}
@@ -370,7 +368,7 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 					log.Printf("runtime: agent %q: onboarding completer: %v", hosted.Agent.ID, err)
 				}
 			}
-			if btn := h.gettingStartedButton(msg.Conversation, hosted.Agent.ID); btn != nil {
+			if btn != nil {
 				h.deliverBestEffort(ctx, hosted, msg.Conversation, greeting, btn)
 			} else {
 				h.deliverBestEffort(ctx, hosted, msg.Conversation, greeting)

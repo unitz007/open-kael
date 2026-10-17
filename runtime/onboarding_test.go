@@ -89,20 +89,67 @@ func TestOnboarding_TheFirstMessageIsWelcomedAndStillAnswered(t *testing.T) {
 }
 
 // Without a creator greeting the welcome is a fixed introduction built from the agent's
-// own details, the same every time and written without a model.
+// own details: what it does is listed in the creator's words, for every ability, whether
+// or not other agents may call it. Same every time, no model.
 func TestOnboarding_TheDefaultWelcomeIsFixedText(t *testing.T) {
 	llm := finishOnlyLLM("ok")
 	agent := &domain.Agent{ID: "a1", Name: "Desk", Description: "Trades currencies.", LLMs: []domain.LLM{llm}, MaxIterations: 5,
-		Skills: []*domain.Skill{{Name: "places_trades", Description: "Places trades.", Visibility: domain.SkillPublic}}}
+		Skills: []*domain.Skill{
+			{Name: "analyse_pair", Description: "Analyses a currency pair and rates the trade idea", Visibility: domain.SkillPrivate},
+			{Name: "places_trades", Visibility: domain.SkillPrivate}, // no words from the creator: tidied name
+		}}
 	host, hosted, box := onboardingRig(t, agent)
 	host.SetOnboardingFlow(
 		func(context.Context, string, string, string) (bool, error) { return false, nil },
 		func(context.Context, string, string, string, string, string) error { return nil },
 	)
 	host.DispatchInbound(context.Background(), hosted, firstMessage("hi"))
-	want := "👋 Hi! I'm Desk.\n\nTrades currencies.\n\nHere's what I can help you with:\n• Places Trades — Places trades."
+	want := "👋 Hi! I'm Desk.\n\nTrades currencies.\n\nHere's what I can help with:\n• Analyses a currency pair and rates the trade idea\n• Places Trades"
 	if got := box.texts(); len(got) < 1 || got[0] != want {
 		t.Fatalf("the default welcome:\n got %q\nwant %q", got, want)
+	}
+}
+
+// On Telegram the welcome explains the button under it and carries it; the creator's own
+// greeting still goes out word for word, with the same help appended.
+func TestOnboarding_TheWelcomeExplainsAndCarriesTheGetStartedButton(t *testing.T) {
+	for name, greeting := range map[string]string{"default": "", "creator's words": "Welcome aboard, trader."} {
+		box := &outbox{}
+		executors := domain.NewExecutorRegistry()
+		executors.Register("telegram", box)
+		deps := runtime.AgentDeps{
+			IdentitiesByID:   map[string]*domain.Identity{"id_tg": {ID: "id_tg", IntegrationID: "int_tg"}},
+			IntegrationsByID: map[string]*domain.Integration{"int_tg": {ID: "int_tg", Service: "telegram"}},
+			Executors:        executors,
+			Memory:           newMemMemory(),
+		}
+		agent := &domain.Agent{ID: "a1", Name: "Desk", Greeting: greeting, LLMs: []domain.LLM{finishOnlyLLM("ok")}, MaxIterations: 3}
+		hosted := &runtime.HostedAgent{Agent: agent, Deps: deps}
+		host := runtime.NewHost()
+		host.Register(hosted)
+		host.SetMiniAppBaseURL("https://app.example")
+		host.SetUserChannelResolver(func(context.Context, string, string, string) (string, error) { return "u1", nil })
+		host.SetOnboardingFlow(
+			func(context.Context, string, string, string) (bool, error) { return false, nil },
+			func(context.Context, string, string, string, string, string) error { return nil },
+		)
+		host.DispatchInbound(context.Background(), hosted, domain.InboundMessage{
+			Conversation: domain.ConversationRef{Provider: "telegram", ChatID: "C1", IdentityID: "id_tg"}, Text: "hi",
+		})
+		if len(box.sent) == 0 {
+			t.Fatalf("%s: nothing sent", name)
+		}
+		first := box.sent[0]["text"].(string)
+		if !strings.Contains(first, "Tap Get started below to tell me your name and time zone") {
+			t.Errorf("%s: the welcome must say what the button is for: %q", name, first)
+		}
+		if greeting != "" && !strings.HasPrefix(first, greeting) {
+			t.Errorf("%s: the creator's words come first, unchanged: %q", name, first)
+		}
+		btn, _ := box.sent[0]["web_app_button"].(map[string]any)
+		if btn["text"] != "Get started" || btn["url"] != "https://app.example/miniapp/welcome?agent=a1" {
+			t.Errorf("%s: button: %v", name, box.sent[0]["web_app_button"])
+		}
 	}
 }
 

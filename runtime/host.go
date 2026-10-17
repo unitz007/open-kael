@@ -1721,14 +1721,7 @@ func (h *Host) withUserToolApprovals(ctx context.Context, userID string) context
 // (non-localhost); otherwise the URL is embedded in the text so local
 // development still works.
 func (h *Host) onboardingMessage(agent *domain.Agent, linkCode string) (text, linkURL string) {
-	var publicSkills []*domain.Skill
-	for _, s := range agent.Skills {
-		if s.Visibility == domain.SkillPublic {
-			publicSkills = append(publicSkills, s)
-		}
-	}
-
-	body := greetingBody(agent, publicSkills)
+	body := greetingBody(agent)
 
 	var b strings.Builder
 	b.WriteString(body)
@@ -1755,9 +1748,9 @@ func (h *Host) onboardingMessage(agent *domain.Agent, linkCode string) (text, li
 
 // greetingBody is the first thing a new person is told. The creator's own greeting
 // is used word for word; without one, a fixed introduction is built from the agent's
-// name, description and public abilities. No model is involved, so every person gets
+// name, description and what it can do. No model is involved, so every person gets
 // the same welcome.
-func greetingBody(agent *domain.Agent, publicSkills []*domain.Skill) string {
+func greetingBody(agent *domain.Agent) string {
 	if agent.Greeting != "" {
 		return agent.Greeting
 	}
@@ -1766,16 +1759,30 @@ func greetingBody(agent *domain.Agent, publicSkills []*domain.Skill) string {
 	if agent.Description != "" {
 		b.WriteString("\n\n" + agent.Description)
 	}
-	if len(publicSkills) > 0 {
-		b.WriteString("\n\nHere's what I can help you with:")
-		for _, s := range publicSkills {
-			b.WriteString("\n• " + skillDisplayName(s.Name))
-			if s.Description != "" {
-				b.WriteString(" — " + s.Description)
-			}
+	if abilities := welcomeAbilities(agent); len(abilities) > 0 {
+		b.WriteString("\n\nHere's what I can help with:")
+		for _, line := range abilities {
+			b.WriteString("\n• " + line)
 		}
 	}
 	return b.String()
+}
+
+// welcomeAbilities lists what the agent can do, one plain line each, in the words its
+// creator gave (or the name, tidied, when they gave none). It covers everything the
+// agent does for the person, whether or not other agents may call it.
+func welcomeAbilities(agent *domain.Agent) []string {
+	var out []string
+	for _, s := range agent.Skills {
+		line := strings.TrimSpace(s.Description)
+		if line == "" {
+			line = skillDisplayName(s.Name)
+		}
+		if line != "" {
+			out = append(out, line)
+		}
+	}
+	return out
 }
 
 func isLocalhostURL(u string) bool {
