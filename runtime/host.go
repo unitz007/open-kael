@@ -242,6 +242,12 @@ type Host struct {
 	// fresh goroutine so the agent can continue where it left off.
 	pendingAuthTurns sync.Map
 
+	// connectPromptSent remembers when a person was last sent a connect prompt for an
+	// identity ("userID:identityID"), so several tool calls made in the same moment
+	// send ONE prompt instead of one each. See shouldSendConnectPrompt.
+	connectPromptMu   sync.Mutex
+	connectPromptSent map[string]time.Time
+
 	// pendingSetups tracks in-progress in-bot credential collection flows.
 	// Key is "identityID:chatID"; value is *pendingCredential.
 	pendingSetups sync.Map
@@ -1840,6 +1846,37 @@ func skillDisplayName(name string) string {
 	return strings.Join(words, " ")
 }
 
+// connectPromptCooldown is how long a person is left alone after being sent a
+// connect prompt for an identity. A model often calls several tools at once; each
+// would otherwise send its own copy of the same prompt. After the cooldown a new
+// request sends a fresh prompt, so someone who ignored the first isn't stuck.
+const connectPromptCooldown = 30 * time.Second
+
+// connectPromptNow is the clock for the cooldown (replaced in tests).
+var connectPromptNow = time.Now
+
+// shouldSendConnectPrompt reports whether this person should be sent a connect
+// prompt for the identity now, and records it if so. It is safe to call from many
+// goroutines: exactly one of several simultaneous callers gets true.
+func (h *Host) shouldSendConnectPrompt(key string) bool {
+	h.connectPromptMu.Lock()
+	defer h.connectPromptMu.Unlock()
+	now := connectPromptNow()
+	if last, ok := h.connectPromptSent[key]; ok && now.Sub(last) < connectPromptCooldown {
+		return false
+	}
+	if h.connectPromptSent == nil {
+		h.connectPromptSent = make(map[string]time.Time)
+	}
+	for k, t := range h.connectPromptSent { // forget old entries so the table can't grow
+		if now.Sub(t) >= connectPromptCooldown {
+			delete(h.connectPromptSent, k)
+		}
+	}
+	h.connectPromptSent[key] = now
+	return true
+}
+
 // resolveConnectRequester returns a domain.ConnectRequester for the given turn
 // when the host has a connectURLGenerator and a real user in context. The
 // returned requester generates a connect URL, delivers the prompt, stores the
@@ -1850,6 +1887,32 @@ func (h *Host) resolveConnectRequester(ctx context.Context, hosted *HostedAgent,
 		return nil
 	}
 	return connectRequesterFunc(func(ctx context.Context, conv domain.ConversationRef, identity *domain.Identity, userID string) (string, error) {
+		key := userID + ":" + identity.ID
+
+		// Store the turn for replay once the user connects. The original user
+		// message comes from context (set by listen.go before HandleTurn). This
+		// happens every time, even when the prompt itself is not repeated.
+		storePending := func() {
+			userMessage := domain.OriginalMessageFromContext(ctx)
+			if userMessage != "" {
+				h.pendingAuthTurns.Store(key, pendingAuthTurn{
+					conv:        conv,
+					agentID:     hosted.Agent.ID,
+					userMessage: userMessage,
+				})
+				log.Printf("runtime: auth gate: stored pending turn key=%q message=%q", key, userMessage)
+			} else {
+				log.Printf("runtime: auth gate: no original message in context — turn will NOT be replayed (key=%q)", key)
+			}
+		}
+
+		// One prompt per person per moment: a model that calls three tools at once
+		// would otherwise send the same connect prompt three times.
+		if !h.shouldSendConnectPrompt(key) {
+			storePending()
+			return "", nil
+		}
+
 		url, err := h.connectURLGenerator(ctx, userID, identity.ID)
 		if err != nil {
 			return "", fmt.Errorf("generate connect URL for identity %q: %w", identity.ID, err)
@@ -1880,20 +1943,7 @@ func (h *Host) resolveConnectRequester(ctx context.Context, hosted *HostedAgent,
 			h.connectPromptHook(ctx, ConnectPrompt{UserID: userID, IdentityID: identity.ID, Conv: conv, MessageID: messageID, Text: promptText})
 		}
 
-		// Store the turn for replay once the user connects. The original user
-		// message comes from context (set by listen.go before HandleTurn).
-		userMessage := domain.OriginalMessageFromContext(ctx)
-		key := userID + ":" + identity.ID
-		if userMessage != "" {
-			h.pendingAuthTurns.Store(key, pendingAuthTurn{
-				conv:        conv,
-				agentID:     hosted.Agent.ID,
-				userMessage: userMessage,
-			})
-			log.Printf("runtime: auth gate: stored pending turn key=%q message=%q", key, userMessage)
-		} else {
-			log.Printf("runtime: auth gate: no original message in context — turn will NOT be replayed (key=%q)", key)
-		}
+		storePending()
 
 		return "", nil // non-blocking — OnIntegrationConnected replays the turn
 	})
