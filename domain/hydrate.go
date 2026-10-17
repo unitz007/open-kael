@@ -126,11 +126,15 @@ func withOneShotGuard(inner func(ctx context.Context, input map[string]any) (any
 			return "already completed — call finish to deliver the result to the user", nil
 		}
 		output, err := inner(ctx, input)
-		if err == nil {
+		// Only a call that really went through uses up the one shot. A refusal that
+		// raised no error (not approved, sign-in pending, "changed": false) must leave
+		// the action free to be tried again, and must never be answered later with
+		// "already completed".
+		if ok, _, why := OutcomeOf(output, err); ok {
 			log.Printf("one-shot guard: success, marking done")
 			done.Store(true)
 		} else {
-			log.Printf("one-shot guard: inner returned error, done stays false: %v", err)
+			log.Printf("one-shot guard: did not go through (%s), done stays false", why)
 		}
 		return output, err
 	}
