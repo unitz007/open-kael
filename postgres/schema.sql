@@ -105,15 +105,23 @@ CREATE TABLE IF NOT EXISTS messenger_channels (
 CREATE INDEX IF NOT EXISTS idx_messenger_channels_user_id ON messenger_channels (user_id);
 
 ALTER TABLE messenger_channels ADD COLUMN IF NOT EXISTS onboarding_prompted_at TIMESTAMPTZ;
-ALTER TABLE messenger_channels ADD COLUMN IF NOT EXISTS onboarded_at TIMESTAMPTZ;
+-- onboarded_at: when the person finished the welcome. The backfill below runs ONLY in the
+-- moment the column is created, to treat channels that existed before onboarding was
+-- introduced as already welcomed. It must never run again: a person who has not yet been
+-- welcomed (or whose welcome was reset) has NULL here on purpose.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = current_schema() AND table_name = 'messenger_channels' AND column_name = 'onboarded_at'
+    ) THEN
+        ALTER TABLE messenger_channels ADD COLUMN onboarded_at TIMESTAMPTZ;
+        UPDATE messenger_channels SET onboarded_at = NOW();
+    END IF;
+END $$;
 ALTER TABLE messenger_channels ADD COLUMN IF NOT EXISTS email_link_state TEXT NOT NULL DEFAULT '';
 ALTER TABLE messenger_channels ADD COLUMN IF NOT EXISTS sender_id TEXT NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS idx_messenger_channels_identity_sender ON messenger_channels (identity_id, sender_id) WHERE sender_id <> '';
-
--- Backfill: channels that existed before onboarding was introduced have NULL
--- onboarded_at. Treat them as already onboarded so returning users don't get
--- the intro prompt. Idempotent — only updates rows that are still NULL.
-UPDATE messenger_channels SET onboarded_at = NOW() WHERE onboarded_at IS NULL;
 
 CREATE TABLE IF NOT EXISTS channel_link_codes (
     code        TEXT PRIMARY KEY,
