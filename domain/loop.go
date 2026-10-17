@@ -172,6 +172,7 @@ func (l *NativeLoop) Run(ctx context.Context, messages []Message, actions []*Bou
 						log.Printf("loop: finish refused (%d/%d): %s", bounces, maxFinishBounces, feedback)
 						if bounces > maxFinishBounces {
 							// The agent keeps claiming what didn't happen. Say what did.
+							log.Printf("loop: finished — the agent kept claiming what didn't happen; stating the facts instead (what ran: %s)", describeRecords(records))
 							result.Content = reqs.NothingChangedMessage(records)
 							messages = append(messages, Message{Role: RoleTool, ToolCallID: call.ID, Name: call.Name, Content: "done"})
 							return result, messages, nil
@@ -182,7 +183,9 @@ func (l *NativeLoop) Run(ctx context.Context, messages []Message, actions []*Bou
 						}
 						break // back to the model with the facts
 					}
-					if outcome, _ := call.Arguments["outcome"].(string); outcome == OutcomeDone {
+					outcome, _ := call.Arguments["outcome"].(string)
+					log.Printf("loop: finished — outcome=%q, what ran: %s", outcome, describeRecords(records))
+					if outcome == OutcomeDone {
 						for _, line := range receipts(records) {
 							result.Content += "\n\n" + line
 						}

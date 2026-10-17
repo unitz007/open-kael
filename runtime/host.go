@@ -414,6 +414,14 @@ type SkillRouter interface {
 	PickSkills(ctx context.Context, userText string, skills []*domain.Skill) (skillNames []string, intent domain.Intent, err error)
 }
 
+// ContextualSkillRouter is an optional extension of SkillRouter. A short reply such as
+// "yes" or "do it" means nothing alone, so when the router also implements this, the
+// host passes it the assistant's previous message and the router can see what the
+// person is answering. Without it (or with nothing earlier) PickSkills is used.
+type ContextualSkillRouter interface {
+	PickSkillsInContext(ctx context.Context, userText, earlier string, skills []*domain.Skill) (skillNames []string, intent domain.Intent, err error)
+}
+
 // ScopeChecker is an optional extension of SkillRouter. When the configured
 // router also implements ScopeChecker, agents that have no skills use it to
 // gate every inbound message against the agent's description before running
@@ -1547,7 +1555,16 @@ const jevConfidenceThreshold = 0.65
 // Falls back to NativeLoop with full actions when no skills match, and to
 // respondDirectly when matched skills yield no tools.
 func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText string, messages []domain.Message, actions []*domain.BoundAction, convActions []*domain.BoundAction) (*domain.LoopResult, []domain.Message, error) {
-	skillNames, intent, err := h.skillRouter.PickSkills(ctx, userText, hosted.Agent.Skills)
+	var skillNames []string
+	var intent domain.Intent
+	var err error
+	earlier := lastAssistantText(messages)
+	if cr, ok := h.skillRouter.(ContextualSkillRouter); ok && earlier != "" {
+		log.Printf("skill-router: reading the message next to the assistant's previous one")
+		skillNames, intent, err = cr.PickSkillsInContext(ctx, userText, earlier, hosted.Agent.Skills)
+	} else {
+		skillNames, intent, err = h.skillRouter.PickSkills(ctx, userText, hosted.Agent.Skills)
+	}
 	if err != nil {
 		log.Printf("skill-router: pick skills failed: %v — running NativeLoop with full actions", err)
 		return h.runNativeLoop(ctx, hosted, messages, actions)

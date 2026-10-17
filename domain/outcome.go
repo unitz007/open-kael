@@ -209,3 +209,19 @@ func receipts(records []ActionRecord) []string {
 	}
 	return out
 }
+
+// describeRecords is a one-line summary of what really ran, for the log.
+func describeRecords(records []ActionRecord) string {
+	if len(records) == 0 {
+		return "nothing"
+	}
+	parts := make([]string, len(records))
+	for i, rec := range records {
+		state := "done"
+		if !rec.Done {
+			state = "NOT done (" + rec.Reason + ")"
+		}
+		parts[i] = rec.Name + "=" + state
+	}
+	return strings.Join(parts, ", ")
+}

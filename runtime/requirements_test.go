@@ -288,3 +288,88 @@ func TestRequirements_ShortFollowUpsAreJudgedNextToWhatTheyAnswer(t *testing.T) 
 		t.Errorf("Jev must be shown what the person is answering: %q", req.earlier)
 	}
 }
+
+// ── the capability picker sees what a short reply answers ────────────────────
+
+// ctxRouter is a router that can read a message next to the previous one, and
+// remembers how it was asked.
+type ctxRouter struct {
+	mu         sync.Mutex
+	plainCalls int
+	ctxCalls   int
+	earlier    []string
+}
+
+func (r *ctxRouter) PickSkill(context.Context, string, []*domain.Skill) (string, float64, domain.Intent, error) {
+	return "forex", 1, domain.IntentExecute, nil
+}
+func (r *ctxRouter) PickSkills(context.Context, string, []*domain.Skill) ([]string, domain.Intent, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.plainCalls++
+	return []string{"forex"}, domain.IntentExecute, nil
+}
+func (r *ctxRouter) PickSkillsInContext(_ context.Context, _ string, earlier string, _ []*domain.Skill) ([]string, domain.Intent, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.ctxCalls++
+	r.earlier = append(r.earlier, earlier)
+	return []string{"forex"}, domain.IntentExecute, nil
+}
+
+func (r *rig) turnWith(t *testing.T, router runtime.SkillRouter, text string) *domain.LoopResult {
+	t.Helper()
+	integration := &domain.Integration{ID: "int-fx", Service: "fx"}
+	skill := &domain.Skill{ID: "s1", Name: "forex", AgentID: "a1", Integrations: []string{integration.ID}}
+	agent := &domain.Agent{ID: "a1", LLMs: []domain.LLM{r.model}, MaxIterations: 8, Skills: []*domain.Skill{skill}}
+	executors := domain.NewExecutorRegistry()
+	executors.Register("slack", &fakeExecutor{})
+	executors.Register("fx", r.exec)
+	quote := &domain.ToolDefinition{ID: "q", Name: "get_live_quote", FunctionName: "get_live_quote", Action: "q", ReadOnly: true, IntegrationID: integration.ID}
+	deps := slackDeps(func(d *runtime.AgentDeps) {
+		d.Executors = executors
+		if r.mem == nil {
+			r.mem = newMemMemory()
+		}
+		d.Memory = r.mem
+		d.ToolsByID = map[string]*domain.ToolDefinition{"q": quote}
+		d.IntegrationsByID[integration.ID] = integration
+	})
+	hosted := &runtime.HostedAgent{Agent: agent, Deps: deps}
+	r.host.SetSkillRouter(router)
+	r.host.Register(hosted)
+	res, err := r.host.HandleTurn(context.Background(), hosted, domain.ConversationRef{Provider: "slack", ChatID: "C1"}, text)
+	if err != nil {
+		t.Fatalf("turn: %v", err)
+	}
+	return res
+}
+
+func TestRouter_AShortReplyIsReadNextToWhatItAnswers(t *testing.T) {
+	r := newRig(func(n int) *domain.LLMResponse {
+		return calls(finishCall("I'd BUY EUR/USD, 50,000 units. Shall I place it?", ""))
+	}, placed)
+	router := &ctxRouter{}
+	r.turnWith(t, router, "buy EURUSD") // first message: nothing earlier
+	if router.plainCalls != 1 || router.ctxCalls != 0 {
+		t.Fatalf("with nothing earlier the ordinary picker is used: plain=%d ctx=%d", router.plainCalls, router.ctxCalls)
+	}
+	r.turnWith(t, router, "yes") // answers the offer
+	if router.ctxCalls != 1 || router.plainCalls != 1 {
+		t.Fatalf("a reply is read in context: plain=%d ctx=%d", router.plainCalls, router.ctxCalls)
+	}
+	if len(router.earlier) != 1 || !strings.Contains(router.earlier[0], "Shall I place it?") {
+		t.Errorf("the picker must be shown the offer the person is answering: %v", router.earlier)
+	}
+}
+
+// A router that can't read context keeps working exactly as before.
+func TestRouter_APickerWithoutContextSupportIsStillUsed(t *testing.T) {
+	r := newRig(func(int) *domain.LLMResponse { return calls(finishCall("Shall I place it?", "")) }, placed)
+	router := oneSkillRouter{skill: "forex", intent: domain.IntentExecute}
+	r.turnWith(t, router, "buy EURUSD")
+	res := r.turnWith(t, router, "yes")
+	if res.Content != "Shall I place it?" {
+		t.Errorf("a plain router is unaffected: %q", res.Content)
+	}
+}
