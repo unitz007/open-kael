@@ -255,8 +255,8 @@ type Host struct {
 	// greetingJudge tells a bare hello from a real message (see GreetingJudge).
 	greetingJudge GreetingJudge
 
-	// userTimezoneLoader looks up a person's IANA time zone name.
-	userTimezoneLoader func(ctx context.Context, userID string) (string, error)
+	// userDetailsLoader looks up what a person has told us about themselves.
+	userDetailsLoader func(ctx context.Context, userID string) (domain.UserDetails, error)
 
 	// connectPromptSent remembers when a person was last sent a connect prompt for an
 	// identity ("userID:identityID"), so several tool calls made in the same moment
@@ -913,7 +913,7 @@ var clockNow = time.Now
 //   - userProfile: general facts about the user learned across all agents
 //   - userInstructions: explicit per-agent instructions set by the user
 //   - integrationNotes: integration-specific facts (FPL team, GitHub repos, etc.)
-func buildSystemPrompt(agent *domain.Agent, userProfile, userInstructions string, integrationNotes map[string]string, integrationsByID map[string]*domain.Integration, messengerSkills []string, loc *time.Location) string {
+func buildSystemPrompt(agent *domain.Agent, userProfile, userInstructions string, integrationNotes map[string]string, integrationsByID map[string]*domain.Integration, messengerSkills []string, person domain.UserDetails) string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "You are %s.", agent.Name)
@@ -960,6 +960,8 @@ func buildSystemPrompt(agent *domain.Agent, userProfile, userInstructions string
 	// The agent must always know when it is. Stated here, to the minute, rather than
 	// left to a tool the model may never call (routed turns don't offer one). In the
 	// person's own time zone when they have told us, otherwise in UTC.
+	personLines, loc := personContext(person)
+	b.WriteString(personLines)
 	now := clockNow().UTC()
 	if loc != nil {
 		local := now.In(loc)
@@ -1291,15 +1293,13 @@ func (h *Host) HandleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 
 	promptIntegrations := hosted.integrations()
 	messages := make([]domain.Message, 0, len(prior)+2)
-	var userLoc *time.Location
-	if conv.UserID != "" && h.userTimezoneLoader != nil {
-		if name, err := h.userTimezoneLoader(ctx, conv.UserID); err == nil && name != "" {
-			if l, lerr := time.LoadLocation(name); lerr == nil {
-				userLoc = l
-			}
+	var person domain.UserDetails
+	if conv.UserID != "" && h.userDetailsLoader != nil {
+		if d, err := h.userDetailsLoader(ctx, conv.UserID); err == nil {
+			person = d
 		}
 	}
-	messages = append(messages, domain.Message{Role: domain.RoleSystem, Content: buildSystemPrompt(hosted.Agent, userProfile, userInstructions, integrationNotes, promptIntegrations, messengerSkills, userLoc)})
+	messages = append(messages, domain.Message{Role: domain.RoleSystem, Content: buildSystemPrompt(hosted.Agent, userProfile, userInstructions, integrationNotes, promptIntegrations, messengerSkills, person)})
 	messages = append(messages, prior...)
 	messages = append(messages, domain.Message{Role: domain.RoleUser, Content: userText})
 

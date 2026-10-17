@@ -127,3 +127,46 @@ func TestWelcomeMessage_RememberedThenTakenOnce(t *testing.T) {
 		t.Errorf("re-saving the channel wiped the remembered message: %q", id)
 	}
 }
+
+func TestUserDetails_LanguageResidenceAndNameAreKept(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	if err := s.SaveUser(ctx, &domain.User{ID: "u_ud", FirstName: "Ada"}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.DeleteUser(ctx, "u_ud") })
+
+	if d, err := s.UserDetails(ctx, "u_ud"); err != nil || d != (domain.UserDetails{Name: "Ada"}) {
+		t.Fatalf("only the name so far: %+v %v", d, err)
+	}
+	if err := s.SetUserTimezone(ctx, "u_ud", "Africa/Lagos"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetUserLanguage(ctx, "u_ud", "fr"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetUserResidence(ctx, "u_ud", "NG", "Lagos"); err != nil {
+		t.Fatal(err)
+	}
+	want := domain.UserDetails{Name: "Ada", Timezone: "Africa/Lagos", Language: "fr", Country: "NG", City: "Lagos"}
+	if d, err := s.UserDetails(ctx, "u_ud"); err != nil || d != want {
+		t.Fatalf("all of it: %+v %v", d, err)
+	}
+	// Another flow saving the user must not wipe any of it.
+	u, _ := s.GetUser(ctx, "u_ud")
+	if err := s.SaveUser(ctx, u); err != nil {
+		t.Fatal(err)
+	}
+	if d, _ := s.UserDetails(ctx, "u_ud"); d != want {
+		t.Errorf("a later SaveUser wiped something: %+v", d)
+	}
+	if _, err := s.UserDetails(ctx, "nobody"); !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("unknown person: %v", err)
+	}
+	if err := s.SetUserLanguage(ctx, "nobody", "fr"); !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("unknown person: %v", err)
+	}
+	if err := s.SetUserResidence(ctx, "nobody", "NG", ""); !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("unknown person: %v", err)
+	}
+}

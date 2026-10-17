@@ -294,7 +294,9 @@ func TestSystemPrompt_SpeaksInThePersonsOwnTime(t *testing.T) {
 	llm := &promptSpy{seen: &seen}
 	agent := &domain.Agent{ID: "a1", Name: "Desk", LLMs: []domain.LLM{llm}, MaxIterations: 3}
 	host, hosted, _ := onboardingRig(t, agent)
-	host.SetUserTimezoneLoader(func(context.Context, string) (string, error) { return "Africa/Lagos", nil })
+	host.SetUserDetailsLoader(func(context.Context, string) (domain.UserDetails, error) {
+		return domain.UserDetails{Timezone: "Africa/Lagos"}, nil
+	})
 	host.DispatchInbound(context.Background(), hosted, firstMessage("what day is it"))
 	if !strings.Contains(seen, "Africa/Lagos") || !strings.Contains(seen, "the person's time zone") {
 		t.Errorf("the agent must be told the time in the person's own zone: %q", seen)

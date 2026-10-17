@@ -2,11 +2,15 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/url"
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"golang.org/x/text/language"
+	"golang.org/x/text/language/display"
 
 	"github.com/unitz007/open-kael/domain"
 )
@@ -29,10 +33,44 @@ type PendingTurnStore interface {
 // only (lost on restart).
 func (h *Host) SetPendingTurnStore(s PendingTurnStore) { h.pendingTurnStore = s }
 
-// SetUserTimezoneLoader registers how to look up a person's IANA time zone name
-// ("" when unknown), so agents can speak in their local time.
-func (h *Host) SetUserTimezoneLoader(f func(ctx context.Context, userID string) (string, error)) {
-	h.userTimezoneLoader = f
+// SetUserDetailsLoader registers how to look up what a person has told us about
+// themselves (name, time zone, language, where they live), so agents can address them
+// properly and speak in their local time.
+func (h *Host) SetUserDetailsLoader(f func(ctx context.Context, userID string) (domain.UserDetails, error)) {
+	h.userDetailsLoader = f
+}
+
+// personContext turns what a person has told us into the lines the agent is given about
+// them, and their time zone (nil when unknown or not a real zone). Anything unset or
+// unrecognised is simply left out: the agent is never told something we can't stand behind.
+func personContext(d domain.UserDetails) (lines string, loc *time.Location) {
+	var b strings.Builder
+	if name := strings.TrimSpace(d.Name); name != "" {
+		fmt.Fprintf(&b, "\n\nThe person you are talking to is called %q. Use their name when it is natural.", name)
+	}
+	var place []string
+	if city := strings.TrimSpace(d.City); city != "" {
+		place = append(place, city)
+	}
+	if r, err := language.ParseRegion(d.Country); err == nil && r.IsCountry() {
+		if name := display.English.Regions().Name(r); name != "" {
+			place = append(place, name)
+		}
+	}
+	if len(place) > 0 {
+		fmt.Fprintf(&b, "\n\nThey live in %s. Keep local details (currency, units, holidays, opening hours) in line with that.", strings.Join(place, ", "))
+	}
+	if d.Language != "" {
+		if tag, err := language.Parse(d.Language); err == nil {
+			fmt.Fprintf(&b, "\n\nTheir preferred language is %s. Reply in it, unless they write to you in a different language.", display.English.Tags().Name(tag))
+		}
+	}
+	if d.Timezone != "" {
+		if l, err := time.LoadLocation(d.Timezone); err == nil {
+			loc = l
+		}
+	}
+	return b.String(), loc
 }
 
 // holdTurn keeps a request until the person connects what it needs.

@@ -361,6 +361,11 @@ CREATE TABLE IF NOT EXISTS email_verifications (
 -- in their local time. Empty until they say.
 ALTER TABLE users ADD COLUMN IF NOT EXISTS timezone TEXT NOT NULL DEFAULT '';
 
+-- Where they live and what language to speak to them in. Empty until they say.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS language TEXT NOT NULL DEFAULT '';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS country  TEXT NOT NULL DEFAULT '';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS city     TEXT NOT NULL DEFAULT '';
+
 -- pending_turns: what a person asked for while something (a connection) stood in the
 -- way, kept so it can be carried out once it is sorted. One per person per connection;
 -- a newer one replaces the older. Kept in the database so a restart doesn't lose it.
