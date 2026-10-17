@@ -1638,7 +1638,7 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 
 	// For a request to DO something: which action(s) must really run for it to be done.
 	allTools := mergedTools
-	reqs := h.requirementsFor(ctx, userText, intent, mergedTools)
+	reqs := h.requirementsFor(ctx, userText, lastAssistantText(messages), intent, mergedTools)
 
 	// Tool filter: trim irrelevant tools before the LLM call to reduce tokens.
 	// Falls back to the full list on error or empty result.

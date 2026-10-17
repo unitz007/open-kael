@@ -57,14 +57,16 @@ func (m *scriptedModel) Call(_ context.Context, _ []domain.Message, actions []do
 }
 
 type fakeRequirer struct {
-	names  []string
-	err    error
-	asked  int
-	passed []string
+	names   []string
+	err     error
+	asked   int
+	passed  []string
+	earlier string
 }
 
-func (r *fakeRequirer) RequiredTools(_ context.Context, _ string, tools []*domain.BoundAction) ([]string, error) {
+func (r *fakeRequirer) RequiredTools(_ context.Context, _ string, earlier string, tools []*domain.BoundAction) ([]string, error) {
 	r.asked++
+	r.earlier = earlier
 	for _, t := range tools {
 		r.passed = append(r.passed, t.Spec.Name)
 	}
@@ -95,6 +97,7 @@ type rig struct {
 	model *scriptedModel
 	exec  *fxExec
 	host  *runtime.Host
+	mem   *memMemory // kept between turns, so a conversation has a history
 }
 
 func (r *rig) turn(t *testing.T, intent domain.Intent, text string) *domain.LoopResult {
@@ -109,7 +112,10 @@ func (r *rig) turn(t *testing.T, intent domain.Intent, text string) *domain.Loop
 	trade := &domain.ToolDefinition{ID: "t", Name: "place_trade", FunctionName: "place_trade", Action: "t", IntegrationID: integration.ID}
 	deps := slackDeps(func(d *runtime.AgentDeps) {
 		d.Executors = executors
-		d.Memory = newMemMemory()
+		if r.mem == nil {
+			r.mem = newMemMemory()
+		}
+		d.Memory = r.mem
 		d.ToolsByID = map[string]*domain.ToolDefinition{"q": quote, "t": trade}
 		d.IntegrationsByID[integration.ID] = integration
 	})
@@ -259,5 +265,26 @@ func TestRequirements_NoRequirerNoChange(t *testing.T) {
 	res := r.turn(t, domain.IntentExecute, "buy EURUSD")
 	if _, has := r.model.finish.InputSchema.Properties["outcome"]; has || res.Content != "Trade placed!" {
 		t.Errorf("feature off means untouched: %q", res.Content)
+	}
+}
+
+// "yes" only means something next to the question it answers: Jev is shown the
+// assistant's previous message, not just the one word.
+func TestRequirements_ShortFollowUpsAreJudgedNextToWhatTheyAnswer(t *testing.T) {
+	r := newRig(func(n int) *domain.LLMResponse {
+		if n == 1 {
+			return calls(finishCall("I'd BUY EUR/USD, 50,000 units. Shall I place it?", "need_details"))
+		}
+		return calls(finishCall("ok", "need_details"))
+	}, placed)
+	req := &fakeRequirer{names: []string{"place_trade"}}
+	r.host.SetToolRequirer(req)
+	r.turn(t, domain.IntentExecute, "buy EURUSD")
+	if req.earlier != "" {
+		t.Errorf("nothing was said before the first message: %q", req.earlier)
+	}
+	r.turn(t, domain.IntentExecute, "yes")
+	if !strings.Contains(req.earlier, "Shall I place it?") {
+		t.Errorf("Jev must be shown what the person is answering: %q", req.earlier)
 	}
 }

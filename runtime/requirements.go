@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"log"
+	"strings"
 
 	"github.com/unitz007/open-kael/domain"
 )
@@ -12,10 +13,13 @@ import (
 // decides what "done" means for a turn; the loop then holds the agent to it (see
 // domain.Requirements). Implemented by the Jev client.
 //
-// tools are only the ones that change something. It returns the names of those the
-// request needs (possibly none, for a request that needs no action).
+// userText is what the person just wrote. earlier is the assistant's previous message
+// in the conversation (empty if none), because a short reply such as "yes" or "do it"
+// only means something next to what it answers. tools are only the ones that change
+// something. It returns the names of those the request needs (possibly none, for a
+// request that needs no action).
 type ToolRequirer interface {
-	RequiredTools(ctx context.Context, userText string, tools []*domain.BoundAction) ([]string, error)
+	RequiredTools(ctx context.Context, userText, earlier string, tools []*domain.BoundAction) ([]string, error)
 }
 
 // SetToolRequirer turns on holding agents to what they claim. Without one, turns
@@ -25,7 +29,7 @@ func (h *Host) SetToolRequirer(r ToolRequirer) { h.toolRequirer = r }
 // requirementsFor decides what must have really happened before this turn may be
 // called done. Only a request to DO something (execute intent) is held to anything,
 // and only when an action that changes something is in play.
-func (h *Host) requirementsFor(ctx context.Context, userText string, intent domain.Intent, tools []*domain.BoundAction) *domain.Requirements {
+func (h *Host) requirementsFor(ctx context.Context, userText string, earlier string, intent domain.Intent, tools []*domain.BoundAction) *domain.Requirements {
 	if h.toolRequirer == nil || intent != domain.IntentExecute {
 		return nil
 	}
@@ -38,7 +42,7 @@ func (h *Host) requirementsFor(ctx context.Context, userText string, intent doma
 	if len(changing) == 0 {
 		return nil
 	}
-	names, err := h.toolRequirer.RequiredTools(ctx, userText, changing)
+	names, err := h.toolRequirer.RequiredTools(ctx, userText, earlier, changing)
 	if err != nil {
 		// Can't tell which one the request needs, so insist that some real change
 		// happened rather than let a claim through unchecked.
@@ -83,4 +87,36 @@ func actionNames(actions []*domain.BoundAction) []string {
 		out[i] = a.Spec.Name
 	}
 	return out
+}
+
+// maxEarlierRunes bounds how much of the previous message is shown to Jev.
+const maxEarlierRunes = 600
+
+// lastAssistantText is the assistant's most recent message with any words in it.
+// An agent speaks by calling finish, so in the stored history its words are the
+// content of that call, not the message's own text.
+func lastAssistantText(messages []domain.Message) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role != domain.RoleAssistant {
+			continue
+		}
+		text := strings.TrimSpace(messages[i].Content)
+		if text == "" {
+			for _, call := range messages[i].ToolCalls {
+				if call.Name == domain.FinishActionName {
+					if c, ok := call.Arguments["content"].(string); ok {
+						text = strings.TrimSpace(c)
+					}
+				}
+			}
+		}
+		if text == "" {
+			continue
+		}
+		if r := []rune(text); len(r) > maxEarlierRunes {
+			text = string(r[:maxEarlierRunes]) + "…"
+		}
+		return text
+	}
+	return ""
 }
