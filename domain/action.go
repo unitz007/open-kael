@@ -30,6 +30,10 @@ type ActionSpec struct {
 	// ReadOnly mirrors ToolDefinition.ReadOnly — propagated at hydration time
 	// so the runtime can filter actions by intent without re-loading tool defs.
 	ReadOnly bool `json:"read_only,omitempty"`
+	// Changes is set for tools whose effect is to change something (the tool
+	// contract's Changes effect). Only these can make a request "done"; chat actions
+	// and look-ups never do. The zero value (not a contract tool) is "doesn't count".
+	Changes bool `json:"changes,omitempty"`
 }
 
 // BoundAction pairs an ActionSpec with what actually runs it. Invoke is

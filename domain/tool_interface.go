@@ -75,6 +75,7 @@ func ActionOf(t Tool) *BoundAction {
 			OutputSchema: s.Output,
 			MaxCalls:     s.MaxCalls,
 			ReadOnly:     s.Effect == EffectReads,
+			Changes:      s.Effect == EffectChanges,
 		},
 		Invoke: t.Invoke,
 	}

@@ -236,6 +236,10 @@ type Host struct {
 	// OnIntegrationConnected to deliver post-connection messages.
 	userChannelsByIdentityLoader func(ctx context.Context, userID, identityID string) (channelRefs []string, err error)
 
+	// toolRequirer, when set, decides which action a request to DO something needs,
+	// so the agent can be held to it. See ToolRequirer.
+	toolRequirer ToolRequirer
+
 	// pendingAuthTurns tracks turns that were interrupted by the auth gate.
 	// Key is "userID:identityID"; value is pendingAuthTurn.
 	// When OnIntegrationConnected fires, the stored turn is replayed in a
@@ -1064,21 +1068,34 @@ func buildGetCurrentTimeAction() *domain.BoundAction {
 	}
 }
 
-func buildFinishAction() *domain.BoundAction {
-	return &domain.BoundAction{
-		Spec: domain.ActionSpec{
-			Name:        domain.FinishActionName,
-			Description: "Call this once you have your final answer for the user.",
-			Hidden:      true,
-			InputSchema: domain.Schema{
-				Type: domain.SchemaTypeObject,
-				Properties: map[string]domain.Schema{
-					"content": {Type: domain.SchemaTypeString, Description: "Your final answer."},
-				},
-				Required: []string{"content"},
+func buildFinishAction(withOutcome bool) *domain.BoundAction {
+	spec := domain.ActionSpec{
+		Name:        domain.FinishActionName,
+		Description: "Call this once you have your final answer for the user.",
+		Hidden:      true,
+		InputSchema: domain.Schema{
+			Type: domain.SchemaTypeObject,
+			Properties: map[string]domain.Schema{
+				"content": {Type: domain.SchemaTypeString, Description: "Your final answer."},
 			},
+			Required: []string{"content"},
 		},
 	}
+	if withOutcome {
+		// The person asked for something to be DONE. Say how it ended; "done" is only
+		// accepted once the action really succeeded.
+		spec.Description = "Call this once you have your final answer for the user. You must say how it ended in outcome."
+		spec.InputSchema.Properties["outcome"] = domain.Schema{
+			Type: domain.SchemaTypeString,
+			Enum: []string{domain.OutcomeDone, domain.OutcomeNeedDetails, domain.OutcomeCannot},
+			Description: "done: the action you were asked to carry out has really run successfully this turn (its result says so). " +
+				"need_details: you need something from the person first, for example a size or a price. " +
+				"cannot: you can't do it, for example their account isn't connected or it wasn't approved. " +
+				"Never choose done unless the action really succeeded.",
+		}
+		spec.InputSchema.Required = append(spec.InputSchema.Required, "outcome")
+	}
+	return &domain.BoundAction{Spec: spec}
 }
 
 // querySkillAction returns a BoundAction that the LLM inside a multi-tool
@@ -1207,7 +1224,7 @@ func (h *Host) configureToolApprovalAction(hosted *HostedAgent) *domain.BoundAct
 // When a SkillRouter is configured, query_skill is injected into each
 // multi-tool skill so its nested LLM loop can delegate sub-tasks mid-turn.
 func (h *Host) actionsFor(ctx context.Context, hosted *HostedAgent) ([]*domain.BoundAction, error) {
-	actions := []*domain.BoundAction{buildFinishAction(), buildGetCurrentTimeAction()}
+	actions := []*domain.BoundAction{buildFinishAction(false), buildGetCurrentTimeAction()}
 
 	// Inject configure_tool_approval when a user is in context and a setter is
 	// registered — only user turns, never cron/event runs without a human.
@@ -1619,6 +1636,10 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 		return h.respondDirectly(ctx, hosted, messages, actions)
 	}
 
+	// For a request to DO something: which action(s) must really run for it to be done.
+	allTools := mergedTools
+	reqs := h.requirementsFor(ctx, userText, intent, mergedTools)
+
 	// Tool filter: trim irrelevant tools before the LLM call to reduce tokens.
 	// Falls back to the full list on error or empty result.
 	if h.toolFilter != nil {
@@ -1630,6 +1651,8 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 			mergedTools = filtered
 		}
 	}
+	mergedTools = keepRequired(mergedTools, allTools, reqs)
+	log.Printf("skill-router: offering tools %v", actionNames(mergedTools))
 
 	// Recommend intent: filter to read-only tools so the LLM can fetch data
 	// but not execute side-effecting actions. Inject a hint so it knows to
@@ -1654,7 +1677,10 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 	loopActions := make([]*domain.BoundAction, 0, len(mergedTools)+len(convActions)+1)
 	loopActions = append(loopActions, mergedTools...)
 	loopActions = append(loopActions, convActions...)
-	loopActions = append(loopActions, buildFinishAction())
+	loopActions = append(loopActions, buildFinishAction(reqs != nil))
+	if reqs != nil {
+		ctx = domain.WithRequirements(ctx, reqs)
+	}
 	return h.runNativeLoop(ctx, hosted, messages, loopActions)
 }
 

@@ -44,6 +44,9 @@ type LoopResult struct {
 	// arguments — the Skill-execution case (see BindSkill). Always the raw
 	// arguments finish was called with, regardless of scope.
 	Output map[string]any
+	// Actions records what each action the loop ran really did (see OutcomeOf), so
+	// callers can state facts about the turn rather than rely on the agent's words.
+	Actions []ActionRecord
 }
 
 // Loop mirrors kael-platform's AgentLoop shape exactly (Run(ctx, messages,
@@ -102,6 +105,17 @@ func (l *NativeLoop) Run(ctx context.Context, messages []Message, actions []*Bou
 	callCounts := make(map[string]int)
 	consecutiveFailures := 0
 
+	// What each action really did, and — for a request to DO something — what must
+	// have really happened before the agent may call it done.
+	var records []ActionRecord
+	reqs := RequirementsFromContext(ctx)
+	if fin, ok := actionsByName[FinishActionName]; !reqs.Active() || !ok || !hasProperty(fin.Spec.InputSchema, "outcome") {
+		// Only a loop whose finish asks for an outcome is held to the requirements, so
+		// a nested capability loop sharing this context is not caught by them.
+		reqs = nil
+	}
+	bounces := 0
+
 	giveUp := func(reason string) (*LoopResult, []Message, error) {
 		return &LoopResult{Status: LoopStatusError, Content: reason}, messages, nil
 	}
@@ -145,11 +159,34 @@ func (l *NativeLoop) Run(ctx context.Context, messages []Message, actions []*Bou
 		}
 		log.Printf("loop: iter=%d tool_calls=%d names=%v", i, len(resp.ToolCalls), callNames)
 
-		for _, call := range resp.ToolCalls {
+		for idx, call := range resp.ToolCalls {
 			if call.Name == FinishActionName {
-				result := &LoopResult{Status: LoopStatusComplete, Output: call.Arguments}
+				result := &LoopResult{Status: LoopStatusComplete, Output: call.Arguments, Actions: records}
 				if content, ok := call.Arguments["content"].(string); ok {
 					result.Content = content
+				}
+				if reqs != nil {
+					ok, feedback := finishCheck(call.Arguments, reqs, records)
+					if !ok {
+						bounces++
+						log.Printf("loop: finish refused (%d/%d): %s", bounces, maxFinishBounces, feedback)
+						if bounces > maxFinishBounces {
+							// The agent keeps claiming what didn't happen. Say what did.
+							result.Content = reqs.NothingChangedMessage(records)
+							messages = append(messages, Message{Role: RoleTool, ToolCallID: call.ID, Name: call.Name, Content: "done"})
+							return result, messages, nil
+						}
+						messages = append(messages, Message{Role: RoleTool, ToolCallID: call.ID, Name: call.Name, Content: feedback})
+						for _, rest := range resp.ToolCalls[idx+1:] { // every call needs an answer
+							messages = append(messages, Message{Role: RoleTool, ToolCallID: rest.ID, Name: rest.Name, Content: "not run: finish was refused first"})
+						}
+						break // back to the model with the facts
+					}
+					if outcome, _ := call.Arguments["outcome"].(string); outcome == OutcomeDone {
+						for _, line := range receipts(records) {
+							result.Content += "\n\n" + line
+						}
+					}
 				}
 				messages = append(messages, Message{Role: RoleTool, ToolCallID: call.ID, Name: call.Name, Content: "done"})
 				return result, messages, nil
@@ -181,6 +218,8 @@ func (l *NativeLoop) Run(ctx context.Context, messages []Message, actions []*Bou
 			}
 
 			output, err := action.Invoke(ctx, call.Arguments)
+			done, msg, why := OutcomeOf(output, err)
+			records = append(records, ActionRecord{Name: call.Name, Changes: action.Spec.Changes, Done: done, Message: msg, Reason: why})
 			if err != nil {
 				log.Printf("loop: action %q failed: %v", call.Name, err)
 				messages = append(messages, Message{Role: RoleTool, ToolCallID: call.ID, Name: call.Name, Content: fmt.Sprintf("error: %v", err)})
@@ -277,4 +316,10 @@ func StringifyResult(output any) string {
 		return string(b)
 	}
 	return fmt.Sprint(output)
+}
+
+// hasProperty reports whether an object schema declares the named property.
+func hasProperty(s Schema, name string) bool {
+	_, ok := s.Properties[name]
+	return ok
 }

@@ -107,7 +107,7 @@ func withApprovalGate(def *ToolDefinition, inner func(ctx context.Context, input
 			return nil, fmt.Errorf("tool %q: requesting approval: %w", def.ID, err)
 		}
 		if !approved {
-			return "not approved", nil
+			return OutputNotApproved, nil
 		}
 		return inner(ctx, input)
 	}
@@ -255,7 +255,7 @@ func withAuthGate(identity *Identity, toolName string, inner func(ctx context.Co
 			return nil, fmt.Errorf("tool requires authentication — %w", err)
 		}
 		if newRef == "" {
-			return `auth_pending: the connect prompt has been sent to the user directly — do NOT write anything additional to the user. Call finish now with content set to exactly empty string "".`, nil
+			return OutputAuthPendingPrefix + `: the connect prompt has been sent to the user directly — do NOT write anything additional to the user. Call finish now with content set to exactly empty string "".`, nil
 		}
 		// Inject the new ref so the inner executor call picks it up.
 		refs, _ := ctx.Value(ctxConnectionRefs{}).(map[string]string)
@@ -388,7 +388,7 @@ func withUserApprovalGate(def *ToolDefinition, inner func(ctx context.Context, i
 			return nil, fmt.Errorf("tool %q: requesting user approval: %w", def.ID, err)
 		}
 		if !approved {
-			return "not approved", nil
+			return OutputNotApproved, nil
 		}
 		return inner(ctx, input)
 	}
