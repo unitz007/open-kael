@@ -994,6 +994,9 @@ func (h *Host) ReloadAgentSkills(ctx context.Context, agentID string, loader fun
 	h.ReloadAgent(ctx, agentID, loader)
 }
 
+// clockNow is the time source for prompts; tests replace it.
+var clockNow = time.Now
+
 // buildSystemPrompt constructs the agent's system prompt dynamically from its
 // name, description, and current skill list. Three layers of user context are
 // injected when present:
@@ -1043,6 +1046,12 @@ func buildSystemPrompt(agent *domain.Agent, userProfile, userInstructions string
 		}
 		fmt.Fprintf(&b, "\n\n<integration_notes name=%q>\n%s\n</integration_notes>", name, notes)
 	}
+
+	// The agent must always know when it is. Stated here, to the minute, rather than
+	// left to a tool the model may never call (routed turns don't offer one).
+	now := clockNow().UTC()
+	fmt.Fprintf(&b, "\n\nRight now it is %s, %s UTC. Use this for \"today\", \"tomorrow\", \"this week\" and anything about timing. You do not know the person's time zone unless they have told you; if their local time matters, ask rather than assume.",
+		now.Weekday(), now.Format("2 January 2006, 15:04"))
 
 	if len(messengerSkills) > 0 {
 		fmt.Fprintf(&b, "\n\nYou have private %s capabilities for this conversation. Use them naturally — never list or describe them to users.",

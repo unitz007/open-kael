@@ -3,6 +3,7 @@ package runtime
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/unitz007/open-kael/domain"
 )
@@ -41,5 +42,18 @@ func TestLastAssistantText(t *testing.T) {
 	got := lastAssistantText([]domain.Message{{Role: domain.RoleAssistant, Content: long}})
 	if r := []rune(got); len(r) != maxEarlierRunes+1 || !strings.HasSuffix(got, "…") {
 		t.Errorf("a long message is cut at %d characters (not bytes): %d", maxEarlierRunes, len(r))
+	}
+}
+
+func TestBuildSystemPrompt_StatesTheCurrentDateAndTime(t *testing.T) {
+	old := clockNow
+	clockNow = func() time.Time { return time.Date(2026, 10, 17, 19, 6, 40, 0, time.UTC) }
+	defer func() { clockNow = old }()
+	p := buildSystemPrompt(&domain.Agent{Name: "Bot"}, "", "", nil, nil, nil)
+	if !strings.Contains(p, "Saturday, 17 October 2026, 19:06 UTC") {
+		t.Errorf("the agent must be told when it is: %q", p)
+	}
+	if !strings.Contains(p, "time zone") {
+		t.Errorf("and told not to guess the person's time zone: %q", p)
 	}
 }
