@@ -249,6 +249,9 @@ type Host struct {
 	// pendingTurnStore, when set, keeps held requests across restarts.
 	pendingTurnStore PendingTurnStore
 
+	// greetingJudge tells a bare hello from a real message (see GreetingJudge).
+	greetingJudge GreetingJudge
+
 	// userTimezoneLoader looks up a person's IANA time zone name.
 	userTimezoneLoader func(ctx context.Context, userID string) (string, error)
 

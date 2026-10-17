@@ -322,3 +322,87 @@ func TestConnectionsNeeded_ListsWhatIsMissingWithTheLinkToFixIt(t *testing.T) {
 		t.Errorf("nobody, nothing to list: %+v", got)
 	}
 }
+
+// ── a bare hello is answered by the welcome alone ────────────────────────────
+
+type fakeJudge struct {
+	mu    sync.Mutex
+	calls []string
+	just  bool
+	err   error
+}
+
+func (f *fakeJudge) IsJustGreeting(_ context.Context, text string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, text)
+	return f.just, f.err
+}
+
+func helloRig(t *testing.T, judge *fakeJudge) (*runtime.Host, *runtime.HostedAgent, *outbox, *funcLLMCount) {
+	t.Helper()
+	llm := &funcLLMCount{}
+	agent := &domain.Agent{ID: "a1", Name: "Desk", Greeting: "Welcome!", LLMs: []domain.LLM{llm}, MaxIterations: 5}
+	host, hosted, box := onboardingRig(t, agent)
+	welcomed := false
+	host.SetOnboardingFlow(
+		func(context.Context, string, string, string) (bool, error) { return welcomed, nil },
+		func(context.Context, string, string, string, string, string) error { welcomed = true; return nil },
+	)
+	if judge != nil {
+		host.SetGreetingJudge(judge)
+	}
+	return host, hosted, box, llm
+}
+
+func TestFirstHello_GetsTheWelcomeAloneNotASecondIntroduction(t *testing.T) {
+	judge := &fakeJudge{just: true}
+	host, hosted, box, llm := helloRig(t, judge)
+	host.DispatchInbound(context.Background(), hosted, firstMessage("Hi"))
+	if got := box.texts(); len(got) != 1 || got[0] != "Welcome!" {
+		t.Fatalf("a hello gets the welcome and nothing else: %q", got)
+	}
+	if llm.n != 0 {
+		t.Errorf("the model must not be asked to greet them again: %d calls", llm.n)
+	}
+	// Later messages are never put to the judge: it is only for the first.
+	host.DispatchInbound(context.Background(), hosted, firstMessage("Hi again"))
+	if len(judge.calls) != 1 || llm.n != 1 {
+		t.Errorf("judge asked %d times, model %d: only the first message is judged", len(judge.calls), llm.n)
+	}
+}
+
+func TestFirstRealMessage_IsStillAnsweredAfterTheWelcome(t *testing.T) {
+	host, hosted, box, llm := helloRig(t, &fakeJudge{just: false})
+	host.DispatchInbound(context.Background(), hosted, firstMessage("buy 10000 EURUSD"))
+	if got := box.texts(); len(got) != 2 || got[0] != "Welcome!" || got[1] != "Done: bought." || llm.n != 1 {
+		t.Fatalf("a real request gets the welcome and then its answer: %q (%d model calls)", got, llm.n)
+	}
+}
+
+func TestFirstHello_WhenInDoubtTheMessageIsAnswered(t *testing.T) {
+	for name, judge := range map[string]*fakeJudge{"judge fails": {err: context.DeadlineExceeded}, "no judge": nil} {
+		host, hosted, box, llm := helloRig(t, judge)
+		host.DispatchInbound(context.Background(), hosted, firstMessage("Hi"))
+		if got := box.texts(); len(got) != 2 || llm.n != 1 {
+			t.Errorf("%s: a message must never be left unanswered when we can't tell: %q (%d model calls)", name, got, llm.n)
+		}
+	}
+}
+
+func TestFirstMessage_StartAndLongMessagesNeverReachTheJudge(t *testing.T) {
+	judge := &fakeJudge{just: true}
+	host, hosted, box, llm := helloRig(t, judge)
+	host.DispatchInbound(context.Background(), hosted, firstMessage("/start"))
+	if got := box.texts(); len(got) != 1 || llm.n != 0 || len(judge.calls) != 0 {
+		t.Errorf("/start is a hello by definition: %q, %d model calls, %d judge calls", got, llm.n, len(judge.calls))
+	}
+
+	judge2 := &fakeJudge{just: true}
+	host2, hosted2, box2, llm2 := helloRig(t, judge2)
+	long := "hello " + strings.Repeat("and could you look at the EURUSD chart ", 3)
+	host2.DispatchInbound(context.Background(), hosted2, firstMessage(long))
+	if got := box2.texts(); len(got) != 2 || llm2.n != 1 || len(judge2.calls) != 0 {
+		t.Errorf("a long message is never just a hello, and isn't even asked about: %q, %d model, %d judge", got, llm2.n, len(judge2.calls))
+	}
+}

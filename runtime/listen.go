@@ -373,7 +373,11 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 			} else {
 				h.deliverBestEffort(ctx, hosted, msg.Conversation, greeting)
 			}
-			// The welcome is not the answer: carry on and handle what they wrote.
+			// The welcome is not the answer: carry on and handle what they wrote, unless
+			// all they wrote was hello, which the welcome has just answered.
+			if h.onlySaysHello(ctx, msg.Text) {
+				return
+			}
 		}
 	}
 

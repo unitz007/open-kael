@@ -4,7 +4,9 @@ import (
 	"context"
 	"log"
 	"net/url"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/unitz007/open-kael/domain"
 )
@@ -113,4 +115,36 @@ func (h *Host) gettingStartedButton(conv domain.ConversationRef, agentID string)
 			"url":  h.miniAppBaseURL + "/miniapp/welcome?agent=" + url.QueryEscape(agentID),
 		},
 	}
+}
+
+// GreetingJudge says whether a message is nothing but a hello. It lets the host skip
+// the model for a first "Hi" so a new person isn't greeted twice.
+type GreetingJudge interface {
+	IsJustGreeting(ctx context.Context, text string) (bool, error)
+}
+
+// SetGreetingJudge registers how to tell a bare hello from a real message.
+func (h *Host) SetGreetingJudge(j GreetingJudge) { h.greetingJudge = j }
+
+// maxGreetingRunes: a longer message is never "just a hello", so it is not even asked about.
+const maxGreetingRunes = 60
+
+// onlySaysHello reports whether a new person's first message needs no answer beyond the
+// welcome they have just been sent. Telegram's own /start always counts; a long message
+// never does; anything else is put to the judge. When in doubt (no judge, or it can't say)
+// the answer is no, so a real request is never left unanswered.
+func (h *Host) onlySaysHello(ctx context.Context, text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" || text == "/start" || strings.HasPrefix(text, "/start ") {
+		return true
+	}
+	if h.greetingJudge == nil || utf8.RuneCountInString(text) > maxGreetingRunes {
+		return false
+	}
+	just, err := h.greetingJudge.IsJustGreeting(ctx, text)
+	if err != nil {
+		log.Printf("runtime: greeting check: %v (answering the message instead)", err)
+		return false
+	}
+	return just
 }
