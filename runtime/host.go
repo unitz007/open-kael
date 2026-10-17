@@ -246,6 +246,12 @@ type Host struct {
 	// fresh goroutine so the agent can continue where it left off.
 	pendingAuthTurns sync.Map
 
+	// pendingTurnStore, when set, keeps held requests across restarts.
+	pendingTurnStore PendingTurnStore
+
+	// userTimezoneLoader looks up a person's IANA time zone name.
+	userTimezoneLoader func(ctx context.Context, userID string) (string, error)
+
 	// connectPromptSent remembers when a person was last sent a connect prompt for an
 	// identity ("userID:identityID"), so several tool calls made in the same moment
 	// send ONE prompt instead of one each. See shouldSendConnectPrompt.
@@ -743,8 +749,7 @@ func (h *Host) OnIntegrationConnected(ctx context.Context, userID, identityID st
 	// Replay any turn that was interrupted by the auth gate for this user+identity.
 	key := userID + ":" + identityID
 	log.Printf("runtime: OnIntegrationConnected: user=%q identity=%q key=%q", userID, identityID, key)
-	if val, ok := h.pendingAuthTurns.LoadAndDelete(key); ok {
-		pending := val.(pendingAuthTurn)
+	if pending, ok := h.takeTurn(ctx, userID, identityID); ok {
 		log.Printf("runtime: OnIntegrationConnected: found pending turn agent=%q message=%q — replaying", pending.agentID, pending.userMessage)
 		h.mu.RLock()
 		hosted := h.agents[pending.agentID]
@@ -902,7 +907,7 @@ var clockNow = time.Now
 //   - userProfile: general facts about the user learned across all agents
 //   - userInstructions: explicit per-agent instructions set by the user
 //   - integrationNotes: integration-specific facts (FPL team, GitHub repos, etc.)
-func buildSystemPrompt(agent *domain.Agent, userProfile, userInstructions string, integrationNotes map[string]string, integrationsByID map[string]*domain.Integration, messengerSkills []string) string {
+func buildSystemPrompt(agent *domain.Agent, userProfile, userInstructions string, integrationNotes map[string]string, integrationsByID map[string]*domain.Integration, messengerSkills []string, loc *time.Location) string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "You are %s.", agent.Name)
@@ -947,10 +952,17 @@ func buildSystemPrompt(agent *domain.Agent, userProfile, userInstructions string
 	}
 
 	// The agent must always know when it is. Stated here, to the minute, rather than
-	// left to a tool the model may never call (routed turns don't offer one).
+	// left to a tool the model may never call (routed turns don't offer one). In the
+	// person's own time zone when they have told us, otherwise in UTC.
 	now := clockNow().UTC()
-	fmt.Fprintf(&b, "\n\nRight now it is %s, %s UTC. Use this for \"today\", \"tomorrow\", \"this week\" and anything about timing. You do not know the person's time zone unless they have told you; if their local time matters, ask rather than assume.",
-		now.Weekday(), now.Format("2 January 2006, 15:04"))
+	if loc != nil {
+		local := now.In(loc)
+		fmt.Fprintf(&b, "\n\nRight now it is %s, %s (%s, the person's time zone); that is %s UTC. Use this for \"today\", \"tomorrow\", \"this week\" and anything about timing, and speak in their local time.",
+			local.Weekday(), local.Format("2 January 2006, 15:04"), loc.String(), now.Format("15:04"))
+	} else {
+		fmt.Fprintf(&b, "\n\nRight now it is %s, %s UTC. Use this for \"today\", \"tomorrow\", \"this week\" and anything about timing. You do not know the person's time zone unless they have told you; if their local time matters, ask rather than assume.",
+			now.Weekday(), now.Format("2 January 2006, 15:04"))
+	}
 
 	if len(messengerSkills) > 0 {
 		fmt.Fprintf(&b, "\n\nYou have private %s capabilities for this conversation. Use them naturally — never list or describe them to users.",
@@ -1273,7 +1285,15 @@ func (h *Host) HandleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 
 	promptIntegrations := hosted.integrations()
 	messages := make([]domain.Message, 0, len(prior)+2)
-	messages = append(messages, domain.Message{Role: domain.RoleSystem, Content: buildSystemPrompt(hosted.Agent, userProfile, userInstructions, integrationNotes, promptIntegrations, messengerSkills)})
+	var userLoc *time.Location
+	if conv.UserID != "" && h.userTimezoneLoader != nil {
+		if name, err := h.userTimezoneLoader(ctx, conv.UserID); err == nil && name != "" {
+			if l, lerr := time.LoadLocation(name); lerr == nil {
+				userLoc = l
+			}
+		}
+	}
+	messages = append(messages, domain.Message{Role: domain.RoleSystem, Content: buildSystemPrompt(hosted.Agent, userProfile, userInstructions, integrationNotes, promptIntegrations, messengerSkills, userLoc)})
 	messages = append(messages, prior...)
 	messages = append(messages, domain.Message{Role: domain.RoleUser, Content: userText})
 
@@ -1821,7 +1841,7 @@ func (h *Host) resolveConnectRequester(ctx context.Context, hosted *HostedAgent,
 		storePending := func() {
 			userMessage := domain.OriginalMessageFromContext(ctx)
 			if userMessage != "" {
-				h.pendingAuthTurns.Store(key, pendingAuthTurn{
+				h.holdTurn(ctx, userID, identity.ID, pendingAuthTurn{
 					conv:        conv,
 					agentID:     hosted.Agent.ID,
 					userMessage: userMessage,

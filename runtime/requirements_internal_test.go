@@ -49,11 +49,47 @@ func TestBuildSystemPrompt_StatesTheCurrentDateAndTime(t *testing.T) {
 	old := clockNow
 	clockNow = func() time.Time { return time.Date(2026, 10, 17, 19, 6, 40, 0, time.UTC) }
 	defer func() { clockNow = old }()
-	p := buildSystemPrompt(&domain.Agent{Name: "Bot"}, "", "", nil, nil, nil)
+	p := buildSystemPrompt(&domain.Agent{Name: "Bot"}, "", "", nil, nil, nil, nil)
 	if !strings.Contains(p, "Saturday, 17 October 2026, 19:06 UTC") {
 		t.Errorf("the agent must be told when it is: %q", p)
 	}
 	if !strings.Contains(p, "time zone") {
 		t.Errorf("and told not to guess the person's time zone: %q", p)
+	}
+}
+
+func TestGettingStartedButton_OnlyWhereTheMiniAppCanOpen(t *testing.T) {
+	h := NewHost()
+	tg := domain.ConversationRef{Provider: "telegram"}
+	if h.gettingStartedButton(tg, "a1") != nil {
+		t.Error("no Mini App address, no button")
+	}
+	h.SetMiniAppBaseURL("https://app.example")
+	btn, _ := h.gettingStartedButton(tg, "a b")["web_app_button"].(map[string]any)
+	if btn["text"] != "Get started" || btn["url"] != "https://app.example/miniapp/welcome?agent=a+b" {
+		t.Errorf("button: %v", btn)
+	}
+	if h.gettingStartedButton(domain.ConversationRef{Provider: "slack"}, "a1") != nil {
+		t.Error("only Telegram has Mini Apps")
+	}
+	h.SetMiniAppBaseURL("http://localhost:8080")
+	if h.gettingStartedButton(tg, "a1") != nil {
+		t.Error("Telegram refuses a local address")
+	}
+}
+
+func TestBuildSystemPrompt_InThePersonsOwnTimeZone(t *testing.T) {
+	old := clockNow
+	clockNow = func() time.Time { return time.Date(2026, 10, 17, 19, 6, 40, 0, time.UTC) }
+	defer func() { clockNow = old }()
+	lagos, _ := time.LoadLocation("Africa/Lagos") // UTC+1
+	p := buildSystemPrompt(&domain.Agent{Name: "Bot"}, "", "", nil, nil, nil, lagos)
+	if !strings.Contains(p, "Saturday, 17 October 2026, 20:06 (Africa/Lagos, the person's time zone); that is 19:06 UTC") {
+		t.Errorf("local time first, UTC for reference: %q", p)
+	}
+	tokyo, _ := time.LoadLocation("Asia/Tokyo") // crosses midnight
+	p = buildSystemPrompt(&domain.Agent{Name: "Bot"}, "", "", nil, nil, nil, tokyo)
+	if !strings.Contains(p, "Sunday, 18 October 2026, 04:06 (Asia/Tokyo") {
+		t.Errorf("the day follows the person's zone: %q", p)
 	}
 }

@@ -357,6 +357,23 @@ CREATE TABLE IF NOT EXISTS email_verifications (
     expires_at  TIMESTAMPTZ NOT NULL
 );
 
+-- The person's own time zone (an IANA name such as Africa/Lagos), so agents can speak
+-- in their local time. Empty until they say.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS timezone TEXT NOT NULL DEFAULT '';
+
+-- pending_turns: what a person asked for while something (a connection) stood in the
+-- way, kept so it can be carried out once it is sorted. One per person per connection;
+-- a newer one replaces the older. Kept in the database so a restart doesn't lose it.
+CREATE TABLE IF NOT EXISTS pending_turns (
+    user_id     TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    identity_id TEXT NOT NULL,
+    agent_id    TEXT NOT NULL,
+    conv        JSONB NOT NULL,
+    message     TEXT NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (user_id, identity_id)
+);
+
 -- Cleanup: remove bot-kind identities that are no longer linked to any agent.
 -- These accumulate when an agent is deleted (old code left the identity row)
 -- or when agent creation fails after the identity was created.

@@ -138,3 +138,140 @@ func TestOnboarding_AMessageHeldForAConnectionIsReplayedOnceConnected(t *testing
 		t.Fatalf("what they asked for runs once connected: %q", got)
 	}
 }
+
+// ── getting started: held requests that survive a restart, local time, the button ──
+
+// memStore is a PendingTurnStore shared between two hosts, to stand for the database
+// that outlives a restart.
+type memStore struct {
+	mu    sync.Mutex
+	turns map[string]*domain.PendingTurn
+	saved time.Time // when the held request was kept; zero means now
+}
+
+func (m *memStore) SavePendingTurn(_ context.Context, t *domain.PendingTurn) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.turns == nil {
+		m.turns = map[string]*domain.PendingTurn{}
+	}
+	c := *t
+	c.CreatedAt = time.Now()
+	if !m.saved.IsZero() {
+		c.CreatedAt = m.saved
+	}
+	m.turns[t.UserID+":"+t.IdentityID] = &c
+	return nil
+}
+func (m *memStore) TakePendingTurn(_ context.Context, userID, identityID string, maxAge time.Duration) (*domain.PendingTurn, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	k := userID + ":" + identityID
+	t, ok := m.turns[k]
+	if !ok {
+		return nil, domain.ErrNotFound
+	}
+	delete(m.turns, k)
+	if time.Since(t.CreatedAt) > maxAge {
+		return nil, domain.ErrNotFound
+	}
+	return t, nil
+}
+
+func heldRig(t *testing.T, store *memStore) (*runtime.Host, *runtime.HostedAgent, *outbox, *funcLLMCount) {
+	t.Helper()
+	llm := &funcLLMCount{}
+	agent := &domain.Agent{ID: "a1", Name: "Desk", LLMs: []domain.LLM{llm}, MaxIterations: 5, IdentityIDs: []string{"id_aegis"}}
+	host, hosted, box := onboardingRig(t, agent)
+	host.SetPendingTurnStore(store)
+	host.SetSetupChecker(func(context.Context, string, *domain.Agent) ([]string, error) { return []string{"id_aegis"}, nil })
+	host.SetConnectURLGenerator(func(context.Context, string, string) (string, error) { return "https://app.example/connect", nil })
+	host.SetConnectIntegrationNameLoader(func(context.Context, string) (string, error) { return "Aegis", nil })
+	return host, hosted, box, llm
+}
+
+type funcLLMCount struct {
+	mu sync.Mutex
+	n  int
+}
+
+func (f *funcLLMCount) Call(context.Context, []domain.Message, []domain.ActionSpec) (*domain.LLMResponse, error) {
+	f.mu.Lock()
+	f.n++
+	f.mu.Unlock()
+	return &domain.LLMResponse{ToolCalls: []domain.ToolCall{{ID: "1", Name: domain.FinishActionName, Arguments: map[string]any{"content": "Done: bought."}}}}, nil
+}
+
+func waitTexts(box *outbox, n int) []string {
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && len(box.texts()) < n {
+		time.Sleep(20 * time.Millisecond)
+	}
+	return box.texts()
+}
+
+// The server restarts between the person asking and connecting: what they asked for is
+// still carried out.
+func TestHeldRequest_SurvivesARestart(t *testing.T) {
+	store := &memStore{}
+	before, hostedBefore, _, _ := heldRig(t, store)
+	before.DispatchInbound(context.Background(), hostedBefore, firstMessage("buy 10000 EURUSD"))
+
+	after, _, box, llm := heldRig(t, store) // a fresh host: nothing in memory
+	after.OnIntegrationConnected(context.Background(), "u1", "id_aegis")
+	if got := waitTexts(box, 1); len(got) != 1 || got[0] != "Done: bought." {
+		t.Fatalf("the request is carried out after a restart: %q", got)
+	}
+	if llm.n != 1 {
+		t.Errorf("model calls: %d", llm.n)
+	}
+}
+
+// An old request is not carried out as if it were fresh.
+func TestHeldRequest_AStaleOneIsNotReplayed(t *testing.T) {
+	store := &memStore{saved: time.Now().Add(-2 * time.Hour)}
+	before, hostedBefore, _, _ := heldRig(t, store)
+	before.DispatchInbound(context.Background(), hostedBefore, firstMessage("buy 10000 EURUSD"))
+
+	after, _, box, llm := heldRig(t, store)
+	after.OnIntegrationConnected(context.Background(), "u1", "id_aegis")
+	time.Sleep(200 * time.Millisecond)
+	if llm.n != 0 {
+		t.Fatalf("a two-hour-old instruction must not run: %d model calls, sent %q", llm.n, box.texts())
+	}
+}
+
+func TestSystemPrompt_SpeaksInThePersonsOwnTime(t *testing.T) {
+	// handled in the internal test; here, the end-to-end: the loader's zone reaches the prompt.
+	var seen string
+	llm := &promptSpy{seen: &seen}
+	agent := &domain.Agent{ID: "a1", Name: "Desk", LLMs: []domain.LLM{llm}, MaxIterations: 3}
+	host, hosted, _ := onboardingRig(t, agent)
+	host.SetUserTimezoneLoader(func(context.Context, string) (string, error) { return "Africa/Lagos", nil })
+	host.DispatchInbound(context.Background(), hosted, firstMessage("what day is it"))
+	if !strings.Contains(seen, "Africa/Lagos") || !strings.Contains(seen, "the person's time zone") {
+		t.Errorf("the agent must be told the time in the person's own zone: %q", seen)
+	}
+}
+
+type promptSpy struct{ seen *string }
+
+func (p *promptSpy) Call(_ context.Context, msgs []domain.Message, _ []domain.ActionSpec) (*domain.LLMResponse, error) {
+	for _, m := range msgs {
+		if m.Role == domain.RoleSystem {
+			*p.seen = m.Content
+		}
+	}
+	return &domain.LLMResponse{ToolCalls: []domain.ToolCall{{ID: "1", Name: domain.FinishActionName, Arguments: map[string]any{"content": "ok"}}}}, nil
+}
+
+func TestConnectionsNeeded_ListsWhatIsMissingWithTheLinkToFixIt(t *testing.T) {
+	host, _, _, _ := heldRig(t, &memStore{})
+	got := host.ConnectionsNeeded(context.Background(), "u1", &domain.Agent{ID: "a1"})
+	if len(got) != 1 || got[0].IdentityID != "id_aegis" || got[0].Name != "Aegis" || got[0].URL != "https://app.example/connect" {
+		t.Errorf("connections needed: %+v", got)
+	}
+	if got := host.ConnectionsNeeded(context.Background(), "", &domain.Agent{ID: "a1"}); got != nil {
+		t.Errorf("nobody, nothing to list: %+v", got)
+	}
+}

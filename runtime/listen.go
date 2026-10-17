@@ -370,7 +370,11 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 					log.Printf("runtime: agent %q: onboarding completer: %v", hosted.Agent.ID, err)
 				}
 			}
-			h.deliverBestEffort(ctx, hosted, msg.Conversation, greeting)
+			if btn := h.gettingStartedButton(msg.Conversation, hosted.Agent.ID); btn != nil {
+				h.deliverBestEffort(ctx, hosted, msg.Conversation, greeting, btn)
+			} else {
+				h.deliverBestEffort(ctx, hosted, msg.Conversation, greeting)
+			}
 			// The welcome is not the answer: carry on and handle what they wrote.
 		}
 	}
@@ -451,7 +455,7 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 					}
 				}
 				// Keep what they asked for: it is replayed the moment they connect.
-				h.pendingAuthTurns.Store(msg.Conversation.UserID+":"+identityID, pendingAuthTurn{
+				h.holdTurn(ctx, msg.Conversation.UserID, identityID, pendingAuthTurn{
 					conv:        msg.Conversation,
 					agentID:     hosted.Agent.ID,
 					userMessage: msg.Text,
