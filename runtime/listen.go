@@ -318,7 +318,7 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 						hosted.Agent.ID, msg.Conversation.IdentityID, msg.Conversation.ChatID, err)
 				}
 			}
-			text, linkURL := h.onboardingMessage(ctx, hosted.Agent, hosted.Agent.LLMs, linkCode)
+			text, linkURL := h.onboardingMessage(hosted.Agent, linkCode)
 			var extra map[string]any
 			if linkURL != "" {
 				extra = map[string]any{
@@ -344,36 +344,8 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 	}
 
 	// Onboarding intercept: runs before the integration setup checker so new
-	// users introduce themselves before being asked to connect any accounts.
+	// users are welcomed (once) before anything else, and what they wrote is still answered.
 	if h.onboardingChecker != nil && h.onboardingCompleter != nil && msg.Conversation.UserID != "" {
-		setupKey := msg.Conversation.IdentityID + ":" + msg.Conversation.ChatID
-
-		// Check pending: in-memory fast path first, then DB fallback so the
-		// state survives a server restart between prompt and reply.
-		_, inMemPending := h.pendingOnboardings.Load(setupKey)
-		dbPending := false
-		if !inMemPending && h.onboardingPromptedChecker != nil {
-			if p, err := h.onboardingPromptedChecker(ctx, msg.Conversation.UserID, msg.Conversation.IdentityID, msg.Conversation.ChatID); err == nil {
-				dbPending = p
-			} else {
-				log.Printf("runtime: agent %q: onboarding prompted checker: %v", hosted.Agent.ID, err)
-			}
-		}
-
-		if inMemPending || dbPending {
-			// User is replying to the onboarding prompt — save their intro.
-			h.pendingOnboardings.Delete(setupKey)
-			if err := h.onboardingCompleter(ctx,
-				msg.Conversation.IdentityID, msg.Conversation.ChatID,
-				hosted.Agent.ID, msg.Conversation.UserID, msg.Text,
-			); err != nil {
-				log.Printf("runtime: agent %q: onboarding completer: %v", hosted.Agent.ID, err)
-			}
-			ack := h.onboardingAck(ctx, hosted.Agent, hosted.Agent.LLMs, msg.Text)
-			h.deliverBestEffort(ctx, hosted, msg.Conversation, ack)
-			return
-		}
-
 		onboarded, err := h.onboardingChecker(ctx, msg.Conversation.UserID, msg.Conversation.IdentityID, msg.Conversation.ChatID)
 		if err != nil {
 			log.Printf("runtime: agent %q: onboarding checker: %v", hosted.Agent.ID, err)
@@ -385,7 +357,7 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 					pubSkills = append(pubSkills, s)
 				}
 			}
-			greeting := h.greetingBody(ctx, hosted.Agent, pubSkills, hosted.Agent.LLMs)
+			greeting := greetingBody(hosted.Agent, pubSkills)
 			if h.miniAppBaseURL != "" || h.settingsFlow != nil {
 				greeting += "\n\nType /settings to manage your preferences."
 			}
@@ -399,7 +371,7 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 				}
 			}
 			h.deliverBestEffort(ctx, hosted, msg.Conversation, greeting)
-			return
+			// The welcome is not the answer: carry on and handle what they wrote.
 		}
 	}
 
@@ -478,7 +450,13 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 						integrationName = name
 					}
 				}
-				text, buttonLabel := h.connectPrompt(ctx, hosted.Agent, hosted.Agent.LLMs, integrationName, "")
+				// Keep what they asked for: it is replayed the moment they connect.
+				h.pendingAuthTurns.Store(msg.Conversation.UserID+":"+identityID, pendingAuthTurn{
+					conv:        msg.Conversation,
+					agentID:     hosted.Agent.ID,
+					userMessage: msg.Text,
+				})
+				text, buttonLabel := connectPrompt(integrationName)
 				var extra map[string]any
 				if !isLocalhostURL(connectURL) {
 					extra = map[string]any{

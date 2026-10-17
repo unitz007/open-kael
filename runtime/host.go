@@ -304,19 +304,6 @@ type Host struct {
 	// messenger_channel. Called after the user types their onboarding reply.
 	onboardingCompleter func(ctx context.Context, identityID, channelRef, agentID, userID, instructions string) error
 
-	// pendingOnboardings tracks channels that have received the onboarding
-	// prompt and are waiting for the user's intro reply. Key is "identityID:chatID".
-	pendingOnboardings sync.Map
-
-	// onboardingPromptedChecker reports whether the onboarding prompt was sent
-	// but the user hasn't replied yet. userID is provided so implementations
-	// can short-circuit when the user is already onboarded on another channel.
-	onboardingPromptedChecker func(ctx context.Context, userID, identityID, channelRef string) (bool, error)
-
-	// onboardingPromptedMarker persists the fact that the onboarding prompt was
-	// sent, so pending state survives restarts.
-	onboardingPromptedMarker func(ctx context.Context, identityID, channelRef string) error
-
 	// emailLinkChecker reports whether the user already has a verified email.
 	emailLinkChecker func(ctx context.Context, userID string) (bool, error)
 
@@ -694,18 +681,6 @@ func (h *Host) SetOnboardingFlow(
 	h.onboardingCompleter = completer
 }
 
-// SetOnboardingPendingCallbacks registers callbacks that persist the
-// "onboarding prompt sent, awaiting reply" state to the database. When set,
-// the pending state survives server restarts: checker returns true when the
-// prompt was sent but onboarding is not yet complete; marker stamps that state.
-func (h *Host) SetOnboardingPendingCallbacks(
-	checker func(ctx context.Context, userID, identityID, channelRef string) (bool, error),
-	marker func(ctx context.Context, identityID, channelRef string) error,
-) {
-	h.onboardingPromptedChecker = checker
-	h.onboardingPromptedMarker = marker
-}
-
 // SetEmailLinkFlow registers the four callbacks that drive the optional
 // in-chat email-linking flow. When set, the host prompts users to share their
 // email address after onboarding completes; a verified email becomes the
@@ -817,7 +792,7 @@ func (h *Host) OnIntegrationConnected(ctx context.Context, userID, identityID st
 	if hosted == nil {
 		return
 	}
-	text := h.connectedMessage(ctx, hosted.Agent, hosted.Agent.LLMs, integrationName)
+	text := connectedMessage(integrationName)
 	conv := domain.ConversationRef{IdentityID: identityID}
 	for _, ref := range channelRefs {
 		conv.ChatID = ref
@@ -825,99 +800,23 @@ func (h *Host) OnIntegrationConnected(ctx context.Context, userID, identityID st
 	}
 }
 
-// connectedMessage generates a confirmation that the user has connected an
-// integration, using the LLM when available.
-func (h *Host) connectedMessage(ctx context.Context, agent *domain.Agent, llms []domain.LLM, integrationName string) string {
-	if len(llms) > 0 {
-		what := integrationName
-		if what == "" {
-			what = "the integration"
-		}
-		prompt := fmt.Sprintf(
-			"You are %s.", agent.Name,
-		)
-		if agent.Description != "" {
-			prompt += " " + agent.Description
-		}
-		prompt += fmt.Sprintf(
-			"\n\nThe user has just successfully connected their %s account. "+
-				"Write a short, warm confirmation (1-2 sentences) and invite them to try it out. "+
-				"Plain text only — no markdown.",
-			what,
-		)
-		msgs := []domain.Message{{Role: domain.RoleUser, Content: prompt}}
-		if resp, err := llms[0].Call(ctx, msgs, nil); err == nil && resp.Content != "" {
-			return resp.Content
-		} else if err != nil {
-			log.Printf("runtime: connected message LLM failed for agent %q: %v", agent.ID, err)
-		}
-	}
+// connectedMessage confirms that a person connected an account. It is fixed text:
+// what a person is told at each step of getting started never depends on a model.
+func connectedMessage(integrationName string) string {
 	if integrationName != "" {
 		return "Your " + integrationName + " account is now connected! Feel free to ask me anything."
 	}
 	return "You're all connected! Feel free to ask me anything."
 }
 
-// connectPrompt generates a friendly message asking the user to connect their
-// integration account, using the LLM when one is available.
-// toolName is the name of the tool that triggered the auth gate — when provided
-// the LLM prompt references the specific action so the message is contextual
-// rather than generic.
-// Returns (messageText, buttonLabel).
-func (h *Host) connectPrompt(ctx context.Context, agent *domain.Agent, llms []domain.LLM, integrationName, toolName string) (text, buttonLabel string) {
-	buttonLabel = "Connect " + integrationName + " account"
-	if len(llms) > 0 && integrationName != "" {
-		prompt := fmt.Sprintf("You are %s.", agent.Name)
-		if agent.Description != "" {
-			prompt += " " + agent.Description
-		}
-		if toolName != "" {
-			prompt += fmt.Sprintf(
-				"\n\nThe user just tried to use the \"%s\" tool, which requires their %s account. "+
-					"Write a short, friendly message (1-2 sentences) explaining what they were trying to do and asking them to tap the button below to connect their %s account. "+
-					"Plain text only — no markdown.",
-				toolName, integrationName, integrationName,
-			)
-		} else {
-			prompt += fmt.Sprintf(
-				"\n\nThe user needs to connect their %s account to continue. "+
-					"Write a short, friendly message (1-2 sentences) asking them to tap the button below to connect it. "+
-					"Plain text only — no markdown.",
-				integrationName,
-			)
-		}
-		msgs := []domain.Message{{Role: domain.RoleUser, Content: prompt}}
-		if resp, err := llms[0].Call(ctx, msgs, nil); err == nil && resp.Content != "" {
-			return resp.Content, buttonLabel
-		} else if err != nil {
-			log.Printf("runtime: connect prompt LLM failed for agent %q: %v", agent.ID, err)
-		}
-	}
-	fallback := "To use all features, tap below to connect your " + integrationName + " account."
+// connectPrompt is what a person is told when an account must be connected before
+// the agent can go on. It is fixed text, the same every time. Returns (messageText,
+// buttonLabel).
+func connectPrompt(integrationName string) (text, buttonLabel string) {
 	if integrationName == "" {
-		fallback = "To continue, tap below to connect the required account."
+		return "To continue, tap the button below to connect the account I need.", "Connect account"
 	}
-	return fallback, buttonLabel
-}
-
-// onboardingAck produces a warm acknowledgement of the user's intro text,
-// phrased by the LLM when one is available, with a plain fallback.
-func (h *Host) onboardingAck(ctx context.Context, agent *domain.Agent, llms []domain.LLM, userIntro string) string {
-	if len(llms) > 0 && strings.TrimSpace(userIntro) != "" {
-		prompt := fmt.Sprintf(
-			"The user just introduced themselves: %q\n\n"+
-				"Acknowledge what they shared in one warm, natural sentence, then invite them to ask their first question. "+
-				"Plain text only — no markdown.",
-			userIntro,
-		)
-		msgs := []domain.Message{{Role: domain.RoleUser, Content: prompt}}
-		if resp, err := llms[0].Call(ctx, msgs, nil); err == nil && resp.Content != "" {
-			return resp.Content
-		} else if err != nil {
-			log.Printf("runtime: onboarding ack LLM failed for agent %q: %v", agent.ID, err)
-		}
-	}
-	return "Thanks for sharing that! What can I help you with?"
+	return "To go ahead, I need you to connect your " + integrationName + " account. Tap the button below.", "Connect " + integrationName + " account"
 }
 
 // StopIdentityListeners cancels the listener goroutines for the given
@@ -1801,7 +1700,7 @@ func (h *Host) withUserToolApprovals(ctx context.Context, userID string) context
 // linkURL is non-empty when the URL is suitable for an inline keyboard button
 // (non-localhost); otherwise the URL is embedded in the text so local
 // development still works.
-func (h *Host) onboardingMessage(ctx context.Context, agent *domain.Agent, llms []domain.LLM, linkCode string) (text, linkURL string) {
+func (h *Host) onboardingMessage(agent *domain.Agent, linkCode string) (text, linkURL string) {
 	var publicSkills []*domain.Skill
 	for _, s := range agent.Skills {
 		if s.Visibility == domain.SkillPublic {
@@ -1809,7 +1708,7 @@ func (h *Host) onboardingMessage(ctx context.Context, agent *domain.Agent, llms 
 		}
 	}
 
-	body := h.greetingBody(ctx, agent, publicSkills, llms)
+	body := greetingBody(agent, publicSkills)
 
 	var b strings.Builder
 	b.WriteString(body)
@@ -1834,39 +1733,14 @@ func (h *Host) onboardingMessage(ctx context.Context, agent *domain.Agent, llms 
 	return
 }
 
-// greetingBody produces the conversational part of the onboarding message.
-// When agent.Greeting is set it is returned verbatim (deterministic path).
-// Otherwise an LLM composes a greeting, with a plain template as fallback.
-func (h *Host) greetingBody(ctx context.Context, agent *domain.Agent, publicSkills []*domain.Skill, llms []domain.LLM) string {
+// greetingBody is the first thing a new person is told. The creator's own greeting
+// is used word for word; without one, a fixed introduction is built from the agent's
+// name, description and public abilities. No model is involved, so every person gets
+// the same welcome.
+func greetingBody(agent *domain.Agent, publicSkills []*domain.Skill) string {
 	if agent.Greeting != "" {
 		return agent.Greeting
 	}
-	if len(llms) > 0 && len(publicSkills) > 0 {
-		var prompt strings.Builder
-		prompt.WriteString("You are " + agent.Name + ".")
-		if agent.Description != "" {
-			prompt.WriteString("\n\nBackground: " + agent.Description)
-		}
-		prompt.WriteString("\n\nYou can help users with:")
-		for _, s := range publicSkills {
-			prompt.WriteString("\n- " + skillDisplayName(s.Name))
-			if s.Description != "" {
-				prompt.WriteString(": " + s.Description)
-			}
-		}
-		prompt.WriteString("\n\nWrite a short, friendly greeting introducing yourself and what you can do. Introduce yourself by name only — do not mention the user's name. Plain text only — no markdown, no bullet points, no lists. Two to three sentences maximum.")
-
-		msgs := []domain.Message{{Role: domain.RoleUser, Content: prompt.String()}}
-		if resp, err := llms[0].Call(ctx, msgs, nil); err == nil && resp.Content != "" {
-			return resp.Content
-		} else if err != nil {
-			log.Printf("runtime: onboarding LLM greeting failed for agent %q: %v", agent.ID, err)
-		} else {
-			log.Printf("runtime: onboarding LLM greeting failed for agent %q: empty response", agent.ID)
-		}
-	}
-
-	// Template fallback.
 	var b strings.Builder
 	b.WriteString("👋 Hi! I'm " + agent.Name + ".")
 	if agent.Description != "" {
@@ -1977,8 +1851,7 @@ func (h *Host) resolveConnectRequester(ctx context.Context, hosted *HostedAgent,
 			}
 		}
 
-		toolName := domain.ConnectToolNameFromContext(ctx)
-		promptText, buttonLabel := h.connectPrompt(ctx, hosted.Agent, hosted.Agent.LLMs, integrationName, toolName)
+		promptText, buttonLabel := connectPrompt(integrationName)
 		var extra map[string]any
 		if url != "" && !isLocalhostURL(url) {
 			extra = map[string]any{
