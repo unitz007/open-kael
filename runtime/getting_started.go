@@ -148,3 +148,52 @@ func (h *Host) onlySaysHello(ctx context.Context, text string) bool {
 	}
 	return just
 }
+
+// WelcomeMessageStore remembers which message carries a person's "Get started" button,
+// so the button can be taken off once they are done.
+type WelcomeMessageStore interface {
+	SaveWelcomeMessage(ctx context.Context, identityID, channelRef, messageID string) error
+	// TakeWelcomeMessage returns the remembered message ID and forgets it ("" if none).
+	TakeWelcomeMessage(ctx context.Context, identityID, channelRef string) (string, error)
+}
+
+// SetWelcomeMessageStore turns on removing the "Get started" button once they are done.
+func (h *Host) SetWelcomeMessageStore(s WelcomeMessageStore) { h.welcomeMessageStore = s }
+
+// RemoveGettingStartedButton takes the "Get started" button off the person's welcome
+// message. Safe to call more than once and when there is no button: it only ever acts
+// on a message it remembers, and forgets it first. Best effort: a messenger that can't
+// remove buttons, or a message that is gone, is not an error worth stopping for.
+func (h *Host) RemoveGettingStartedButton(ctx context.Context, agentID, identityID, channelRef string) {
+	if h.welcomeMessageStore == nil {
+		return
+	}
+	messageID, err := h.welcomeMessageStore.TakeWelcomeMessage(ctx, identityID, channelRef)
+	if err != nil || messageID == "" {
+		if err != nil {
+			log.Printf("runtime: take welcome message %s/%s: %v", identityID, channelRef, err)
+		}
+		return
+	}
+	hosted, ok := h.Get(agentID)
+	if !ok {
+		return
+	}
+	conv := domain.ConversationRef{IdentityID: identityID, ChatID: channelRef}
+	identity, integration := resolveIdentityAndIntegration(hosted, conv)
+	if integration == nil {
+		return
+	}
+	executor, ok := hosted.Deps.Executors.For(integration.Service)
+	if !ok {
+		return
+	}
+	var connectionRef string
+	if identity != nil {
+		connectionRef, _ = domain.ConnectionRefFromContext(ctx, identity.ID)
+	}
+	if _, err := executor.Execute(ctx, identity, connectionRef, domain.ActionRemoveButtons,
+		map[string]any{"recipient": channelRef, "message_id": messageID}); err != nil {
+		log.Printf("runtime: remove welcome button %s/%s: %v", identityID, channelRef, err)
+	}
+}

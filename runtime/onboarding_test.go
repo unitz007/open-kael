@@ -406,3 +406,108 @@ func TestFirstMessage_StartAndLongMessagesNeverReachTheJudge(t *testing.T) {
 		t.Errorf("a long message is never just a hello, and isn't even asked about: %q, %d model, %d judge", got, llm2.n, len(judge2.calls))
 	}
 }
+
+// ── the Get started button goes once they are done ───────────────────────────
+
+type memWelcomeStore struct {
+	mu  sync.Mutex
+	ids map[string]string
+}
+
+func (m *memWelcomeStore) SaveWelcomeMessage(_ context.Context, identityID, channelRef, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.ids == nil {
+		m.ids = map[string]string{}
+	}
+	m.ids[identityID+"/"+channelRef] = id
+	return nil
+}
+func (m *memWelcomeStore) TakeWelcomeMessage(_ context.Context, identityID, channelRef string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	k := identityID + "/" + channelRef
+	id := m.ids[k]
+	delete(m.ids, k)
+	return id, nil
+}
+
+// telegramRig is a Telegram agent whose sends report a message ID, like the real thing.
+func telegramRig(t *testing.T, store runtime.WelcomeMessageStore) (*runtime.Host, *runtime.HostedAgent, *idOutbox) {
+	t.Helper()
+	box := &idOutbox{}
+	executors := domain.NewExecutorRegistry()
+	executors.Register("telegram", box)
+	deps := runtime.AgentDeps{
+		IdentitiesByID:   map[string]*domain.Identity{"id_tg": {ID: "id_tg", IntegrationID: "int_tg"}},
+		IntegrationsByID: map[string]*domain.Integration{"int_tg": {ID: "int_tg", Service: "telegram"}},
+		Executors:        executors,
+		Memory:           newMemMemory(),
+	}
+	agent := &domain.Agent{ID: "a1", Name: "Desk", Greeting: "Welcome!", LLMs: []domain.LLM{finishOnlyLLM("ok")}, MaxIterations: 3}
+	hosted := &runtime.HostedAgent{Agent: agent, Deps: deps}
+	host := runtime.NewHost()
+	host.Register(hosted)
+	host.SetMiniAppBaseURL("https://app.example")
+	host.SetUserChannelResolver(func(context.Context, string, string, string) (string, error) { return "u1", nil })
+	host.SetOnboardingFlow(
+		func(context.Context, string, string, string) (bool, error) { return false, nil },
+		func(context.Context, string, string, string, string, string) error { return nil },
+	)
+	if store != nil {
+		host.SetWelcomeMessageStore(store)
+	}
+	return host, hosted, box
+}
+
+type idOutbox struct {
+	mu      sync.Mutex
+	sent    []map[string]any
+	removed []map[string]any
+}
+
+func (o *idOutbox) Execute(_ context.Context, _ *domain.Identity, _ string, action string, input map[string]any) (any, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if action == domain.ActionRemoveButtons {
+		o.removed = append(o.removed, input)
+		return "ok", nil
+	}
+	o.sent = append(o.sent, input)
+	return map[string]any{"message_id": "77"}, nil
+}
+
+func TestGetStartedButton_IsTakenOffOnceTheyAreDone(t *testing.T) {
+	host, hosted, box := telegramRig(t, &memWelcomeStore{})
+	host.DispatchInbound(context.Background(), hosted, domain.InboundMessage{
+		Conversation: domain.ConversationRef{Provider: "telegram", ChatID: "C1", IdentityID: "id_tg"}, Text: "/start",
+	})
+	if len(box.sent) != 1 || box.sent[0]["web_app_button"] == nil {
+		t.Fatalf("the welcome carries the button: %v", box.sent)
+	}
+	if len(box.removed) != 0 {
+		t.Fatal("the button stays until they are done")
+	}
+
+	host.RemoveGettingStartedButton(context.Background(), "a1", "id_tg", "C1")
+	if len(box.removed) != 1 || box.removed[0]["message_id"] != "77" || box.removed[0]["recipient"] != "C1" {
+		t.Fatalf("the welcome message's button is removed: %v", box.removed)
+	}
+	// Done tapped again, or from another phone: nothing more to remove.
+	host.RemoveGettingStartedButton(context.Background(), "a1", "id_tg", "C1")
+	if len(box.removed) != 1 {
+		t.Errorf("only removed once: %v", box.removed)
+	}
+}
+
+func TestGetStartedButton_NothingToRemoveIsQuiet(t *testing.T) {
+	// No store, no welcome sent, an unknown agent: none of these may fail or send anything.
+	host, _, box := telegramRig(t, nil)
+	host.RemoveGettingStartedButton(context.Background(), "a1", "id_tg", "C1")
+	host2, _, box2 := telegramRig(t, &memWelcomeStore{})
+	host2.RemoveGettingStartedButton(context.Background(), "a1", "id_tg", "C1")
+	host2.RemoveGettingStartedButton(context.Background(), "nope", "id_tg", "C1")
+	if len(box.removed)+len(box2.removed) != 0 {
+		t.Errorf("nothing was sent, so nothing is removed: %v %v", box.removed, box2.removed)
+	}
+}

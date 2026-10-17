@@ -374,6 +374,10 @@ CREATE TABLE IF NOT EXISTS pending_turns (
     PRIMARY KEY (user_id, identity_id)
 );
 
+-- The welcome message that carries the "Get started" button, so the button can be taken
+-- off once they are done. Empty when there is none.
+ALTER TABLE messenger_channels ADD COLUMN IF NOT EXISTS welcome_message_id TEXT NOT NULL DEFAULT '';
+
 -- Cleanup: remove bot-kind identities that are no longer linked to any agent.
 -- These accumulate when an agent is deleted (old code left the identity row)
 -- or when agent creation fails after the identity was created.

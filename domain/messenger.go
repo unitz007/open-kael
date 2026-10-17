@@ -44,6 +44,11 @@ type StreamingMessenger interface {
 // not a replacement for them.
 const ActionSendMessage = "messenger.send_message"
 
+// ActionRemoveButtons asks a messenger to take the buttons off a message it already
+// sent, leaving the text. Input: "recipient" (the chat) and "message_id". A messenger
+// that can't do this simply doesn't implement the action.
+const ActionRemoveButtons = "messenger.remove_buttons"
+
 // SendMessageInputSchema is the canonical input contract for
 // ActionSendMessage, identical across every provider. recipient is
 // whatever identifier that provider uses to address a destination — a

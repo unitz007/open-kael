@@ -249,6 +249,9 @@ type Host struct {
 	// pendingTurnStore, when set, keeps held requests across restarts.
 	pendingTurnStore PendingTurnStore
 
+	// welcomeMessageStore remembers which message carries the Get started button.
+	welcomeMessageStore WelcomeMessageStore
+
 	// greetingJudge tells a bare hello from a real message (see GreetingJudge).
 	greetingJudge GreetingJudge
 

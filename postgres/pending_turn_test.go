@@ -87,3 +87,43 @@ func TestUserSettings_TimezoneAndName(t *testing.T) {
 		t.Errorf("unknown person: %v", err)
 	}
 }
+
+func TestWelcomeMessage_RememberedThenTakenOnce(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	if err := s.SaveUser(ctx, &domain.User{ID: "u_wm"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveIntegration(ctx, &domain.Integration{ID: "int_wm", Name: "Telegram", Service: "telegram"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveIdentity(ctx, &domain.Identity{ID: "id_wm", IntegrationID: "int_wm", Name: "Bot", Kind: "bot"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveMessengerChannel(ctx, &domain.MessengerChannel{ID: "mc_wm", IdentityID: "id_wm", UserID: "u_wm", ChannelRef: "555"}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.DeleteUser(ctx, "u_wm") })
+
+	if id, err := s.TakeWelcomeMessage(ctx, "id_wm", "555"); err != nil || id != "" {
+		t.Fatalf("nothing remembered yet: %q %v", id, err)
+	}
+	if err := s.SaveWelcomeMessage(ctx, "id_wm", "555", "9001"); err != nil {
+		t.Fatal(err)
+	}
+	if id, err := s.TakeWelcomeMessage(ctx, "id_wm", "555"); err != nil || id != "9001" {
+		t.Fatalf("remembered: %q %v", id, err)
+	}
+	if id, err := s.TakeWelcomeMessage(ctx, "id_wm", "555"); err != nil || id != "" {
+		t.Errorf("taken once only: %q %v", id, err)
+	}
+	if id, err := s.TakeWelcomeMessage(ctx, "id_wm", "no-such-chat"); err != nil || id != "" {
+		t.Errorf("an unknown chat is simply empty: %q %v", id, err)
+	}
+	// Saving the channel again (as the listener does) must not forget the remembered message.
+	_ = s.SaveWelcomeMessage(ctx, "id_wm", "555", "9002")
+	_ = s.SaveMessengerChannel(ctx, &domain.MessengerChannel{ID: "mc_wm", IdentityID: "id_wm", UserID: "u_wm", ChannelRef: "555"})
+	if id, _ := s.TakeWelcomeMessage(ctx, "id_wm", "555"); id != "9002" {
+		t.Errorf("re-saving the channel wiped the remembered message: %q", id)
+	}
+}

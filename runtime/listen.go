@@ -369,7 +369,12 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 				}
 			}
 			if btn != nil {
-				h.deliverBestEffort(ctx, hosted, msg.Conversation, greeting, btn)
+				id := h.deliverBestEffortID(ctx, hosted, msg.Conversation, greeting, btn)
+				if id != "" && h.welcomeMessageStore != nil {
+					if err := h.welcomeMessageStore.SaveWelcomeMessage(ctx, msg.Conversation.IdentityID, msg.Conversation.ChatID, id); err != nil {
+						log.Printf("runtime: agent %q: remember welcome message: %v", hosted.Agent.ID, err)
+					}
+				}
 			} else {
 				h.deliverBestEffort(ctx, hosted, msg.Conversation, greeting)
 			}

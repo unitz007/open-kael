@@ -83,3 +83,33 @@ func scanMessengerChannel(row pgx.Row) (*domain.MessengerChannel, error) {
 	}
 	return &ch, nil
 }
+
+// SaveWelcomeMessage remembers which message carries the "Get started" button.
+func (s *Store) SaveWelcomeMessage(ctx context.Context, identityID, channelRef, messageID string) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE messenger_channels SET welcome_message_id = $3 WHERE identity_id = $1 AND channel_ref = $2`,
+		identityID, channelRef, messageID)
+	return err
+}
+
+// TakeWelcomeMessage returns the remembered welcome message ID and forgets it, so the
+// button is only ever taken off once. Empty when there is none.
+func (s *Store) TakeWelcomeMessage(ctx context.Context, identityID, channelRef string) (string, error) {
+	var id string
+	err := s.pool.QueryRow(ctx, `
+		WITH old AS (
+			SELECT id, welcome_message_id FROM messenger_channels
+			WHERE identity_id = $1 AND channel_ref = $2 FOR UPDATE
+		), cleared AS (
+			UPDATE messenger_channels SET welcome_message_id = ''
+			WHERE id IN (SELECT id FROM old)
+		)
+		SELECT welcome_message_id FROM old`, identityID, channelRef).Scan(&id)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", nil
+		}
+		return "", err
+	}
+	return id, nil
+}
