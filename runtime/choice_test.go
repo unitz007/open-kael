@@ -141,9 +141,11 @@ type choosingExecutor struct {
 	err       error
 	asked     []string
 	askedOpts [][]string
+	timeouts  []int
 }
 
-func (c *choosingExecutor) RequestChoice(_ context.Context, _ domain.ConversationRef, q string, opts []string, _ int) (int, error) {
+func (c *choosingExecutor) RequestChoice(_ context.Context, _ domain.ConversationRef, q string, opts []string, timeoutSeconds int) (int, error) {
+	c.timeouts = append(c.timeouts, timeoutSeconds)
 	c.asked = append(c.asked, q)
 	c.askedOpts = append(c.askedOpts, opts)
 	return c.tap, c.err
@@ -174,6 +176,9 @@ func TestAskOptions_TheAgentAsksAndGetsTheOptionTheyChose(t *testing.T) {
 	}
 	if len(got) != 1 || !strings.Contains(got[0], "50,000") || !strings.Contains(got[0], "answered") || strings.Contains(got[0], "10,000") {
 		t.Errorf("the model sees the option they chose: %q", got)
+	}
+	if len(ex.timeouts) != 1 || ex.timeouts[0] != 120 {
+		t.Errorf("a question waits two minutes, not the ten an approval does: %v", ex.timeouts)
 	}
 	if !strings.Contains(strings.Join(llm.offers[0], ","), runtime.AskOptionsActionName) {
 		t.Errorf("the action is offered where the messenger can ask: %v", llm.offers[0])

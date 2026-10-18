@@ -27,6 +27,11 @@ const (
 	maxChoiceQuestion = 300
 	maxChoiceLabel    = 40
 	maxQuestionsAsked = 3 // per turn: a person is asked, not interrogated
+
+	// choiceTimeoutSeconds is how long a question waits for a tap. Short on purpose: an agent
+	// handles one message at a time, so while a question waits, whatever the person types instead
+	// (and every other person talking to the agent) queues behind it.
+	choiceTimeoutSeconds = 120
 )
 
 // TenantChoiceRequester is the identity-aware counterpart to domain.ChoiceRequester, like
@@ -182,7 +187,7 @@ func askOptionsAction(requester domain.ChoiceRequester) *domain.BoundAction {
 			if !ok {
 				return map[string]any{"answer": "", "status": "no_answer", "note": "There is no conversation to ask in. Ask in your own words."}, nil
 			}
-			idx, rerr := requester.RequestChoice(ctx, conv, question, options, 0)
+			idx, rerr := requester.RequestChoice(ctx, conv, question, options, choiceTimeoutSeconds)
 			if rerr != nil {
 				log.Printf("runtime: ask_options: %v", rerr)
 				return map[string]any{"answer": "", "status": "no_answer", "note": "The person did not answer. Carry on without it, or say you need it."}, nil
