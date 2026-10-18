@@ -965,17 +965,7 @@ func buildSystemPrompt(agent *domain.Agent, userProfile, userInstructions string
 	// The agent must always know when it is. Stated here, to the minute, rather than
 	// left to a tool the model may never call (routed turns don't offer one). In the
 	// person's own time zone when they have told us, otherwise in UTC.
-	personLines, loc := personContext(person)
-	b.WriteString(personLines)
-	now := clockNow().UTC()
-	if loc != nil {
-		local := now.In(loc)
-		fmt.Fprintf(&b, "\n\nRight now it is %s, %s (%s, the person's time zone); that is %s UTC. Use this for \"today\", \"tomorrow\", \"this week\" and anything about timing, and speak in their local time.",
-			local.Weekday(), local.Format("2 January 2006, 15:04"), loc.String(), now.Format("15:04"))
-	} else {
-		fmt.Fprintf(&b, "\n\nRight now it is %s, %s UTC. Use this for \"today\", \"tomorrow\", \"this week\" and anything about timing. You do not know the person's time zone unless they have told you; if their local time matters, ask rather than assume.",
-			now.Weekday(), now.Format("2 January 2006, 15:04"))
-	}
+	b.WriteString(domain.PersonNote(person, clockNow()))
 
 	if len(messengerSkills) > 0 {
 		fmt.Fprintf(&b, "\n\nYou have private %s capabilities for this conversation. Use them naturally — never list or describe them to users.",
@@ -1304,6 +1294,8 @@ func (h *Host) HandleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 			person = d
 		}
 	}
+	// Abilities run as their own loops: they must know who this is and when it is too.
+	ctx = domain.WithUserDetails(ctx, person)
 	messages = append(messages, domain.Message{Role: domain.RoleSystem, Content: buildSystemPrompt(hosted.Agent, userProfile, userInstructions, integrationNotes, promptIntegrations, messengerSkills, person)})
 	messages = append(messages, prior...)
 	messages = append(messages, domain.Message{Role: domain.RoleUser, Content: userText})
@@ -2006,6 +1998,13 @@ func (h *Host) RunScheduledSkillForUser(ctx context.Context, agentID, skillName,
 		ctx = h.withUserConnectionRefs(ctx, userID)
 	}
 	ctx = domain.WithConversation(ctx, conv)
+	// A scheduled run has no chat to carry the person's details, so load them: the time of
+	// day it reports on is theirs, not the server's.
+	if userID != "" && h.userDetailsLoader != nil {
+		if d, err := h.userDetailsLoader(ctx, userID); err == nil {
+			ctx = domain.WithUserDetails(ctx, d)
+		}
+	}
 
 	go func() {
 		defer recoverFromPanic(hosted.Agent.ID, "user-scheduled skill "+skillName)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 )
 
 // ActionSpec is what an LLM sees for one thing it can invoke. The same
@@ -45,6 +46,9 @@ type BoundAction struct {
 	Spec   ActionSpec
 	Invoke func(ctx context.Context, input map[string]any) (any, error)
 }
+
+// skillClock is the time source for an ability's instructions; tests replace it.
+var skillClock = time.Now
 
 // BindSkill turns a Skill plus its already-resolved Tools (bound via
 // ToolBinding -> ToolDefinition -> Executor, outside this function's
@@ -118,8 +122,10 @@ func BindSkill(agent *Agent, skill *Skill, tools []*BoundAction) *BoundAction {
 				return nil, fmt.Errorf("skill %q: encode input: %w", skill.Name, err)
 			}
 
+			// The ability's own conversation must know when it is and who it is working for,
+			// whether a person asked in chat or it was started by a schedule or an event.
 			messages := []Message{
-				{Role: RoleSystem, Content: skill.Instructions},
+				{Role: RoleSystem, Content: skill.Instructions + PersonNote(UserDetailsFromContext(ctx), skillClock())},
 				{Role: RoleUser, Content: string(inputJSON)},
 			}
 
