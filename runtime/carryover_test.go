@@ -296,3 +296,56 @@ func TestRepeatingTasksNote_ReachesTheAgentOnlyWhenThereAreSome(t *testing.T) {
 		t.Errorf("with none, nothing is added: %q", seen)
 	}
 }
+
+// ── when an action keeps failing, say the one thing that matters ─────────────
+
+type alwaysCalls struct{ name string }
+
+func (a alwaysCalls) Call(context.Context, []domain.Message, []domain.ActionSpec) (*domain.LLMResponse, error) {
+	return &domain.LLMResponse{ToolCalls: []domain.ToolCall{{ID: "1", Name: a.name, Arguments: map[string]any{}}}}, nil
+}
+
+type executeRouter struct{}
+
+func (executeRouter) PickSkill(context.Context, string, []*domain.Skill) (string, float64, domain.Intent, error) {
+	return "calendar", 1, domain.IntentExecute, nil
+}
+func (executeRouter) PickSkills(context.Context, string, []*domain.Skill) ([]string, domain.Intent, error) {
+	return []string{"calendar"}, domain.IntentExecute, nil
+}
+
+// "Add a weekly team meeting" failed three times at Google and the person was told only
+// "Sorry, I ran into an error". The facts are: it was tried, it didn't go through, and
+// nothing was changed.
+func TestAnActionThatKeepsFailing_TellsThePersonNothingWasChanged(t *testing.T) {
+	integ := &domain.Integration{ID: "int-cal", Service: "cal"}
+	tool := &domain.ToolDefinition{ID: "p", Name: "create_event", FunctionName: "create_event", Action: "p", IntegrationID: integ.ID}
+	skill := &domain.Skill{ID: "s1", Name: "calendar", Description: "Manages the calendar", AgentID: "a1", Integrations: []string{integ.ID}}
+	agent := &domain.Agent{ID: "a1", Name: "Desk", LLMs: []domain.LLM{alwaysCalls{"create_event"}}, MaxIterations: 10, Skills: []*domain.Skill{skill}}
+	box := &outbox{}
+	executors := domain.NewExecutorRegistry()
+	executors.Register("slack", box)
+	executors.Register("cal", failingExecutor{})
+	deps := slackDeps(func(d *runtime.AgentDeps) {
+		d.Executors = executors
+		d.Memory = newMemMemory()
+		d.ToolsByID = map[string]*domain.ToolDefinition{"p": tool}
+		d.IntegrationsByID[integ.ID] = integ
+	})
+	hosted := &runtime.HostedAgent{Agent: agent, Deps: deps}
+	host := runtime.NewHost()
+	host.SetSkillRouter(executeRouter{})
+	host.Register(hosted)
+
+	conv := domain.ConversationRef{Provider: "slack", ChatID: "C1", IdentityID: "id_slack", UserID: "u1"}
+	if _, err := host.HandleTurn(context.Background(), hosted, conv, "add a weekly team meeting every Monday at 10"); err != nil {
+		t.Fatal(err)
+	}
+	want := "I tried, but it didn't go through, so nothing was changed. Please try again in a moment."
+	if got := box.texts(); len(got) != 1 || got[0] != want {
+		t.Fatalf("reply:\n got %q\nwant %q", got, want)
+	}
+	if strings.Contains(box.texts()[0], "secret-detail") {
+		t.Error("the failure's internals must not reach the person")
+	}
+}

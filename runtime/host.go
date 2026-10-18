@@ -1338,6 +1338,10 @@ func (h *Host) HandleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 		// giveUp reasons are internal diagnostics — never surface raw loop
 		// internals to the user regardless of whether Content is set.
 		content = "Sorry, I ran into an error and couldn't finish handling that. Please try again."
+		if domain.ChangeFailed(result.Actions) {
+			// The one thing worth saying plainly: it was tried, it failed, nothing changed.
+			content = "I tried, but it didn't go through, so nothing was changed. Please try again in a moment."
+		}
 	case content != "":
 		// use as-is
 	case result.Status == domain.LoopStatusComplete:

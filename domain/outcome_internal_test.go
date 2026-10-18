@@ -46,3 +46,24 @@ func TestOneShotGuard_OnlyARealSuccessUsesUpTheShot(t *testing.T) {
 		t.Errorf("after a real success the action does not run again: %v (ran %d)", out, calls)
 	}
 }
+
+func TestChangeFailed(t *testing.T) {
+	read := ActionRecord{Name: "list", Changes: false, Done: false}
+	failed := ActionRecord{Name: "create", Changes: true, Done: false}
+	worked := ActionRecord{Name: "create", Changes: true, Done: true}
+	for name, tc := range map[string]struct {
+		in   []ActionRecord
+		want bool
+	}{
+		"nothing ran":        {nil, false},
+		"only a read failed": {[]ActionRecord{read}, false},
+		"a change failed":    {[]ActionRecord{read, failed}, true},
+		"failed twice":       {[]ActionRecord{failed, failed}, true},
+		"failed then worked": {[]ActionRecord{failed, worked}, false},
+		"worked":             {[]ActionRecord{worked}, false},
+	} {
+		if got := ChangeFailed(tc.in); got != tc.want {
+			t.Errorf("%s: got %v want %v", name, got, tc.want)
+		}
+	}
+}

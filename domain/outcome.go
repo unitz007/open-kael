@@ -225,3 +225,18 @@ func describeRecords(records []ActionRecord) string {
 	}
 	return strings.Join(parts, ", ")
 }
+
+// ChangeFailed reports whether the loop tried to change something and every attempt failed:
+// the one fact a person most needs when it gives up ("nothing was changed").
+func ChangeFailed(records []ActionRecord) bool {
+	tried := false
+	for _, r := range records {
+		if r.Changes {
+			if r.Done {
+				return false
+			}
+			tried = true
+		}
+	}
+	return tried
+}

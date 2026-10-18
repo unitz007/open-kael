@@ -117,7 +117,8 @@ func (l *NativeLoop) Run(ctx context.Context, messages []Message, actions []*Bou
 	bounces := 0
 
 	giveUp := func(reason string) (*LoopResult, []Message, error) {
-		return &LoopResult{Status: LoopStatusError, Content: reason}, messages, nil
+		log.Printf("loop: gave up (%s) — what ran: %s", reason, describeRecords(records))
+		return &LoopResult{Status: LoopStatusError, Content: reason, Actions: records}, messages, nil
 	}
 
 	for i := 0; l.MaxIterations == 0 || i < l.MaxIterations; i++ {
