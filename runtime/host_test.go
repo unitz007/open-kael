@@ -25,18 +25,27 @@ func (f *funcLLM) Call(_ context.Context, _ []domain.Message, _ []domain.ActionS
 // receives — enough to assert on ActionSendMessage delivery or a gated
 // tool actually running.
 type fakeExecutor struct {
-	calls []struct {
-		action string
-		input  map[string]any
-	}
+	mu  sync.Mutex // events and conversations run on their own goroutines
+	rec []fakeCall
+}
+
+type fakeCall struct {
+	action string
+	input  map[string]any
 }
 
 func (f *fakeExecutor) Execute(_ context.Context, _ *domain.Identity, _ string, action string, input map[string]any) (any, error) {
-	f.calls = append(f.calls, struct {
-		action string
-		input  map[string]any
-	}{action, input})
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.rec = append(f.rec, fakeCall{action, input})
 	return "ok", nil
+}
+
+// calls is a snapshot of what the executor has been asked to do so far.
+func (f *fakeExecutor) calls() []fakeCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]fakeCall(nil), f.rec...)
 }
 
 // approvingExecutor additionally implements domain.ApprovalRequester,
@@ -122,8 +131,8 @@ func TestHandleTurn_DeliversFinalAnswerAndPersistsMemory(t *testing.T) {
 		t.Fatalf("expected complete, got %s", result.Status)
 	}
 
-	if len(slackExec.calls) != 1 || slackExec.calls[0].action != domain.ActionSendMessage || slackExec.calls[0].input["text"] != "hello there" {
-		t.Fatalf("expected one ActionSendMessage delivering the final answer, got %+v", slackExec.calls)
+	if len(slackExec.calls()) != 1 || slackExec.calls()[0].action != domain.ActionSendMessage || slackExec.calls()[0].input["text"] != "hello there" {
+		t.Fatalf("expected one ActionSendMessage delivering the final answer, got %+v", slackExec.calls())
 	}
 
 	key := domain.ConversationKey{AgentID: "a1", ChatID: "C1"}
@@ -187,8 +196,8 @@ func TestHandleTurn_ApprovalGate_RefusesWithoutApprover(t *testing.T) {
 	if err != nil {
 		t.Fatalf("handle turn: %v", err)
 	}
-	if len(toolExec.calls) != 0 {
-		t.Fatalf("expected the gated tool NOT to run without an ApprovalRequester, but it ran: %+v", toolExec.calls)
+	if len(toolExec.calls()) != 0 {
+		t.Fatalf("expected the gated tool NOT to run without an ApprovalRequester, but it ran: %+v", toolExec.calls())
 	}
 }
 
@@ -221,7 +230,7 @@ func TestHandleTurn_ApprovalGate_RunsOnceApproved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("handle turn: %v", err)
 	}
-	if len(toolExec.calls) != 1 || toolExec.calls[0].action != "do_thing" {
-		t.Fatalf("expected the gated tool to run once approved, got %+v", toolExec.calls)
+	if len(toolExec.calls()) != 1 || toolExec.calls()[0].action != "do_thing" {
+		t.Fatalf("expected the gated tool to run once approved, got %+v", toolExec.calls())
 	}
 }

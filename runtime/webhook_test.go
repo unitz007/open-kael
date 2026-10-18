@@ -60,12 +60,12 @@ func waitForCalls(t *testing.T, exec *fakeExecutor, n int) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if len(exec.calls) >= n {
+		if len(exec.calls()) >= n {
 			return
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	t.Fatalf("timed out waiting for %d executor call(s), got %d: %+v", n, len(exec.calls), exec.calls)
+	t.Fatalf("timed out waiting for %d executor call(s), got %d: %+v", n, len(exec.calls()), exec.calls())
 }
 
 func TestRegisterEventSources_NotifiesConversationOnSuccess(t *testing.T) {
@@ -111,22 +111,22 @@ func TestRegisterEventSources_NotifiesConversationOnSuccess(t *testing.T) {
 	}
 
 	waitForCalls(t, toolExec, 1)
-	if toolExec.calls[0].input["trigger_input"] != `{"action":"opened","number":1}` {
-		t.Fatalf("expected the tool to receive the event payload, got %+v", toolExec.calls[0].input)
+	if toolExec.calls()[0].input["trigger_input"] != `{"action":"opened","number":1}` {
+		t.Fatalf("expected the tool to receive the event payload, got %+v", toolExec.calls()[0].input)
 	}
-	if toolExec.calls[0].input["notify_conversation"] != *notify {
-		t.Fatalf("expected the tool to see where its result will be posted, got %+v", toolExec.calls[0].input)
+	if toolExec.calls()[0].input["notify_conversation"] != *notify {
+		t.Fatalf("expected the tool to see where its result will be posted, got %+v", toolExec.calls()[0].input)
 	}
 
 	waitForCalls(t, teamsExec, 1)
-	if teamsExec.calls[0].action != domain.ActionSendMessage {
-		t.Fatalf("expected a send-message notification, got action %q", teamsExec.calls[0].action)
+	if teamsExec.calls()[0].action != domain.ActionSendMessage {
+		t.Fatalf("expected a send-message notification, got action %q", teamsExec.calls()[0].action)
 	}
-	if teamsExec.calls[0].input["recipient"] != "channel-1" {
-		t.Fatalf("expected notification to target the configured channel, got %+v", teamsExec.calls[0].input)
+	if teamsExec.calls()[0].input["recipient"] != "channel-1" {
+		t.Fatalf("expected notification to target the configured channel, got %+v", teamsExec.calls()[0].input)
 	}
-	if teamsExec.calls[0].input["text"] != "ok" {
-		t.Fatalf("expected the tool's result text forwarded verbatim, got %+v", teamsExec.calls[0].input)
+	if teamsExec.calls()[0].input["text"] != "ok" {
+		t.Fatalf("expected the tool's result text forwarded verbatim, got %+v", teamsExec.calls()[0].input)
 	}
 }
 
@@ -164,8 +164,8 @@ func TestRegisterEventSources_NoNotifyConversation_NeverCallsDelivery(t *testing
 
 	waitForCalls(t, toolExec, 1)
 	time.Sleep(50 * time.Millisecond)
-	if len(teamsExec.calls) != 0 {
-		t.Fatalf("expected no notification when Trigger.NotifyConversation is nil, got %+v", teamsExec.calls)
+	if len(teamsExec.calls()) != 0 {
+		t.Fatalf("expected no notification when Trigger.NotifyConversation is nil, got %+v", teamsExec.calls())
 	}
 }
 
@@ -195,8 +195,8 @@ func TestEmit_InternalEvent_TriggersSubscribedSkill(t *testing.T) {
 	host.Emit(t.Context(), "user.channel.connected", `{"user_id":"u1","channel":"C123"}`)
 
 	waitForCalls(t, toolExec, 1)
-	if toolExec.calls[0].input["trigger_input"] != `{"user_id":"u1","channel":"C123"}` {
-		t.Fatalf("expected payload forwarded to tool, got %+v", toolExec.calls[0].input)
+	if toolExec.calls()[0].input["trigger_input"] != `{"user_id":"u1","channel":"C123"}` {
+		t.Fatalf("expected payload forwarded to tool, got %+v", toolExec.calls()[0].input)
 	}
 }
 

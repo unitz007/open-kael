@@ -82,8 +82,8 @@ func TestBoot_WiresDelegationAndTurnHandling(t *testing.T) {
 	if result.Status != domain.LoopStatusComplete {
 		t.Fatalf("expected complete, got %s", result.Status)
 	}
-	if len(slackExec.calls) != 1 || slackExec.calls[0].action != domain.ActionSendMessage {
-		t.Fatalf("expected the turn's reply to be delivered via the slack executor, got %+v", slackExec.calls)
+	if len(slackExec.calls()) != 1 || slackExec.calls()[0].action != domain.ActionSendMessage {
+		t.Fatalf("expected the turn's reply to be delivered via the slack executor, got %+v", slackExec.calls())
 	}
 }
 

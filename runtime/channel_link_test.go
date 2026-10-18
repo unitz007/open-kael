@@ -52,8 +52,8 @@ func TestChannelRedeemer_ValidCode_EmitsEventSkipsHandleTurn(t *testing.T) {
 	if !redeemed {
 		t.Fatal("expected channel redeemer to be called")
 	}
-	if toolExec.calls[0].input["trigger_input"] == nil {
-		t.Fatalf("expected event payload in trigger_input, got %+v", toolExec.calls[0].input)
+	if toolExec.calls()[0].input["trigger_input"] == nil {
+		t.Fatalf("expected event payload in trigger_input, got %+v", toolExec.calls()[0].input)
 	}
 }
 
