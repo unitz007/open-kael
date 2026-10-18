@@ -1238,6 +1238,9 @@ func (h *Host) HandleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 	if requester, ok := resolveApprovalRequester(hosted, conv); ok {
 		ctx = domain.WithApprovalRequester(ctx, requester)
 	}
+	if cr, ok := resolveChoiceRequester(hosted, conv); ok {
+		ctx = domain.WithChoiceRequester(ctx, cr)
+	}
 	if cr := h.resolveConnectRequester(ctx, hosted, conv, conv.UserID); cr != nil {
 		ctx = domain.WithConnectRequester(ctx, cr)
 	}
@@ -1296,6 +1299,13 @@ func (h *Host) HandleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 			messengerSkillActions = skillActions
 			actions = append(actions, skillActions...)
 		}
+	}
+	// Where the messenger can show buttons, the agent may put a short multiple-choice question
+	// to the person. It is offered alongside the other conversation actions.
+	if cr, ok := domain.ChoiceRequesterFromContext(ctx); ok {
+		ask := askOptionsAction(cr)
+		actions = append(actions, ask)
+		messengerSkillActions = append(messengerSkillActions, ask)
 	}
 
 	promptIntegrations := hosted.integrations()

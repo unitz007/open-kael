@@ -59,6 +59,7 @@ type ctxKey int
 const (
 	conversationCtxKey ctxKey = iota
 	approvalRequesterCtxKey
+	choiceRequesterCtxKey
 	connectRequesterCtxKey
 	originalMessageCtxKey
 )
@@ -86,6 +87,28 @@ func ConversationFromContext(ctx context.Context) (ConversationRef, bool) {
 // RequiresApproval tool fails outright, never a silent unapproved run.
 type ApprovalRequester interface {
 	RequestApproval(ctx context.Context, conv ConversationRef, prompt string, timeoutSeconds int) (approved bool, err error)
+}
+
+// ChoiceRequester is what a runtime host attaches to ctx so the agent can put a short
+// multiple-choice question to the person and wait for their pick, with buttons in messengers
+// that have them. It returns the position of the option they chose in options, or
+// len(options) when they chose "something else" (see ChoiceOther). A person who doesn't answer
+// within the timeout is an error, never a guess.
+type ChoiceRequester interface {
+	RequestChoice(ctx context.Context, conv ConversationRef, question string, options []string, timeoutSeconds int) (index int, err error)
+}
+
+// ChoiceOtherLabel is the extra last button every question carries, for a person whose answer
+// is none of the offered ones. Picking it returns index len(options).
+const ChoiceOtherLabel = "Something else"
+
+func WithChoiceRequester(ctx context.Context, r ChoiceRequester) context.Context {
+	return context.WithValue(ctx, choiceRequesterCtxKey, r)
+}
+
+func ChoiceRequesterFromContext(ctx context.Context) (ChoiceRequester, bool) {
+	r, ok := ctx.Value(choiceRequesterCtxKey).(ChoiceRequester)
+	return r, ok
 }
 
 func WithApprovalRequester(ctx context.Context, r ApprovalRequester) context.Context {
@@ -157,4 +180,11 @@ type InteractiveMessenger interface {
 	// UpdateMessage overwrites messageID's text in place — used to show
 	// the final approved/rejected/timed-out state.
 	UpdateMessage(ctx context.Context, identity *Identity, connectionRef string, conv ConversationRef, messageID string, text string) error
+}
+
+// ChoiceMessenger is the optional extension of InteractiveMessenger for messengers that can
+// show a question with one button per option. options already includes the final "something
+// else" button. A button tap is reported back with the same token and the option's position.
+type ChoiceMessenger interface {
+	PostChoicePrompt(ctx context.Context, identity *Identity, connectionRef string, conv ConversationRef, text string, options []string, token string) (messageID string, err error)
 }
