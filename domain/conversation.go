@@ -60,6 +60,7 @@ const (
 	conversationCtxKey ctxKey = iota
 	approvalRequesterCtxKey
 	choiceRequesterCtxKey
+	unattendedCtxKey
 	connectRequesterCtxKey
 	originalMessageCtxKey
 )
@@ -119,6 +120,19 @@ type ChoiceSuperseder interface {
 // ChoiceOtherLabel is the extra last button every question carries, for a person whose answer
 // is none of the offered ones. Picking it returns index len(options).
 const ChoiceOtherLabel = "Something else"
+
+// WithUnattended marks a turn that runs with nobody there: a repeating task the person set up,
+// firing at its time. Such a turn can look things up and report, but never change anything, can't
+// ask the person anything and has no approval to wait for. The router enforces it.
+func WithUnattended(ctx context.Context) context.Context {
+	return context.WithValue(ctx, unattendedCtxKey, true)
+}
+
+// IsUnattended reports whether ctx belongs to an unattended turn.
+func IsUnattended(ctx context.Context) bool {
+	v, _ := ctx.Value(unattendedCtxKey).(bool)
+	return v
+}
 
 func WithChoiceRequester(ctx context.Context, r ChoiceRequester) context.Context {
 	return context.WithValue(ctx, choiceRequesterCtxKey, r)

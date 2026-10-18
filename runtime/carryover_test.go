@@ -188,26 +188,20 @@ func TestIntentHandler_ItsReplyIsKeptInTheConversationAndSentOnce(t *testing.T) 
 }
 
 func TestScheduledRun_AFailureSaysWhatItWasInPlainWordsAndNothingElse(t *testing.T) {
-	integ := &domain.Integration{ID: "int-tool", Service: "tool"}
-	t1 := &domain.ToolDefinition{ID: "t1", Name: "one", IntegrationID: integ.ID, Action: "one"}
-	skill := &domain.Skill{ID: "s1", Name: "morning_summary", Description: "Summarises my day", AgentID: "a1", Tools: []domain.ToolBinding{{ToolID: "t1"}}}
-	agent := &domain.Agent{ID: "a1", Name: "Desk", Skills: []*domain.Skill{skill}}
+	llm := &funcLLM{call: func(int) (*domain.LLMResponse, error) {
+		return nil, errors.New("secret-detail: connection refused to 10.0.0.1")
+	}}
+	agent := &domain.Agent{ID: "a1", Name: "Desk", LLMs: []domain.LLM{llm}, MaxIterations: 3}
 	box := &outbox{}
 	executors := domain.NewExecutorRegistry()
-	executors.Register("tool", failingExecutor{})
 	executors.Register("slack", box)
-	deps := slackDeps(func(d *runtime.AgentDeps) {
-		d.Executors = executors
-		d.ToolsByID = map[string]*domain.ToolDefinition{"t1": t1}
-		d.IntegrationsByID[integ.ID] = integ
-	})
 	host := runtime.NewHost()
-	host.Register(&runtime.HostedAgent{Agent: agent, Deps: deps})
-	if err := host.RunScheduledSkillForUser(context.Background(), "a1", "morning_summary", "u1", "id_slack", "C1"); err != nil {
+	host.Register(&runtime.HostedAgent{Agent: agent, Deps: slackDeps(func(d *runtime.AgentDeps) { d.Executors = executors })})
+	if err := host.RunScheduledTask(context.Background(), "a1", "u1", "id_slack", "C1", "check my calendar and send me a summary"); err != nil {
 		t.Fatal(err)
 	}
 	got := waitTexts(box, 1)
-	want := "I couldn't finish your scheduled task just now (Summarises my day). I'll try again next time."
+	want := "I couldn't finish your repeating task just now. I'll try again next time."
 	if len(got) != 1 || got[0] != want {
 		t.Fatalf("failure message:\n got %q\nwant %q", got, want)
 	}

@@ -1225,6 +1225,9 @@ func resolveIdentityAndIntegration(hosted *HostedAgent, conv domain.Conversation
 	return nil, nil
 }
 
+// unattendedFailure is what the person is told when a repeating task could not be finished.
+const unattendedFailure = "I couldn't finish your repeating task just now. I'll try again next time."
+
 // HandleTurn runs one full conversational turn for hosted — the runtime
 // host's equivalent of kael-platform's Agent.RunLoop: load memory, build
 // messages, run the agent's Loop over every action it can currently reach,
@@ -1241,14 +1244,18 @@ func (h *Host) HandleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 		ctx = h.withUserToolApprovals(ctx, conv.UserID)
 	}
 	ctx = domain.WithConversation(ctx, conv)
-	if requester, ok := resolveApprovalRequester(hosted, conv); ok {
-		ctx = domain.WithApprovalRequester(ctx, requester)
-	}
-	if cr, ok := resolveChoiceRequester(hosted, conv); ok {
-		ctx = domain.WithChoiceRequester(ctx, cr)
-	}
-	if cr := h.resolveConnectRequester(ctx, hosted, conv, conv.UserID); cr != nil {
-		ctx = domain.WithConnectRequester(ctx, cr)
+	unattended := domain.IsUnattended(ctx)
+	if !unattended {
+		// With nobody there there is no one to approve, answer a question or sign in.
+		if requester, ok := resolveApprovalRequester(hosted, conv); ok {
+			ctx = domain.WithApprovalRequester(ctx, requester)
+		}
+		if cr, ok := resolveChoiceRequester(hosted, conv); ok {
+			ctx = domain.WithChoiceRequester(ctx, cr)
+		}
+		if cr := h.resolveConnectRequester(ctx, hosted, conv, conv.UserID); cr != nil {
+			ctx = domain.WithConnectRequester(ctx, cr)
+		}
 	}
 
 	// Resolve executor early for streaming delivery.
@@ -1348,17 +1355,26 @@ func (h *Host) HandleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 		result, final, err = loop.Run(ctx, messages, actions)
 	}
 
-	if hosted.Deps.Memory != nil && len(final) >= 1+len(prior) {
+	// An unattended turn keeps only its reply: the "message" was the stored task, not something
+	// the person wrote, so it doesn't belong in their conversation (their follow-up questions
+	// still have the reply to refer to).
+	if !unattended && hosted.Deps.Memory != nil && len(final) >= 1+len(prior) {
 		hosted.Deps.Memory.Append(ctx, convKey, final[1+len(prior):]...)
 	}
 
 	if err != nil {
-		h.deliverBestEffort(ctx, hosted, conv, "Sorry, I ran into an error and couldn't finish handling that. Please try again.")
+		if unattended {
+			h.deliverBestEffort(ctx, hosted, conv, unattendedFailure)
+		} else {
+			h.deliverBestEffort(ctx, hosted, conv, "Sorry, I ran into an error and couldn't finish handling that. Please try again.")
+		}
 		return result, err
 	}
 
 	content := result.Content
 	switch {
+	case result.Status == domain.LoopStatusError && unattended:
+		content = unattendedFailure
 	case result.Status == domain.LoopStatusError:
 		// giveUp reasons are internal diagnostics — never surface raw loop
 		// internals to the user regardless of whether Content is set.
@@ -1380,6 +1396,10 @@ func (h *Host) HandleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 		content = "Sorry, I ran into an error and couldn't finish handling that. Please try again."
 	}
 
+	if unattended && hosted.Deps.Memory != nil {
+		hosted.Deps.Memory.Append(ctx, convKey, domain.Message{Role: domain.RoleAssistant, Content: content})
+	}
+
 	// Deliver via streaming if the executor supports it, else fall back
 	// to a single atomic send.
 	if executor != nil {
@@ -1390,13 +1410,17 @@ func (h *Host) HandleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 				log.Printf("runtime: agent %q: stream reply failed, falling back: %v", hosted.Agent.ID, serr)
 				h.deliverBestEffort(ctx, hosted, conv, content)
 			}
-			h.maybeExtractProfile(conv.UserID, hosted.Agent.ID, userText, content, userProfile, integrationNotes, hosted)
+			if !unattended {
+				h.maybeExtractProfile(conv.UserID, hosted.Agent.ID, userText, content, userProfile, integrationNotes, hosted)
+			}
 			return result, nil
 		}
 		log.Printf("runtime: agent %q: executor does not implement StreamingMessenger, using atomic send", hosted.Agent.ID)
 	}
 	h.deliverBestEffort(ctx, hosted, conv, content)
-	h.maybeExtractProfile(conv.UserID, hosted.Agent.ID, userText, content, userProfile, integrationNotes, hosted)
+	if !unattended {
+		h.maybeExtractProfile(conv.UserID, hosted.Agent.ID, userText, content, userProfile, integrationNotes, hosted)
+	}
 
 	return result, nil
 }
@@ -1568,6 +1592,13 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 	}
 	if !classified {
 		intent = pickedIntent // no separate classifier: the picker's own reading stands
+	}
+	// Nobody is there to approve a change and nobody asked for it at this moment: an unattended turn
+	// (a repeating task) reads and reports, whatever the stored words sound like. It is also never
+	// the place to set up another repeating task.
+	if domain.IsUnattended(ctx) && (intent == domain.IntentExecute || intent == domain.IntentSchedule) {
+		log.Printf("skill-router: unattended — %q is carried out as a look-up only", intent)
+		intent = domain.IntentRecommend
 	}
 
 	log.Printf("skill-router: skills=%v intent=%q", skillNames, intent)
@@ -2117,65 +2148,38 @@ func (h *Host) deliverBestEffortID(ctx context.Context, hosted *HostedAgent, con
 	return ""
 }
 
-// RunScheduledSkillForUser runs skillName headlessly on behalf of userID,
-// delivering the output to the user's (identityID, channelRef). This is the
-// trigger path for user-created schedules (as opposed to creator-defined cron
-// triggers). It launches in a background goroutine and returns immediately.
-func (h *Host) RunScheduledSkillForUser(ctx context.Context, agentID, skillName, userID, identityID, channelRef string) error {
+// RunScheduledTask carries out a repeating task the person set up: task is what they asked for
+// ("check my calendar and send me a summary"), run now as if they had just written it, with
+// everything a normal message gets (their details, the right capability, the agent's rules) except
+// that nobody is there: it can look things up and report, never change anything, ask a question or
+// wait for an approval (see domain.WithUnattended). The reply goes to (identityID, channelRef).
+// It runs in the background and returns at once.
+func (h *Host) RunScheduledTask(ctx context.Context, agentID, userID, identityID, channelRef, task string) error {
 	h.mu.RLock()
 	hosted, ok := h.agents[agentID]
 	h.mu.RUnlock()
 	if !ok {
-		return fmt.Errorf("RunScheduledSkillForUser: agent %q not registered", agentID)
+		return fmt.Errorf("RunScheduledTask: agent %q not registered", agentID)
 	}
-
-	var skill *domain.Skill
-	for _, s := range hosted.Agent.Skills {
-		if s.Name == skillName {
-			skill = s
-			break
-		}
+	task = strings.TrimSpace(task)
+	if task == "" {
+		return fmt.Errorf("RunScheduledTask: no task to run")
 	}
-	if skill == nil {
-		return fmt.Errorf("RunScheduledSkillForUser: skill %q not in agent %q", skillName, agentID)
+	conv := domain.ConversationRef{IdentityID: identityID, ChatID: channelRef, UserID: userID, SenderID: channelRef}
+	if identity, integration := resolveIdentityAndIntegration(hosted, conv); identity != nil && integration != nil {
+		conv.Provider = integration.Service
 	}
-
-	conv := domain.ConversationRef{
-		IdentityID: identityID,
-		ChatID:     channelRef,
-		UserID:     userID,
-	}
-
-	// Inject user connection refs so tools can act with the user's credentials.
-	if userID != "" && h.userConnectionRefLoader != nil {
-		ctx = h.withUserConnectionRefs(ctx, userID)
-	}
-	ctx = domain.WithConversation(ctx, conv)
-	// A scheduled run has no chat to carry the person's details, so load them: the time of
-	// day it reports on is theirs, not the server's.
-	if userID != "" && h.userDetailsLoader != nil {
-		if d, err := h.userDetailsLoader(ctx, userID); err == nil {
-			ctx = domain.WithUserDetails(ctx, d)
-		}
-	}
+	ctx = domain.WithUnattended(ctx)
 
 	go func() {
-		defer recoverFromPanic(hosted.Agent.ID, "user-scheduled skill "+skillName)
-		tools, err := h.hydrate(hosted, skill)
-		if err != nil {
-			log.Printf("runtime: user-scheduled skill %q agent %q user %q: hydrate: %v", skillName, agentID, userID, err)
+		defer recoverFromPanic(hosted.Agent.ID, "repeating task")
+		// HandleTurn loads the person's connections and details like any turn, and tells them
+		// plainly if it couldn't finish.
+		if _, err := h.HandleTurn(ctx, hosted, conv, task); err != nil {
+			log.Printf("runtime: repeating task agent %q user %q: %v", agentID, userID, err)
 			return
 		}
-		action := domain.BindSkill(hosted.Agent, skill, tools)
-		output, err := action.Invoke(ctx, map[string]any{})
-		if err != nil {
-			log.Printf("runtime: user-scheduled skill %q agent %q user %q: failed: %v", skillName, agentID, userID, err)
-			// The reason is for the logs, not for the person.
-			h.deliverBestEffort(ctx, hosted, conv, fmt.Sprintf("I couldn't finish your scheduled task just now (%s). I'll try again next time.", domain.SkillLabel(skill)))
-			return
-		}
-		log.Printf("runtime: user-scheduled skill %q agent %q user %q: finished", skillName, agentID, userID)
-		h.deliverBestEffort(ctx, hosted, conv, stringifyOutput(output))
+		log.Printf("runtime: repeating task agent %q user %q: finished", agentID, userID)
 	}()
 	return nil
 }

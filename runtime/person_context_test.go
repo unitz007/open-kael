@@ -39,39 +39,27 @@ func (s *systemCapture) Run(_ context.Context, messages []domain.Message, _ []*d
 
 var ada = domain.UserDetails{Name: "Ada", Timezone: "Africa/Lagos", Language: "fr", Country: "NG"}
 
-// A schedule has no chat to carry the person, so the host loads them: the morning a daily
+// A repeating task has no chat to carry the person, so the turn loads them: the morning a daily
 // summary reports on is theirs, not the server's.
-func TestScheduledRun_TheAbilityKnowsWhoItIsFor(t *testing.T) {
+func TestScheduledRun_TheTaskKnowsWhoItIsFor(t *testing.T) {
 	cap := &systemCapture{system: make(chan string, 2)}
-	integ := &domain.Integration{ID: "int-tool", Service: "tool"}
-	t1 := &domain.ToolDefinition{ID: "t1", Name: "one", IntegrationID: integ.ID, Action: "one"}
-	t2 := &domain.ToolDefinition{ID: "t2", Name: "two", IntegrationID: integ.ID, Action: "two"}
-	skill := &domain.Skill{ID: "s1", Name: "morning_summary", AgentID: "a1", Instructions: "Summarise my day.",
-		Tools: []domain.ToolBinding{{ToolID: "t1"}, {ToolID: "t2"}}}
-	agent := &domain.Agent{ID: "a1", Name: "Desk", Skills: []*domain.Skill{skill}, Loop: cap}
-
+	agent := &domain.Agent{ID: "a1", Name: "Desk", Loop: cap}
 	executors := domain.NewExecutorRegistry()
-	executors.Register("tool", &fakeExecutor{})
 	executors.Register("slack", &outbox{})
-	deps := slackDeps(func(d *runtime.AgentDeps) {
-		d.Executors = executors
-		d.ToolsByID = map[string]*domain.ToolDefinition{"t1": t1, "t2": t2}
-		d.IntegrationsByID[integ.ID] = integ
-	})
 	host := runtime.NewHost()
-	host.Register(&runtime.HostedAgent{Agent: agent, Deps: deps})
+	host.Register(&runtime.HostedAgent{Agent: agent, Deps: slackDeps(func(d *runtime.AgentDeps) { d.Executors = executors })})
 	host.SetUserDetailsLoader(func(context.Context, string) (domain.UserDetails, error) { return ada, nil })
 
-	if err := host.RunScheduledSkillForUser(context.Background(), "a1", "morning_summary", "u1", "id_slack", "C1"); err != nil {
+	if err := host.RunScheduledTask(context.Background(), "a1", "u1", "id_slack", "C1", "summarise my day"); err != nil {
 		t.Fatal(err)
 	}
 	select {
 	case got := <-cap.system:
-		if !strings.HasPrefix(got, "Summarise my day.") || !strings.Contains(got, `called "Ada"`) || !strings.Contains(got, "Africa/Lagos") || !strings.Contains(got, "preferred language is French") {
-			t.Errorf("a scheduled run must know the person and their time zone: %q", got)
+		if !strings.Contains(got, `called "Ada"`) || !strings.Contains(got, "Africa/Lagos") || !strings.Contains(got, "preferred language is French") {
+			t.Errorf("a repeating task must know the person and their time zone: %q", got)
 		}
 	case <-time.After(3 * time.Second):
-		t.Fatal("the scheduled ability never ran")
+		t.Fatal("the task never ran")
 	}
 }
 
