@@ -205,7 +205,7 @@ func askOptionsAction(requester domain.ChoiceRequester) *domain.BoundAction {
 			Description: "Ask the person to pick one of a few options, shown as buttons, and wait for their tap. " +
 				"Use it when you need their decision and there are 2 to 6 short, distinct choices (for example which of several matches they meant, or a size to go with). " +
 				"Do not use it for something they already told you, for a name or number they can simply type, or to confirm an action that already asks for approval. " +
-				"Ask one question at a time. The result is the option they chose; if they chose 'Something else' or did not answer, say so and ask in your own words.",
+				"Ask one question at a time and never the same question twice: once they have answered, use the answer. The result is the option they chose; if they chose 'Something else' or did not answer, say so and ask in your own words.",
 			MaxCalls: maxQuestionsAsked,
 			InputSchema: domain.Schema{
 				Type: domain.SchemaTypeObject,
