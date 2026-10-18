@@ -230,13 +230,3 @@ func TestDeclineText_IsFixedAndListsWhatTheAgentDoes(t *testing.T) {
 		t.Errorf("decline:\n got %q\nwant %q", got, want)
 	}
 }
-
-func TestHelloText_WithAndWithoutAName(t *testing.T) {
-	agent := &domain.Agent{Skills: []*domain.Skill{{Name: "x", Description: "Does x"}}}
-	if got := helloText(agent, ""); got != "Hi! 👋 Here's what I can help with:\n• Does x\n\nWhat would you like to do?" {
-		t.Errorf("no name: %q", got)
-	}
-	if got := helloText(&domain.Agent{}, " Ada "); got != "Hi Ada! 👋" {
-		t.Errorf("no abilities, name trimmed: %q", got)
-	}
-}

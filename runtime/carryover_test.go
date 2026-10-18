@@ -222,30 +222,50 @@ func (failingExecutor) Execute(context.Context, *domain.Identity, string, string
 	return nil, errors.New("secret-detail: connection refused to 10.0.0.1")
 }
 
-// A plain hello matches no ability but is not "out of scope": it is greeted, by name when we
-// know it, with the same fixed list; unrelated messages still get the decline.
-func TestOutOfScope_AHelloIsGreetedNotDeclined(t *testing.T) {
-	router := &followRouter{}
-	r := newFollowRig(t, router)
-	judge := &fakeJudge{just: true}
-	r.host.SetGreetingJudge(judge)
-	r.host.SetUserDetailsLoader(func(context.Context, string) (domain.UserDetails, error) {
-		return domain.UserDetails{Name: "Dinneya"}, nil
-	})
+// A message that is only being friendly (hello, thanks, goodbye) is its own kind of intent:
+// the model answers warmly in the person's language with no tools, whatever abilities the
+// words happened to resemble, and the instruction that shaped the reply is not kept.
+type chatRouter struct{}
 
-	r.say(t, "C1", "Hi")
-	want := "Hi Dinneya! 👋 Here's what I can help with:\n• Analyses a currency pair\n\nWhat would you like to do?"
-	if got := r.box.texts(); len(got) != 1 || got[0] != want {
-		t.Fatalf("hello:\n got %q\nwant %q", got, want)
-	}
-	if r.spy.calls() != 0 {
-		t.Errorf("no model greets: %d calls", r.spy.calls())
-	}
+func (chatRouter) PickSkill(context.Context, string, []*domain.Skill) (string, float64, domain.Intent, error) {
+	return "analyse_pair", 1, domain.IntentChat, nil
+}
+func (chatRouter) PickSkills(context.Context, string, []*domain.Skill) ([]string, domain.Intent, error) {
+	return []string{"analyse_pair"}, domain.IntentChat, nil // even if an ability scored well
+}
 
-	judge.just = false
-	r.say(t, "C1", "what's the weather like")
-	got := r.box.texts()
-	if len(got) != 2 || !strings.HasPrefix(got[1], "I can't help with that one.") {
-		t.Errorf("an unrelated message is still declined: %q", got)
+func TestChat_ASocialMessageIsAnsweredWithoutToolsAndWithoutLeavingTheInstructionBehind(t *testing.T) {
+	r := newFollowRig(t, chatRouter{})
+	r.say(t, "C1", "thanks!")
+
+	if r.spy.calls() != 1 {
+		t.Fatalf("the model answers once: %d calls", r.spy.calls())
+	}
+	if got := strings.Join(r.spy.offered[0], ","); got != domain.FinishActionName {
+		t.Errorf("a friendly message gets no tools, only the ability to reply: %q", got)
+	}
+	if got := r.box.texts(); len(got) != 1 || got[0] != "ok" {
+		t.Errorf("the model's own reply is delivered once: %q", got)
+	}
+	var stored []domain.Message
+	for _, m := range r.mem.store {
+		stored = m
+	}
+	if len(stored) == 0 || stored[0].Role != domain.RoleUser || stored[0].Content != "thanks!" {
+		t.Fatalf("history starts with what the person said: %+v", stored)
+	}
+	var replied bool
+	for _, m := range stored {
+		if m.Role == domain.RoleSystem {
+			t.Errorf("the instruction that shaped the reply must not be stored: %q", m.Content)
+		}
+		for _, c := range m.ToolCalls {
+			if c.Name == domain.FinishActionName && c.Arguments["content"] == "ok" {
+				replied = true
+			}
+		}
+	}
+	if !replied {
+		t.Errorf("the reply itself is kept: %+v", stored)
 	}
 }

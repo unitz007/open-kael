@@ -101,25 +101,6 @@ func declineText(agent *domain.Agent) string {
 	return b.String()
 }
 
-// helloText is the reply to a plain hello that is not a new person's first message: friendly,
-// by name when we know it, and fixed, so it is the same every time and no model writes it.
-func helloText(agent *domain.Agent, name string) string {
-	var b strings.Builder
-	if name = strings.TrimSpace(name); name != "" {
-		b.WriteString("Hi " + name + "! 👋")
-	} else {
-		b.WriteString("Hi! 👋")
-	}
-	if abilities := welcomeAbilities(agent); len(abilities) > 0 {
-		b.WriteString(" Here's what I can help with:")
-		for _, a := range abilities {
-			b.WriteString("\n• " + a)
-		}
-		b.WriteString("\n\nWhat would you like to do?")
-	}
-	return b.String()
-}
-
 // fixedReply ends a turn with a reply that no model wrote: it is delivered and kept in the
 // conversation like any other.
 func fixedReply(messages []domain.Message, text string) (*domain.LoopResult, []domain.Message) {

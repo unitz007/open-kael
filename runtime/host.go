@@ -1503,6 +1503,13 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 
 	log.Printf("skill-router: skills=%v intent=%q", skillNames, intent)
 
+	// Only being sociable: answer like a person would, in their language, and nothing else.
+	// No ability is run and none is remembered for a follow-up.
+	if intent == domain.IntentChat {
+		log.Printf("skill-router: just being friendly — answering without tools")
+		return h.chatReply(ctx, hosted, messages, actions)
+	}
+
 	// A short follow-up that matches nothing on its own stays with what the conversation was
 	// just doing; and whatever matched is remembered for the next one.
 	carryConv, _ := domain.ConversationFromContext(ctx)
@@ -1544,12 +1551,6 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 		// outside this agent's scope — decline instead of letting the LLM
 		// answer anything. Agents with no skills fall back to the full loop.
 		if len(hosted.Agent.Skills) > 0 {
-			// A plain hello matches no ability, but it is not "out of scope": greet back.
-			if h.onlySaysHello(ctx, userText) {
-				log.Printf("skill-router: a plain hello — greeting back with what I can do")
-				result, final := fixedReply(messages, helloText(hosted.Agent, domain.UserDetailsFromContext(ctx).Name))
-				return result, final, nil
-			}
 			log.Printf("skill-router: no skills matched — out of scope, replying with what I can do")
 			result, final := fixedReply(messages, declineText(hosted.Agent))
 			return result, final, nil
@@ -1676,6 +1677,46 @@ func withRecommendHint(messages []domain.Message) []domain.Message {
 // the LLM knows it must decline the user's request instead of answering it.
 // Inserted as a second system message right before the user's message so it
 // takes precedence over the general system prompt without replacing it.
+// chatHint tells the model what a purely social message needs: warmth, brevity, their
+// language, and no pretence of doing anything.
+const chatHint = "The person is only being friendly: a greeting, thanks, a goodbye or small talk. " +
+	"Reply warmly in one or two short sentences, in the language they write in. " +
+	"You may say in a few words what you can help with. " +
+	"Do not say or imply that you are looking something up, checking, running or doing anything, and do not offer anything you cannot do."
+
+// chatReply answers a purely social message. The model has only the ability to reply, so it
+// cannot act; the instruction that shaped the reply is not kept in the conversation.
+func (h *Host) chatReply(ctx context.Context, hosted *HostedAgent, messages []domain.Message, actions []*domain.BoundAction) (*domain.LoopResult, []domain.Message, error) {
+	result, final, err := h.respondDirectly(ctx, hosted, withHint(messages, chatHint), actions)
+	return result, withoutHint(final, chatHint), err
+}
+
+// withHint inserts an instruction as a system message right before the person's message.
+func withHint(messages []domain.Message, hint string) []domain.Message {
+	out := make([]domain.Message, 0, len(messages)+1)
+	if len(messages) > 0 {
+		out = append(out, messages[:len(messages)-1]...)
+		out = append(out, domain.Message{Role: domain.RoleSystem, Content: hint})
+		out = append(out, messages[len(messages)-1])
+	} else {
+		out = append(out, domain.Message{Role: domain.RoleSystem, Content: hint})
+	}
+	return out
+}
+
+// withoutHint removes an instruction that was only there to shape one reply, so it is not
+// stored as part of the conversation.
+func withoutHint(messages []domain.Message, hint string) []domain.Message {
+	out := make([]domain.Message, 0, len(messages))
+	for _, m := range messages {
+		if m.Role == domain.RoleSystem && m.Content == hint {
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
 func withDeclineHint(messages []domain.Message) []domain.Message {
 	const hint = "The user's request is outside your defined area of expertise. " +
 		"Politely decline, briefly explain what you can help with, and invite them to ask something relevant."

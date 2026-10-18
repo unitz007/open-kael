@@ -12,6 +12,10 @@ const (
 	IntentRecommend Intent = "recommend"
 	// IntentSchedule means the user wants to set up, modify, or cancel a recurring task.
 	IntentSchedule Intent = "schedule"
+	// IntentChat means the person is only being sociable (a greeting, thanks, a goodbye,
+	// small talk): nothing to look up, nothing to do. The agent answers warmly and briefly,
+	// in their language, with no tools.
+	IntentChat Intent = "chat"
 )
 
 type intentKey struct{}
