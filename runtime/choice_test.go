@@ -234,8 +234,8 @@ func TestAskOptions_BadQuestionsGoBackToTheModelAsErrors(t *testing.T) {
 	}
 }
 
-// Typed words answer the question waiting in THEIR conversation only, and a command never does.
-func TestChoiceRequester_TypedWordsAnswerOnlyTheirOwnConversationsQuestion(t *testing.T) {
+// A new message cuts short the question waiting in THEIR conversation only.
+func TestChoiceRequester_ANewMessageCutsShortOnlyTheirOwnConversationsQuestion(t *testing.T) {
 	m := &buttonMessenger{tokens: make(chan string, 1)}
 	r := runtime.NewMessengerChoiceRequester(m)
 	conv := domain.ConversationRef{Provider: "telegram", IdentityID: "bot1", ChatID: "C1", SenderID: "U1"}
@@ -248,26 +248,26 @@ func TestChoiceRequester_TypedWordsAnswerOnlyTheirOwnConversationsQuestion(t *te
 
 	other := conv
 	other.ChatID = "C2"
-	if r.AnswerWithText(other, "b please") {
-		t.Error("another chat's words are not the answer")
+	if r.Supersede(other) {
+		t.Error("another chat's message does not cut it short")
 	}
 	otherPerson := conv
 	otherPerson.SenderID = "U2"
-	if r.AnswerWithText(otherPerson, "b please") {
-		t.Error("another person's words are not the answer")
+	if r.Supersede(otherPerson) {
+		t.Error("another person's message does not cut it short")
 	}
-	for _, notAnAnswer := range []string{"/start", "   ", ""} {
-		if r.AnswerWithText(conv, notAnAnswer) {
-			t.Errorf("%q is not an answer", notAnAnswer)
-		}
+	if !r.Supersede(conv) {
+		t.Fatal("their own new message cuts their own question short")
 	}
-	if !r.AnswerWithText(conv, "  the b one  ") {
-		t.Fatal("their own words answer their own question")
+	if a := <-got; a.Index != domain.ChoiceSuperseded {
+		t.Errorf("superseded: %+v", a)
 	}
-	if a := <-got; a.Index != domain.ChoiceTyped || a.Text != "the b one" {
-		t.Errorf("typed, trimmed: %+v", a)
+	m.mu.Lock()
+	if !strings.Contains(m.updated, "Replaced by your new message") || strings.Contains(m.updated, "✅") {
+		t.Errorf("the message says it was replaced, not answered: %q", m.updated)
 	}
-	if r.AnswerWithText(conv, "again") {
-		t.Error("once answered, nothing is waiting")
+	m.mu.Unlock()
+	if r.Supersede(conv) {
+		t.Error("once cut short, nothing is waiting")
 	}
 }

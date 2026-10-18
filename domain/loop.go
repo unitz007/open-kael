@@ -3,6 +3,7 @@ package domain
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -28,6 +29,13 @@ const (
 	maxSameActionCalls     = 15
 	maxToolCallsPerIter    = 10
 )
+
+// ErrSuperseded is what an action returns when the wait it was in (a question put to the person)
+// was cut short because they wrote a new message instead of answering. When nothing has been
+// changed yet this turn, the loop ends it quietly, keeping its history, and the new message is
+// handled next with all of that in front of it. If something was already changed, the turn
+// carries on so the person still hears what happened.
+var ErrSuperseded = errors.New("the person wrote a new message instead")
 
 type LoopStatus string
 
@@ -240,6 +248,14 @@ func (l *NativeLoop) Run(ctx context.Context, messages []Message, actions []*Bou
 			output, err := action.Invoke(ctx, call.Arguments)
 			done, msg, why := OutcomeOf(output, err)
 			records = append(records, ActionRecord{Name: call.Name, Changes: action.Spec.Changes, Done: done, Message: msg, Reason: why})
+			if errors.Is(err, ErrSuperseded) && !changedAnything(records) {
+				log.Printf("loop: the person wrote a new message while waiting — ending this turn quietly; their message is handled next")
+				messages = append(messages, Message{Role: RoleTool, ToolCallID: call.ID, Name: call.Name, Content: "not answered: the person wrote a new message instead"})
+				for _, rest := range resp.ToolCalls[idx+1:] { // every call needs an answer
+					messages = append(messages, Message{Role: RoleTool, ToolCallID: rest.ID, Name: rest.Name, Content: "not run: the person wrote a new message first"})
+				}
+				return &LoopResult{Status: LoopStatusComplete, Actions: records}, messages, nil
+			}
 			if err != nil {
 				log.Printf("loop: action %q failed: %v", call.Name, err)
 				messages = append(messages, Message{Role: RoleTool, ToolCallID: call.ID, Name: call.Name, Content: fmt.Sprintf("error: %v", err)})
@@ -353,4 +369,14 @@ func truncateRunes(s string, n int) string {
 		return string(r[:n]) + "…"
 	}
 	return s
+}
+
+// changedAnything reports whether any action that changes something has really succeeded.
+func changedAnything(records []ActionRecord) bool {
+	for _, r := range records {
+		if r.Changes && r.Done {
+			return true
+		}
+	}
+	return false
 }

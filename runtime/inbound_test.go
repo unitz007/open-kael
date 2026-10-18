@@ -38,8 +38,8 @@ func (l *liveExec) Listen(ctx context.Context, _ *domain.Identity, onMessage fun
 func (l *liveExec) RequestChoice(ctx context.Context, conv domain.ConversationRef, q string, opts []string, secs int) (domain.ChoiceAnswer, error) {
 	return l.choices.RequestChoice(ctx, nil, "", conv, q, opts, secs)
 }
-func (l *liveExec) AnswerChoiceText(conv domain.ConversationRef, text string) bool {
-	return l.choices.AnswerWithText(conv, text)
+func (l *liveExec) SupersedeChoice(conv domain.ConversationRef) bool {
+	return l.choices.Supersede(conv)
 }
 func (l *liveExec) AcknowledgeCallbackQuery(_ context.Context, queryID string) error {
 	l.mu.Lock()
@@ -104,6 +104,7 @@ func (s *scriptLLM) Call(ctx context.Context, msgs []domain.Message, _ []domain.
 type liveRig struct {
 	host   *runtime.Host
 	exec   *liveExec
+	mem    *memMemory
 	llm    *scriptLLM
 	send   func(chat, text string)
 	raw    func(domain.InboundMessage)
@@ -116,9 +117,10 @@ func newLiveRig(t *testing.T, llm *scriptLLM) *liveRig {
 	executors := domain.NewExecutorRegistry()
 	executors.Register("slack", ex)
 	agent := &domain.Agent{ID: "a1", Name: "Desk", LLMs: []domain.LLM{llm}, MaxIterations: 5, IdentityIDs: []string{"id_slack"}}
+	mem := newMemMemory()
 	hosted := &runtime.HostedAgent{Agent: agent, Deps: slackDeps(func(d *runtime.AgentDeps) {
 		d.Executors = executors
-		d.Memory = newMemMemory()
+		d.Memory = mem
 	})}
 	host := runtime.NewHost()
 	host.Register(hosted)
@@ -141,7 +143,7 @@ func newLiveRig(t *testing.T, llm *scriptLLM) *liveRig {
 	case <-time.After(3 * time.Second):
 		t.Fatal("the listener never started")
 	}
-	return &liveRig{host: host, exec: ex, llm: llm, cancel: cancel, raw: onMessage, send: func(chat, text string) {
+	return &liveRig{host: host, exec: ex, mem: mem, llm: llm, cancel: cancel, raw: onMessage, send: func(chat, text string) {
 		onMessage(domain.InboundMessage{
 			Conversation: domain.ConversationRef{Provider: "slack", ChatID: chat, IdentityID: "id_slack", SenderID: "U-" + chat},
 			Text:         text,
@@ -218,8 +220,10 @@ func TestInbound_DifferentConversationsRunAtTheSameTime(t *testing.T) {
 	}
 }
 
-// Words typed while a question is waiting are its answer, not a new turn stuck behind it.
-func TestInbound_TypedWordsWhileAQuestionWaitsAreItsAnswer(t *testing.T) {
+// Writing while a question is waiting cuts the question short: its turn ends quietly (no stray
+// reply), and what was written is handled next as a message that follows the question, so the
+// agent can tell an answer from a new request.
+func TestInbound_WritingWhileAQuestionWaitsEndsItAndTheMessageIsHandledNext(t *testing.T) {
 	llm := &scriptLLM{}
 	r := newLiveRig(t, llm)
 
@@ -231,18 +235,32 @@ func TestInbound_TypedWordsWhileAQuestionWaitsAreItsAnswer(t *testing.T) {
 	}
 	r.send("C1", "the second one, please")
 
-	waitFor(t, "the turn to continue with what they typed", func() bool { return has(r.exec.texts(), "the second one, please") })
-	got := r.exec.texts()
-	if len(got) != 1 || !strings.Contains(got[0], "typed") {
-		t.Errorf("one reply, built on the typed answer: %q", got)
+	waitFor(t, "the written message to be answered", func() bool { return has(r.exec.texts(), "done: the second one, please") })
+	if got := r.exec.texts(); len(got) != 1 {
+		t.Errorf("only the new message gets a reply, the cut-short turn says nothing: %q", got)
 	}
 	if n := llm.calls.Load(); n != 2 {
-		t.Errorf("the typed words were an answer, not a third turn: %d model calls", n)
+		t.Errorf("one call to ask, one to answer the new message: %d", n)
 	}
 	r.exec.buttons.mu.Lock()
-	defer r.exec.buttons.mu.Unlock()
-	if !strings.Contains(r.exec.buttons.updated, "answered in words") {
-		t.Errorf("the question message shows it was answered: %q", r.exec.buttons.updated)
+	if !strings.Contains(r.exec.buttons.updated, "Replaced by your new message") {
+		t.Errorf("the question message shows it was replaced: %q", r.exec.buttons.updated)
+	}
+	r.exec.buttons.mu.Unlock()
+
+	// The new message follows the unanswered question in the history, so it can be read in context.
+	var hist []domain.Message
+	for _, msgs := range r.mem.store {
+		hist = msgs
+	}
+	var sawQuestion, sawUnanswered, sawNew bool
+	for _, m := range hist {
+		sawQuestion = sawQuestion || len(m.ToolCalls) > 0 && m.ToolCalls[0].Name == runtime.AskOptionsActionName
+		sawUnanswered = sawUnanswered || m.Role == domain.RoleTool && strings.Contains(m.Content, "not answered")
+		sawNew = sawNew || m.Role == domain.RoleUser && m.Content == "the second one, please"
+	}
+	if !sawQuestion || !sawUnanswered || !sawNew {
+		t.Errorf("history keeps the question, that it went unanswered, and the new message: %v %v %v", sawQuestion, sawUnanswered, sawNew)
 	}
 }
 

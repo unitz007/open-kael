@@ -99,21 +99,21 @@ type ChoiceRequester interface {
 }
 
 // ChoiceAnswer is how a question was answered. Index is the position of the option tapped,
-// len(options) for "something else", or ChoiceTyped when the person wrote their answer in their
-// own words instead of tapping (then Text is what they wrote).
+// len(options) for "something else", or ChoiceSuperseded when the person wrote a new message
+// instead of answering.
 type ChoiceAnswer struct {
 	Index int
-	Text  string
 }
 
-// ChoiceTyped is the Index of an answer that was typed, not tapped.
-const ChoiceTyped = -1
+// ChoiceSuperseded is the Index of a question that was cut short because the person wrote a new
+// message instead of answering it.
+const ChoiceSuperseded = -1
 
-// ChoiceTextAnswerer is implemented by an Executor that holds pending choice questions, so the
-// host can hand it a message the person typed while a question is waiting. It reports whether
-// the message was taken as the answer (false: no question is waiting for this conversation).
-type ChoiceTextAnswerer interface {
-	AnswerChoiceText(conv ConversationRef, text string) bool
+// ChoiceSuperseder is implemented by an Executor that holds pending choice questions, so the host
+// can cut a waiting question short when the person writes something instead of tapping. It
+// reports whether a question was waiting for this conversation.
+type ChoiceSuperseder interface {
+	SupersedeChoice(conv ConversationRef) bool
 }
 
 // ChoiceOtherLabel is the extra last button every question carries, for a person whose answer

@@ -131,12 +131,16 @@ func (r *MessengerChoiceRequester) RequestChoice(ctx context.Context, identity *
 	case ans := <-ch:
 		shown := domain.ChoiceOtherLabel
 		switch {
-		case ans.Index == domain.ChoiceTyped:
-			shown = "✍️ answered in words"
+		case ans.Index == domain.ChoiceSuperseded:
+			shown = "⏭ Replaced by your new message"
 		case ans.Index >= 0 && ans.Index < len(options):
 			shown = options[ans.Index]
 		}
-		_ = r.Messenger.UpdateMessage(context.Background(), identity, connectionRef, conv, messageID, question+"\n\n✅ "+shown)
+		mark := "✅ "
+		if ans.Index == domain.ChoiceSuperseded {
+			mark = ""
+		}
+		_ = r.Messenger.UpdateMessage(context.Background(), identity, connectionRef, conv, messageID, question+"\n\n"+mark+shown)
 		return ans, nil
 	case <-waitCtx.Done():
 		cleanup()
@@ -171,21 +175,18 @@ func (r *MessengerChoiceRequester) resolve(token string, ans domain.ChoiceAnswer
 	return true
 }
 
-// AnswerWithText takes a message the person typed while a question is waiting in their
-// conversation as the answer to it, so it never queues behind the very question it answers.
-// It reports whether a question was waiting. A command ("/start") is never an answer.
-func (r *MessengerChoiceRequester) AnswerWithText(conv domain.ConversationRef, text string) bool {
-	text = strings.TrimSpace(text)
-	if text == "" || strings.HasPrefix(text, "/") {
-		return false
-	}
+// Supersede cuts short the question waiting in this conversation, because the person wrote a new
+// message instead of answering. The question's turn ends and the new message is handled next,
+// with the unanswered question in front of it, so it is understood as an answer or as something
+// new. It reports whether a question was waiting.
+func (r *MessengerChoiceRequester) Supersede(conv domain.ConversationRef) bool {
 	r.mu.Lock()
 	token, ok := r.byConv[conversationKey(conv)]
 	r.mu.Unlock()
 	if !ok {
 		return false
 	}
-	return r.resolve(token, domain.ChoiceAnswer{Index: domain.ChoiceTyped, Text: text})
+	return r.resolve(token, domain.ChoiceAnswer{Index: domain.ChoiceSuperseded})
 }
 
 // conversationKey identifies one person's conversation in one chat of one bot: the unit that is
@@ -233,8 +234,8 @@ func askOptionsAction(requester domain.ChoiceRequester) *domain.BoundAction {
 				log.Printf("runtime: ask_options: %v", rerr)
 				return map[string]any{"answer": "", "status": "no_answer", "note": "The person did not answer. Carry on without it, or say you need it."}, nil
 			}
-			if ans.Index == domain.ChoiceTyped {
-				return map[string]any{"answer": ans.Text, "status": "typed", "note": "The person replied in their own words instead of tapping. If that answers your question, carry on with it; if it is a different request, handle that instead."}, nil
+			if ans.Index == domain.ChoiceSuperseded {
+				return nil, domain.ErrSuperseded
 			}
 			if ans.Index < 0 || ans.Index >= len(options) {
 				return map[string]any{"answer": "", "status": "other", "note": "The person chose 'Something else'. Ask them in a short message what they would like instead."}, nil

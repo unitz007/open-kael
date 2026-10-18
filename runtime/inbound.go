@@ -35,33 +35,30 @@ func (h *Host) dispatchInbound(ctx context.Context, hosted *HostedAgent, msg dom
 		return
 	}
 
-	// Words typed while a question is waiting for this person are its answer, not a new turn
-	// queued behind the question they answer.
-	if h.answerWaitingChoice(hosted, msg) {
-		return
-	}
+	// Words typed while a question is waiting for this person cut the question short: its turn
+	// ends at once, and these words are handled next, as a message that follows the question.
+	// (Without this the question would hold them up until it timed out.)
+	h.supersedeWaitingChoice(hosted, msg)
 
 	h.enqueueInbound(ctx, hosted, msg)
 }
 
-// answerWaitingChoice hands a typed message to the question waiting in its conversation, if any.
-func (h *Host) answerWaitingChoice(hosted *HostedAgent, msg domain.InboundMessage) bool {
+// supersedeWaitingChoice cuts short the question waiting in msg's conversation, if any.
+func (h *Host) supersedeWaitingChoice(hosted *HostedAgent, msg domain.InboundMessage) {
 	if strings.TrimSpace(msg.Text) == "" {
-		return false
+		return
 	}
 	_, integration := resolveIdentityAndIntegration(hosted, msg.Conversation)
 	if integration == nil {
-		return false
+		return
 	}
 	executor, ok := hosted.Deps.Executors.For(integration.Service)
 	if !ok {
-		return false
+		return
 	}
-	answerer, ok := executor.(domain.ChoiceTextAnswerer)
-	if !ok {
-		return false
+	if s, ok := executor.(domain.ChoiceSuperseder); ok {
+		s.SupersedeChoice(msg.Conversation)
 	}
-	return answerer.AnswerChoiceText(msg.Conversation, msg.Text)
 }
 
 // enqueueInbound adds msg to its conversation's line. The first message of an idle conversation
