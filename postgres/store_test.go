@@ -234,6 +234,7 @@ func TestAgentRulesRoundTrip(t *testing.T) {
 		{ID: "r1", ToolID: "tool_trade", Input: "size", Kind: domain.RuleMax, Value: 100000.0, Message: "Too big."},
 		{ID: "r2", ToolID: "tool_trade", Input: "symbol", Kind: domain.RuleOneOf, Value: []any{"EURUSD", "GBPUSD"}},
 		{ID: "r3", ToolID: "tool_trade", Input: "min_rr", Kind: domain.RuleFixed, Value: 2.0},
+		{ID: "r4", ToolID: "tool_trade", Input: "size", With: "entry", Kind: domain.RuleMaxProduct, Value: 250000.0},
 	}}
 	if err := store.SaveAgent(ctx, agent); err != nil {
 		t.Fatalf("save: %v", err)
@@ -242,7 +243,10 @@ func TestAgentRulesRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got.Rules) != 3 || got.Rules[0].Kind != domain.RuleMax || got.Rules[0].Value != 100000.0 || got.Rules[0].Message != "Too big." {
+	if len(got.Rules) != 4 || got.Rules[3].With != "entry" || got.Rules[3].Kind != domain.RuleMaxProduct {
+		t.Fatalf("a value limit keeps its second detail: %+v", got.Rules)
+	}
+	if got.Rules[0].Kind != domain.RuleMax || got.Rules[0].Value != 100000.0 || got.Rules[0].Message != "Too big." {
 		t.Fatalf("rules come back as saved: %+v", got.Rules)
 	}
 	if list, _ := got.Rules[1].Value.([]any); len(list) != 2 || list[0] != "EURUSD" {
@@ -255,7 +259,7 @@ func TestAgentRulesRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	again, _ := store.GetAgent(ctx, "ag_rules")
-	if len(again.Rules) != 3 {
+	if len(again.Rules) != 4 {
 		t.Errorf("rules survive an unrelated update: %+v", again.Rules)
 	}
 

@@ -20,6 +20,8 @@ import (
 //	max / min      the largest or smallest number allowed
 //	one_of         only these values
 //	none_of        never these values
+//	max_product    two number inputs multiplied together may not come to more than this (a trade's
+//	               size times its price is its value)
 //	fixed          always this value; the model never sees the input and can't change it
 //	default        this value when the model gives none
 //
@@ -30,12 +32,14 @@ import (
 type RuleKind string
 
 const (
-	RuleMax     RuleKind = "max"
-	RuleMin     RuleKind = "min"
-	RuleOneOf   RuleKind = "one_of"
-	RuleNoneOf  RuleKind = "none_of"
-	RuleFixed   RuleKind = "fixed"
-	RuleDefault RuleKind = "default"
+	RuleMax RuleKind = "max"
+	// RuleMaxProduct limits Input × With: the two details together, not either alone.
+	RuleMaxProduct RuleKind = "max_product"
+	RuleMin        RuleKind = "min"
+	RuleOneOf      RuleKind = "one_of"
+	RuleNoneOf     RuleKind = "none_of"
+	RuleFixed      RuleKind = "fixed"
+	RuleDefault    RuleKind = "default"
 )
 
 const (
@@ -46,10 +50,12 @@ const (
 
 // ToolRule is one rule on one input of one tool, for one agent.
 type ToolRule struct {
-	ID     string   `json:"id,omitempty"`
-	ToolID string   `json:"tool_id"`
-	Input  string   `json:"input"`
-	Kind   RuleKind `json:"kind"`
+	ID     string `json:"id,omitempty"`
+	ToolID string `json:"tool_id"`
+	Input  string `json:"input"`
+	// With is the second input of a max_product rule (Input × With). Empty for every other kind.
+	With string   `json:"with,omitempty"`
+	Kind RuleKind `json:"kind"`
 	// Value is a number (max, min), a list of values (one_of, none_of) or a single value
 	// (fixed, default), of the kind the input takes.
 	Value any `json:"value"`
@@ -88,7 +94,32 @@ func NormalizeRule(r ToolRule, def *ToolDefinition) (ToolRule, error) {
 		return r, fmt.Errorf("%q isn't something this tool takes", r.Input)
 	}
 	label := humanize(r.Input)
+	if r.Kind != RuleMaxProduct {
+		r.With = ""
+	}
 	switch r.Kind {
+	case RuleMaxProduct:
+		r.With = strings.TrimSpace(r.With)
+		other, ok := def.InputSchema.Properties[r.With]
+		if !ok {
+			return r, fmt.Errorf("%q isn't something this tool takes", r.With)
+		}
+		if r.With == r.Input {
+			return r, fmt.Errorf("pick two different details to multiply")
+		}
+		for _, p := range []struct {
+			name string
+			s    Schema
+		}{{r.Input, prop}, {r.With, other}} {
+			if p.s.Type != SchemaTypeNumber && p.s.Type != SchemaTypeInteger {
+				return r, fmt.Errorf("%s isn't a number, so it can't be multiplied", humanize(p.name))
+			}
+		}
+		n, ok := toNumber(r.Value)
+		if !ok || n <= 0 {
+			return r, fmt.Errorf("the limit for %s × %s must be a number above zero", label, humanize(r.With))
+		}
+		r.Value = n
 	case RuleMax, RuleMin:
 		if prop.Type != SchemaTypeNumber && prop.Type != SchemaTypeInteger {
 			return r, fmt.Errorf("%s isn't a number, so it can't have a largest or smallest allowed", label)
@@ -145,6 +176,7 @@ func NormalizeRules(rules []ToolRule, tools map[string]*ToolDefinition) ([]ToolR
 	perTool := map[string]int{}
 	type slot struct{ tool, input string }
 	pinned := map[slot]RuleKind{}
+	products := map[[3]string]bool{}
 	maxes, mins := map[slot]float64{}, map[slot]float64{}
 	for _, r := range rules {
 		n, err := NormalizeRule(r, tools[r.ToolID])
@@ -161,6 +193,13 @@ func NormalizeRules(rules []ToolRule, tools map[string]*ToolDefinition) ([]ToolR
 				return nil, fmt.Errorf("%s already has a %s value; a detail can have only one", humanize(n.Input), strings.ReplaceAll(string(prev), "_", " "))
 			}
 			pinned[s] = n.Kind
+		case RuleMaxProduct:
+			key := [3]string{n.ToolID, n.Input, n.With}
+			rev := [3]string{n.ToolID, n.With, n.Input}
+			if products[key] || products[rev] {
+				return nil, fmt.Errorf("%s × %s already has a limit", humanize(n.Input), humanize(n.With))
+			}
+			products[key] = true
 		case RuleMax:
 			if _, dup := maxes[s]; dup {
 				return nil, fmt.Errorf("%s already has a largest allowed", humanize(n.Input))
@@ -224,6 +263,12 @@ func applyPins(rules []ToolRule, input map[string]any) map[string]any {
 // breaks returns the reason, in plain words, a call breaks a rule ("" when it keeps them all).
 func breaks(rules []ToolRule, input map[string]any) string {
 	for _, r := range rules {
+		if r.Kind == RuleMaxProduct {
+			if why := breaksProduct(r, input); why != "" {
+				return why
+			}
+			continue
+		}
 		v, present := input[r.Input]
 		if !present || v == nil {
 			continue
@@ -248,6 +293,28 @@ func breaks(rules []ToolRule, input map[string]any) string {
 		}
 	}
 	return ""
+}
+
+// breaksProduct checks Input × With against its limit. A limit that can't be checked is not a limit,
+// so a call missing either number is refused too (the model is told to give both).
+func breaksProduct(r ToolRule, input map[string]any) string {
+	a, okA := toNumber(input[r.Input])
+	b, okB := toNumber(input[r.With])
+	what := humanize(r.Input) + " × " + humanize(r.With)
+	if !okA || !okB {
+		return refusalText(r, fmt.Sprintf("I can't check the limit on %s without both numbers, so nothing was done.", what))
+	}
+	limit := r.Value.(float64)
+	total := a * b
+	if total-limit > 1e-9*math.Max(1, math.Abs(limit)) {
+		return refusalText(r, fmt.Sprintf("That comes to %s for %s, which is more than the most allowed (%s), so nothing was done.", formatNumber(roundTo(total, 2)), what, formatNumber(limit)))
+	}
+	return ""
+}
+
+func roundTo(n float64, places int) float64 {
+	p := math.Pow(10, float64(places))
+	return math.Round(n*p) / p
 }
 
 func refusalText(r ToolRule, standard string) string {
@@ -312,6 +379,10 @@ func specWithRules(spec ToolSpec, rules []ToolRule) ToolSpec {
 		case RuleDefault:
 			drop(r.Input)
 			note(r.Input, fmt.Sprintf("If you leave it out, %s is used.", fmt.Sprint(r.Value)))
+		case RuleMaxProduct:
+			limit := formatNumber(r.Value.(float64))
+			note(r.Input, fmt.Sprintf("Together with %s, %s × %s may not come to more than %s.", humanize(r.With), humanize(r.Input), humanize(r.With), limit))
+			note(r.With, fmt.Sprintf("Together with %s, %s × %s may not come to more than %s.", humanize(r.Input), humanize(r.Input), humanize(r.With), limit))
 		case RuleMax:
 			note(r.Input, fmt.Sprintf("Allowed: at most %s.", formatNumber(r.Value.(float64))))
 		case RuleMin:

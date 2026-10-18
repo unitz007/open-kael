@@ -33,6 +33,7 @@ func ruleTradeTool() *domain.ToolDefinition {
 				"symbol":     {Type: domain.SchemaTypeString, Description: "The pair."},
 				"size":       {Type: domain.SchemaTypeInteger, Description: "Units."},
 				"min_rr":     {Type: domain.SchemaTypeNumber, Description: "Smallest reward to risk."},
+				"entry":      {Type: domain.SchemaTypeNumber, Description: "Entry price."},
 				"order_type": {Type: domain.SchemaTypeString, Enum: []string{"limit", "market"}},
 			},
 			Required: []string{"symbol", "size", "min_rr"},
@@ -330,5 +331,118 @@ func TestHydrateSkillTools_AppliesTheAgentsRules(t *testing.T) {
 	bound[0].Invoke(context.Background(), map[string]any{"symbol": "EURUSD", "size": 5000.0, "min_rr": 2.0})
 	if exec.n() != before+1 {
 		t.Error("rules belong to one agent only")
+	}
+}
+
+// ── a limit on two numbers multiplied: a trade's size times its price is its value ─────────────
+
+func valueRule(t *testing.T, limit float64) domain.ToolRule {
+	return norm(t, domain.ToolRule{ToolID: "tool_trade", Input: "size", With: "entry", Kind: domain.RuleMaxProduct, Value: limit})
+}
+
+func TestRules_AValueLimitIsOnTheTwoNumbersTogetherNotEitherAlone(t *testing.T) {
+	exec := &ruleExecutor{}
+	a := bindWith(t, exec, valueRule(t, 100000))
+	ctx := context.Background()
+	call := func(size, entry float64) any {
+		out, _ := a.Invoke(ctx, map[string]any{"symbol": "BTCUSD", "size": size, "min_rr": 2.0, "entry": entry})
+		return out
+	}
+
+	// A huge size at a tiny price, and a tiny size at a huge price, are both fine on their own.
+	if _, bad := refused(call(1000000, 0.05)); bad {
+		t.Error("1,000,000 × 0.05 = 50,000: within the limit")
+	}
+	if _, bad := refused(call(1, 90000)); bad {
+		t.Error("1 × 90,000: within the limit")
+	}
+	// Together they can break it.
+	out := call(2, 90000)
+	msg, ok := refused(out)
+	if !ok || !strings.Contains(msg, "comes to 180000 for size × entry") || !strings.Contains(msg, "more than the most allowed (100000)") || !strings.Contains(msg, "nothing was done") {
+		t.Fatalf("over the limit is refused with the total in plain words: %v", out)
+	}
+	if exec.n() != 2 {
+		t.Errorf("only the two calls within the limit ran: %d", exec.n())
+	}
+	// Exactly the limit is allowed, and rounding noise on a decimal price can't tip it over.
+	if _, bad := refused(call(100000, 1)); bad {
+		t.Error("exactly at the limit is allowed")
+	}
+	if _, bad := refused(call(92165, 1.085)); bad {
+		t.Errorf("92,165 × 1.085 = 99,999.025 is within the limit")
+	}
+	if _, bad := refused(call(92166, 1.085)); !bad {
+		t.Error("92,166 × 1.085 = 100,000.11 is over it")
+	}
+}
+
+// A limit that can't be checked is not a limit: with either number missing the call is refused.
+func TestRules_AValueLimitFailsClosedWhenANumberIsMissing(t *testing.T) {
+	exec := &ruleExecutor{}
+	a := bindWith(t, exec, valueRule(t, 100000))
+	out, _ := a.Invoke(context.Background(), map[string]any{"symbol": "EURUSD", "size": 10.0, "min_rr": 2.0}) // no entry price
+	if msg, ok := refused(out); !ok || !strings.Contains(msg, "can't check the limit on size × entry without both numbers") || exec.n() != 0 {
+		t.Fatalf("refused, and the service never saw it: %v", out)
+	}
+}
+
+func TestRules_TheModelIsToldAboutBothNumbersOfAValueLimit(t *testing.T) {
+	a := bindWith(t, &ruleExecutor{}, valueRule(t, 100000))
+	p := a.Spec.InputSchema.Properties
+	for _, name := range []string{"size", "entry"} {
+		if d := p[name].Description; !strings.Contains(d, "size × entry may not come to more than 100000") {
+			t.Errorf("%s: the model sees the combined limit: %q", name, d)
+		}
+	}
+}
+
+func TestNormalizeRule_ValueLimitsAreCheckedAgainstTheTool(t *testing.T) {
+	tools := map[string]*domain.ToolDefinition{"tool_trade": ruleTradeTool()}
+	for name, tc := range map[string]struct {
+		r    domain.ToolRule
+		want string
+	}{
+		"second input unknown": {domain.ToolRule{Input: "size", With: "nope", Kind: domain.RuleMaxProduct, Value: 1.0}, "isn't something this tool takes"},
+		"the same input twice": {domain.ToolRule{Input: "size", With: "size", Kind: domain.RuleMaxProduct, Value: 1.0}, "two different details"},
+		"one of them is text":  {domain.ToolRule{Input: "size", With: "symbol", Kind: domain.RuleMaxProduct, Value: 1.0}, "symbol isn't a number"},
+		"limit zero or less":   {domain.ToolRule{Input: "size", With: "entry", Kind: domain.RuleMaxProduct, Value: 0.0}, "above zero"},
+		"limit not a number":   {domain.ToolRule{Input: "size", With: "entry", Kind: domain.RuleMaxProduct, Value: "lots"}, "above zero"},
+	} {
+		tc.r.ToolID = "tool_trade"
+		if _, err := domain.NormalizeRules([]domain.ToolRule{tc.r}, tools); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: want %q, got %v", name, tc.want, err)
+		}
+	}
+	// The pair is the same either way round, so a second limit on it is refused.
+	a := domain.ToolRule{ToolID: "tool_trade", Input: "size", With: "entry", Kind: domain.RuleMaxProduct, Value: 5.0}
+	b := domain.ToolRule{ToolID: "tool_trade", Input: "entry", With: "size", Kind: domain.RuleMaxProduct, Value: 9.0}
+	if _, err := domain.NormalizeRules([]domain.ToolRule{a, b}, tools); err == nil || !strings.Contains(err.Error(), "already has a limit") {
+		t.Errorf("two limits on the same pair: %v", err)
+	}
+	// A value limit sits happily beside a plain limit on the same detail.
+	out, err := domain.NormalizeRules([]domain.ToolRule{a, {ToolID: "tool_trade", Input: "size", Kind: domain.RuleMax, Value: 50.0}}, tools)
+	if err != nil || len(out) != 2 {
+		t.Errorf("a value limit and a plain limit together: %v %v", out, err)
+	}
+	// The second input of any other kind of rule is dropped, never kept by accident.
+	n, err := domain.NormalizeRule(domain.ToolRule{ToolID: "tool_trade", Input: "size", With: "entry", Kind: domain.RuleMax, Value: 5.0}, ruleTradeTool())
+	if err != nil || n.With != "" {
+		t.Errorf("With belongs to value limits only: %+v %v", n, err)
+	}
+}
+
+// Floating-point noise must never refuse a call that is exactly at the limit: 0.1 × 3 is
+// 0.30000000000000004 in floating point, and a person who set the limit at 0.3 means "0.3 is fine".
+func TestRules_ARoundingErrorAtExactlyTheLimitIsNotARefusal(t *testing.T) {
+	exec := &ruleExecutor{}
+	a := bindWith(t, exec, norm(t, domain.ToolRule{ToolID: "tool_trade", Input: "entry", With: "min_rr", Kind: domain.RuleMaxProduct, Value: 0.3}))
+	out, _ := a.Invoke(context.Background(), map[string]any{"symbol": "EURUSD", "size": 1.0, "entry": 0.1, "min_rr": 3.0})
+	if _, bad := refused(out); bad || exec.n() != 1 {
+		t.Fatalf("0.1 × 3 is 0.3: at the limit, allowed: %v", out)
+	}
+	out, _ = a.Invoke(context.Background(), map[string]any{"symbol": "EURUSD", "size": 1.0, "entry": 0.1, "min_rr": 3.1})
+	if _, bad := refused(out); !bad {
+		t.Errorf("0.1 × 3.1 is over: %v", out)
 	}
 }

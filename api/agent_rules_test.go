@@ -75,6 +75,7 @@ func TestAgentRules(t *testing.T) {
 		Properties: map[string]domain.Schema{
 			"symbol": {Type: domain.SchemaTypeString},
 			"size":   {Type: domain.SchemaTypeInteger},
+			"entry":  {Type: domain.SchemaTypeNumber},
 		},
 	}}
 	if err := store.SaveTool(ctx, trade); err != nil {
@@ -106,13 +107,14 @@ func TestAgentRules(t *testing.T) {
 	rec = call("tok_rul_a", http.MethodPut, path, []map[string]any{
 		{"tool_id": "rul_trade", "input": "size", "kind": "max", "value": "100000", "message": "Too big for me."},
 		{"tool_id": "rul_trade", "input": "symbol", "kind": "one_of", "value": []string{"EURUSD", "GBPUSD"}},
+		{"tool_id": "rul_trade", "input": "size", "with": "entry", "kind": "max_product", "value": 250000},
 	})
 	if rec.Code != 200 {
 		t.Fatalf("set rules: %d %s", rec.Code, rec.Body)
 	}
 	rec = call("tok_rul_a", http.MethodGet, path, nil)
 	var got []domain.ToolRule
-	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || len(got) != 2 {
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || len(got) != 3 {
 		t.Fatalf("get rules: %d %s", rec.Code, rec.Body)
 	}
 	if got[0].Value != 100000.0 || got[0].ID == "" || got[0].Message != "Too big for me." {
@@ -123,7 +125,10 @@ func TestAgentRules(t *testing.T) {
 		t.Errorf("saving reloads the agent so the rules apply: %v", reloaded)
 	}
 	mu.Unlock()
-	if loaded, _ := store.LoadAgent(ctx, agent.ID); len(loaded.Rules) != 2 {
+	if got[2].Kind != domain.RuleMaxProduct || got[2].With != "entry" || got[2].Value != 250000.0 {
+		t.Errorf("a value limit is saved with both details: %+v", got[2])
+	}
+	if loaded, _ := store.LoadAgent(ctx, agent.ID); len(loaded.Rules) != 3 {
 		t.Errorf("what the runtime loads has the rules: %+v", loaded.Rules)
 	}
 
@@ -131,6 +136,8 @@ func TestAgentRules(t *testing.T) {
 	for name, body := range map[string][]map[string]any{
 		"an input the tool doesn't take": {{"tool_id": "rul_trade", "input": "nope", "kind": "max", "value": 1}},
 		"a limit on text":                {{"tool_id": "rul_trade", "input": "symbol", "kind": "max", "value": 1}},
+		"a value limit with text":        {{"tool_id": "rul_trade", "input": "size", "with": "symbol", "kind": "max_product", "value": 1}},
+		"a value limit on one detail":    {{"tool_id": "rul_trade", "input": "size", "with": "size", "kind": "max_product", "value": 1}},
 		"rules that can't both hold":     {{"tool_id": "rul_trade", "input": "size", "kind": "min", "value": 20}, {"tool_id": "rul_trade", "input": "size", "kind": "max", "value": 10}},
 		"a tool that doesn't exist":      {{"tool_id": "ghost", "input": "size", "kind": "max", "value": 1}},
 		"another creator's connection":   {{"tool_id": "rul_priv_tool", "input": "x", "kind": "max", "value": 1}},
@@ -140,7 +147,7 @@ func TestAgentRules(t *testing.T) {
 			t.Errorf("%s: want 400 without internal names, got %d %s", name, rec.Code, rec.Body)
 		}
 	}
-	if after, _ := store.GetAgent(ctx, agent.ID); len(after.Rules) != 2 {
+	if after, _ := store.GetAgent(ctx, agent.ID); len(after.Rules) != 3 {
 		t.Errorf("a refused save leaves the rules alone: %+v", after.Rules)
 	}
 
@@ -150,7 +157,7 @@ func TestAgentRules(t *testing.T) {
 			t.Errorf("%s by another creator: want 404, got %d", method, rec.Code)
 		}
 	}
-	if after, _ := store.GetAgent(ctx, agent.ID); len(after.Rules) != 2 {
+	if after, _ := store.GetAgent(ctx, agent.ID); len(after.Rules) != 3 {
 		t.Errorf("the other creator changed nothing: %+v", after.Rules)
 	}
 
