@@ -140,6 +140,11 @@ type Host struct {
 	// agent's existing processing goroutine.
 	agentInboxes sync.Map
 
+	// convQueues holds, per conversation, the messages waiting for the one being handled
+	// (see dispatchInbound). A conversation with nothing in flight has no entry.
+	convMu     sync.Mutex
+	convQueues map[string]*convQueue
+
 	// serveCtx is the context passed to ListenAndServe; stored so
 	// StartListenerForAgent can start goroutines on the same lifecycle.
 	serveCtx context.Context
@@ -462,6 +467,7 @@ func NewHost() *Host {
 		bus:            newEventBus(),
 		intentHandlers: make(map[domain.Intent]IntentHandler),
 		carry:          newCarryOver(),
+		convQueues:     make(map[string]*convQueue),
 	}
 }
 

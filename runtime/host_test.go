@@ -2,6 +2,7 @@ package runtime_test
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/unitz007/open-kael/domain"
@@ -51,6 +52,7 @@ func (a *approvingExecutor) RequestApproval(_ context.Context, _ domain.Conversa
 }
 
 type memMemory struct {
+	mu    sync.Mutex // conversations are handled side by side
 	store map[domain.ConversationKey][]domain.Message
 }
 
@@ -59,9 +61,13 @@ func newMemMemory() *memMemory {
 }
 
 func (m *memMemory) History(_ context.Context, key domain.ConversationKey) []domain.Message {
-	return m.store[key]
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]domain.Message(nil), m.store[key]...)
 }
 func (m *memMemory) Append(_ context.Context, key domain.ConversationKey, messages ...domain.Message) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.store[key] = append(m.store[key], messages...)
 }
 

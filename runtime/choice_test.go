@@ -42,11 +42,11 @@ func TestChoiceRequester_ReturnsTheTappedOptionAndShowsTheOutcome(t *testing.T) 
 	conv := domain.ConversationRef{Provider: "telegram", ChatID: "C1"}
 	got := make(chan int, 1)
 	go func() {
-		i, err := r.RequestChoice(context.Background(), nil, "", conv, "Which size?", []string{"10,000", "50,000"}, 5)
+		a, err := r.RequestChoice(context.Background(), nil, "", conv, "Which size?", []string{"10,000", "50,000"}, 5)
 		if err != nil {
 			t.Error(err)
 		}
-		got <- i
+		got <- a.Index
 	}()
 	token := <-m.tokens
 	if !r.Resolve(token, 1) {
@@ -73,8 +73,8 @@ func TestChoiceRequester_SomethingElseIsThePositionAfterTheOptions(t *testing.T)
 	r := runtime.NewMessengerChoiceRequester(m)
 	got := make(chan int, 1)
 	go func() {
-		i, _ := r.RequestChoice(context.Background(), nil, "", domain.ConversationRef{}, "Which?", []string{"a", "b"}, 5)
-		got <- i
+		a, _ := r.RequestChoice(context.Background(), nil, "", domain.ConversationRef{}, "Which?", []string{"a", "b"}, 5)
+		got <- a.Index
 	}()
 	r.Resolve(<-m.tokens, 2)
 	if i := <-got; i != 2 {
@@ -144,11 +144,11 @@ type choosingExecutor struct {
 	timeouts  []int
 }
 
-func (c *choosingExecutor) RequestChoice(_ context.Context, _ domain.ConversationRef, q string, opts []string, timeoutSeconds int) (int, error) {
+func (c *choosingExecutor) RequestChoice(_ context.Context, _ domain.ConversationRef, q string, opts []string, timeoutSeconds int) (domain.ChoiceAnswer, error) {
 	c.timeouts = append(c.timeouts, timeoutSeconds)
 	c.asked = append(c.asked, q)
 	c.askedOpts = append(c.askedOpts, opts)
-	return c.tap, c.err
+	return domain.ChoiceAnswer{Index: c.tap}, c.err
 }
 
 func choiceTurn(t *testing.T, ex *choosingExecutor, llm *askingLLM) []string {
@@ -231,5 +231,43 @@ func TestAskOptions_BadQuestionsGoBackToTheModelAsErrors(t *testing.T) {
 		if len(got) != 1 || !strings.Contains(got[0], "ask_options:") {
 			t.Errorf("%s: the model is told what was wrong: %q", name, got)
 		}
+	}
+}
+
+// Typed words answer the question waiting in THEIR conversation only, and a command never does.
+func TestChoiceRequester_TypedWordsAnswerOnlyTheirOwnConversationsQuestion(t *testing.T) {
+	m := &buttonMessenger{tokens: make(chan string, 1)}
+	r := runtime.NewMessengerChoiceRequester(m)
+	conv := domain.ConversationRef{Provider: "telegram", IdentityID: "bot1", ChatID: "C1", SenderID: "U1"}
+	got := make(chan domain.ChoiceAnswer, 1)
+	go func() {
+		a, _ := r.RequestChoice(context.Background(), nil, "", conv, "Which?", []string{"a", "b"}, 5)
+		got <- a
+	}()
+	<-m.tokens
+
+	other := conv
+	other.ChatID = "C2"
+	if r.AnswerWithText(other, "b please") {
+		t.Error("another chat's words are not the answer")
+	}
+	otherPerson := conv
+	otherPerson.SenderID = "U2"
+	if r.AnswerWithText(otherPerson, "b please") {
+		t.Error("another person's words are not the answer")
+	}
+	for _, notAnAnswer := range []string{"/start", "   ", ""} {
+		if r.AnswerWithText(conv, notAnAnswer) {
+			t.Errorf("%q is not an answer", notAnAnswer)
+		}
+	}
+	if !r.AnswerWithText(conv, "  the b one  ") {
+		t.Fatal("their own words answer their own question")
+	}
+	if a := <-got; a.Index != domain.ChoiceTyped || a.Text != "the b one" {
+		t.Errorf("typed, trimmed: %+v", a)
+	}
+	if r.AnswerWithText(conv, "again") {
+		t.Error("once answered, nothing is waiting")
 	}
 }

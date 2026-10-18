@@ -49,7 +49,7 @@ func (h *Host) ListenAndServe(ctx context.Context) error {
 			for {
 				select {
 				case msg := <-inbox:
-					h.handleInboundSafely(ctx, hosted, msg)
+					h.dispatchInbound(ctx, hosted, msg)
 				case <-ctx.Done():
 					return
 				}
@@ -194,7 +194,7 @@ func (h *Host) StartListenerForAgent(agentID string, identity *domain.Identity, 
 			for {
 				select {
 				case msg := <-inbox:
-					h.handleInboundSafely(ctx, hosted, msg)
+					h.dispatchInbound(ctx, hosted, msg)
 				case <-ctx.Done():
 					return
 				}

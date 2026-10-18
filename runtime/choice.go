@@ -38,12 +38,12 @@ const (
 // TenantApprovalRequester: one shared Executor serves many bots, so which credentials to use
 // is bound per turn.
 type TenantChoiceRequester interface {
-	RequestChoice(ctx context.Context, identity *domain.Identity, connectionRef string, conv domain.ConversationRef, question string, options []string, timeoutSeconds int) (index int, err error)
+	RequestChoice(ctx context.Context, identity *domain.Identity, connectionRef string, conv domain.ConversationRef, question string, options []string, timeoutSeconds int) (domain.ChoiceAnswer, error)
 }
 
-type choiceRequesterFunc func(ctx context.Context, conv domain.ConversationRef, question string, options []string, timeoutSeconds int) (int, error)
+type choiceRequesterFunc func(ctx context.Context, conv domain.ConversationRef, question string, options []string, timeoutSeconds int) (domain.ChoiceAnswer, error)
 
-func (f choiceRequesterFunc) RequestChoice(ctx context.Context, conv domain.ConversationRef, question string, options []string, timeoutSeconds int) (int, error) {
+func (f choiceRequesterFunc) RequestChoice(ctx context.Context, conv domain.ConversationRef, question string, options []string, timeoutSeconds int) (domain.ChoiceAnswer, error) {
 	return f(ctx, conv, question, options, timeoutSeconds)
 }
 
@@ -59,7 +59,7 @@ func resolveChoiceRequester(hosted *HostedAgent, conv domain.ConversationRef) (d
 		return nil, false
 	}
 	if tenant, ok := executor.(TenantChoiceRequester); ok && identity != nil {
-		return choiceRequesterFunc(func(ctx context.Context, conv domain.ConversationRef, question string, options []string, timeoutSeconds int) (int, error) {
+		return choiceRequesterFunc(func(ctx context.Context, conv domain.ConversationRef, question string, options []string, timeoutSeconds int) (domain.ChoiceAnswer, error) {
 			connectionRef, _ := domain.ConnectionRefFromContext(ctx, identity.ID)
 			return tenant.RequestChoice(ctx, identity, connectionRef, conv, question, options, timeoutSeconds)
 		}), true
@@ -77,12 +77,13 @@ type MessengerChoiceRequester struct {
 	Messenger domain.InteractiveMessenger
 
 	mu      sync.Mutex
-	waiters map[string]chan int
+	waiters map[string]chan domain.ChoiceAnswer
+	byConv  map[string]string // conversation → the token of the question waiting in it
 	seq     atomic.Uint64
 }
 
 func NewMessengerChoiceRequester(messenger domain.InteractiveMessenger) *MessengerChoiceRequester {
-	return &MessengerChoiceRequester{Messenger: messenger, waiters: make(map[string]chan int)}
+	return &MessengerChoiceRequester{Messenger: messenger, waiters: make(map[string]chan domain.ChoiceAnswer), byConv: make(map[string]string)}
 }
 
 var _ TenantChoiceRequester = (*MessengerChoiceRequester)(nil)
@@ -90,20 +91,25 @@ var _ TenantChoiceRequester = (*MessengerChoiceRequester)(nil)
 // RequestChoice posts the question with one button per option plus "something else", then
 // blocks until the person taps one or the timeout passes (defaultApprovalTimeout when <= 0).
 // It returns the position of the chosen option; len(options) means "something else".
-func (r *MessengerChoiceRequester) RequestChoice(ctx context.Context, identity *domain.Identity, connectionRef string, conv domain.ConversationRef, question string, options []string, timeoutSeconds int) (int, error) {
+func (r *MessengerChoiceRequester) RequestChoice(ctx context.Context, identity *domain.Identity, connectionRef string, conv domain.ConversationRef, question string, options []string, timeoutSeconds int) (domain.ChoiceAnswer, error) {
 	cm, ok := r.Messenger.(domain.ChoiceMessenger)
 	if !ok {
-		return 0, fmt.Errorf("request choice: this messenger can't show choices")
+		return domain.ChoiceAnswer{}, fmt.Errorf("request choice: this messenger can't show choices")
 	}
 	token := fmt.Sprintf("choice-%d", r.seq.Add(1))
-	ch := make(chan int, 1)
+	ch := make(chan domain.ChoiceAnswer, 1)
+	key := conversationKey(conv)
 
 	r.mu.Lock()
 	r.waiters[token] = ch
+	r.byConv[key] = token
 	r.mu.Unlock()
 	cleanup := func() {
 		r.mu.Lock()
 		delete(r.waiters, token)
+		if r.byConv[key] == token {
+			delete(r.byConv, key)
+		}
 		r.mu.Unlock()
 	}
 
@@ -111,7 +117,7 @@ func (r *MessengerChoiceRequester) RequestChoice(ctx context.Context, identity *
 	messageID, err := cm.PostChoicePrompt(ctx, identity, connectionRef, conv, question, buttons, token)
 	if err != nil {
 		cleanup()
-		return 0, fmt.Errorf("request choice: post prompt: %w", err)
+		return domain.ChoiceAnswer{}, fmt.Errorf("request choice: post prompt: %w", err)
 	}
 
 	timeout := defaultApprovalTimeout
@@ -122,17 +128,20 @@ func (r *MessengerChoiceRequester) RequestChoice(ctx context.Context, identity *
 	defer cancel()
 
 	select {
-	case idx := <-ch:
+	case ans := <-ch:
 		shown := domain.ChoiceOtherLabel
-		if idx >= 0 && idx < len(options) {
-			shown = options[idx]
+		switch {
+		case ans.Index == domain.ChoiceTyped:
+			shown = "✍️ answered in words"
+		case ans.Index >= 0 && ans.Index < len(options):
+			shown = options[ans.Index]
 		}
 		_ = r.Messenger.UpdateMessage(context.Background(), identity, connectionRef, conv, messageID, question+"\n\n✅ "+shown)
-		return idx, nil
+		return ans, nil
 	case <-waitCtx.Done():
 		cleanup()
 		_ = r.Messenger.UpdateMessage(context.Background(), identity, connectionRef, conv, messageID, question+"\n\n⏱ No answer.")
-		return 0, waitCtx.Err()
+		return domain.ChoiceAnswer{}, waitCtx.Err()
 	}
 }
 
@@ -140,17 +149,49 @@ func (r *MessengerChoiceRequester) RequestChoice(ctx context.Context, identity *
 // the position of the button tapped. It reports false when no wait matches the token (already
 // answered, timed out, or from before a restart).
 func (r *MessengerChoiceRequester) Resolve(token string, index int) bool {
+	return r.resolve(token, domain.ChoiceAnswer{Index: index})
+}
+
+func (r *MessengerChoiceRequester) resolve(token string, ans domain.ChoiceAnswer) bool {
 	r.mu.Lock()
 	ch, ok := r.waiters[token]
 	if ok {
 		delete(r.waiters, token)
+		for k, t := range r.byConv {
+			if t == token {
+				delete(r.byConv, k)
+			}
+		}
 	}
 	r.mu.Unlock()
 	if !ok {
 		return false
 	}
-	ch <- index
+	ch <- ans
 	return true
+}
+
+// AnswerWithText takes a message the person typed while a question is waiting in their
+// conversation as the answer to it, so it never queues behind the very question it answers.
+// It reports whether a question was waiting. A command ("/start") is never an answer.
+func (r *MessengerChoiceRequester) AnswerWithText(conv domain.ConversationRef, text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" || strings.HasPrefix(text, "/") {
+		return false
+	}
+	r.mu.Lock()
+	token, ok := r.byConv[conversationKey(conv)]
+	r.mu.Unlock()
+	if !ok {
+		return false
+	}
+	return r.resolve(token, domain.ChoiceAnswer{Index: domain.ChoiceTyped, Text: text})
+}
+
+// conversationKey identifies one person's conversation in one chat of one bot: the unit that is
+// handled one message at a time, and the place a waiting question belongs to.
+func conversationKey(c domain.ConversationRef) string {
+	return c.IdentityID + "|" + c.ChatID + "|" + c.ThreadID + "|" + c.SenderID
 }
 
 // askOptionsAction is the action the agent calls to put a short multiple-choice question to
@@ -187,15 +228,18 @@ func askOptionsAction(requester domain.ChoiceRequester) *domain.BoundAction {
 			if !ok {
 				return map[string]any{"answer": "", "status": "no_answer", "note": "There is no conversation to ask in. Ask in your own words."}, nil
 			}
-			idx, rerr := requester.RequestChoice(ctx, conv, question, options, choiceTimeoutSeconds)
+			ans, rerr := requester.RequestChoice(ctx, conv, question, options, choiceTimeoutSeconds)
 			if rerr != nil {
 				log.Printf("runtime: ask_options: %v", rerr)
 				return map[string]any{"answer": "", "status": "no_answer", "note": "The person did not answer. Carry on without it, or say you need it."}, nil
 			}
-			if idx < 0 || idx >= len(options) {
+			if ans.Index == domain.ChoiceTyped {
+				return map[string]any{"answer": ans.Text, "status": "typed", "note": "The person replied in their own words instead of tapping. If that answers your question, carry on with it; if it is a different request, handle that instead."}, nil
+			}
+			if ans.Index < 0 || ans.Index >= len(options) {
 				return map[string]any{"answer": "", "status": "other", "note": "The person chose 'Something else'. Ask them in a short message what they would like instead."}, nil
 			}
-			return map[string]any{"answer": options[idx], "position": idx + 1, "status": "answered"}, nil
+			return map[string]any{"answer": options[ans.Index], "position": ans.Index + 1, "status": "answered"}, nil
 		},
 	}
 }

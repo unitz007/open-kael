@@ -95,7 +95,25 @@ type ApprovalRequester interface {
 // len(options) when they chose "something else" (see ChoiceOther). A person who doesn't answer
 // within the timeout is an error, never a guess.
 type ChoiceRequester interface {
-	RequestChoice(ctx context.Context, conv ConversationRef, question string, options []string, timeoutSeconds int) (index int, err error)
+	RequestChoice(ctx context.Context, conv ConversationRef, question string, options []string, timeoutSeconds int) (ChoiceAnswer, error)
+}
+
+// ChoiceAnswer is how a question was answered. Index is the position of the option tapped,
+// len(options) for "something else", or ChoiceTyped when the person wrote their answer in their
+// own words instead of tapping (then Text is what they wrote).
+type ChoiceAnswer struct {
+	Index int
+	Text  string
+}
+
+// ChoiceTyped is the Index of an answer that was typed, not tapped.
+const ChoiceTyped = -1
+
+// ChoiceTextAnswerer is implemented by an Executor that holds pending choice questions, so the
+// host can hand it a message the person typed while a question is waiting. It reports whether
+// the message was taken as the answer (false: no question is waiting for this conversation).
+type ChoiceTextAnswerer interface {
+	AnswerChoiceText(conv ConversationRef, text string) bool
 }
 
 // ChoiceOtherLabel is the extra last button every question carries, for a person whose answer
