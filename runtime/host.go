@@ -1531,7 +1531,10 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 				log.Printf("skill-router: intent handler %q: %v — falling through to skill loop", intent, herr)
 			} else {
 				h.deliverBestEffort(ctx, hosted, conv, reply)
-				return &domain.LoopResult{Status: domain.LoopStatusComplete}, nil, nil
+				// Keep the exchange, so "change it to 9am" has something to refer to. The
+				// reply is already delivered, so the result itself stays silent.
+				_, final := fixedReply(messages, reply)
+				return &domain.LoopResult{Status: domain.LoopStatusComplete}, final, nil
 			}
 		}
 	}
@@ -2017,7 +2020,8 @@ func (h *Host) RunScheduledSkillForUser(ctx context.Context, agentID, skillName,
 		output, err := action.Invoke(ctx, map[string]any{})
 		if err != nil {
 			log.Printf("runtime: user-scheduled skill %q agent %q user %q: failed: %v", skillName, agentID, userID, err)
-			h.deliverBestEffort(ctx, hosted, conv, fmt.Sprintf("Your scheduled %s task ran into an error: %v", skillName, err))
+			// The reason is for the logs, not for the person.
+			h.deliverBestEffort(ctx, hosted, conv, fmt.Sprintf("I couldn't finish your scheduled task just now (%s). I'll try again next time.", domain.SkillLabel(skill)))
 			return
 		}
 		log.Printf("runtime: user-scheduled skill %q agent %q user %q: finished", skillName, agentID, userID)

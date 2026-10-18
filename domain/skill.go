@@ -1,5 +1,7 @@
 package domain
 
+import "strings"
+
 type SkillVisibility string
 
 const (
@@ -82,4 +84,20 @@ type SkillContract struct {
 	Description  string `json:"description"`
 	InputSchema  Schema `json:"input_schema"`
 	OutputSchema Schema `json:"output_schema"`
+}
+
+// SkillLabel is how an ability is named to a person: the creator's own description of what
+// it does, or its name tidied into words when there is none. It never contains the
+// underscores of the internal name.
+func SkillLabel(s *Skill) string {
+	if s == nil {
+		return "your task"
+	}
+	if d := strings.TrimSpace(s.Description); d != "" {
+		return d
+	}
+	if w := strings.TrimSpace(strings.ReplaceAll(s.Name, "_", " ")); w != "" {
+		return w
+	}
+	return "your task"
 }

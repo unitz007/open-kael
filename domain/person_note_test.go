@@ -65,3 +65,22 @@ func TestBindSkill_AnAbilitysOwnLoopKnowsWhenItIsAndWhoItWorksFor(t *testing.T) 
 		t.Errorf("a headless run still knows the date: %q", got)
 	}
 }
+
+func TestSkillLabel_IsPlainWordsNeverTheInternalName(t *testing.T) {
+	cases := []struct {
+		skill *Skill
+		want  string
+	}{
+		{&Skill{Name: "manages_fpl_squad_transfers", Description: "Manages my FPL squad and transfers"}, "Manages my FPL squad and transfers"},
+		{&Skill{Name: "s_calendar_finds_free", Description: "  Checks your calendar  "}, "Checks your calendar"},
+		{&Skill{Name: "places_forex_trades"}, "places forex trades"},
+		{&Skill{}, "your task"},
+		{nil, "your task"},
+	}
+	for _, c := range cases {
+		got := SkillLabel(c.skill)
+		if got != c.want || strings.Contains(got, "_") {
+			t.Errorf("label %q, want %q", got, c.want)
+		}
+	}
+}

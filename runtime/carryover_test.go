@@ -2,6 +2,7 @@ package runtime_test
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"strings"
 	"sync"
@@ -149,4 +150,74 @@ func TestOutOfScope_GetsAFixedReplyAndNoModelCall(t *testing.T) {
 			t.Errorf("no internal instruction may be left in the history: %q", m.Content)
 		}
 	}
+}
+
+// ── schedules: the reply is kept, and a failed run never shows its internals ──
+
+type scheduleRouter struct{}
+
+func (scheduleRouter) PickSkill(context.Context, string, []*domain.Skill) (string, float64, domain.Intent, error) {
+	return "analyse_pair", 1, domain.IntentSchedule, nil
+}
+func (scheduleRouter) PickSkills(context.Context, string, []*domain.Skill) ([]string, domain.Intent, error) {
+	return []string{"analyse_pair"}, domain.IntentSchedule, nil
+}
+
+// An intent handler answers for itself; the exchange must still be kept in the conversation,
+// so "change it to 9am" has something to refer to. It must be delivered exactly once.
+func TestIntentHandler_ItsReplyIsKeptInTheConversationAndSentOnce(t *testing.T) {
+	r := newFollowRig(t, scheduleRouter{})
+	r.host.SetIntentHandler(domain.IntentSchedule, func(_ context.Context, _, _, skillName, _, _, _ string) (string, error) {
+		return "Done! Every day at 8:00 AM I'll run this for you: " + skillName, nil
+	})
+	r.say(t, "C1", "check my calendar every morning at 8")
+
+	if got := r.box.texts(); len(got) != 1 {
+		t.Fatalf("delivered once: %q", got)
+	}
+	var stored []domain.Message
+	for _, m := range r.mem.store {
+		stored = m
+	}
+	if len(stored) != 2 || stored[0].Role != domain.RoleUser || stored[1].Role != domain.RoleAssistant || !strings.HasPrefix(stored[1].Content, "Done! Every day at 8:00 AM") {
+		t.Fatalf("the exchange must be kept: %+v", stored)
+	}
+	if r.spy.calls() != 0 {
+		t.Errorf("the handler answers; no model call: %d", r.spy.calls())
+	}
+}
+
+func TestScheduledRun_AFailureSaysWhatItWasInPlainWordsAndNothingElse(t *testing.T) {
+	integ := &domain.Integration{ID: "int-tool", Service: "tool"}
+	t1 := &domain.ToolDefinition{ID: "t1", Name: "one", IntegrationID: integ.ID, Action: "one"}
+	skill := &domain.Skill{ID: "s1", Name: "morning_summary", Description: "Summarises my day", AgentID: "a1", Tools: []domain.ToolBinding{{ToolID: "t1"}}}
+	agent := &domain.Agent{ID: "a1", Name: "Desk", Skills: []*domain.Skill{skill}}
+	box := &outbox{}
+	executors := domain.NewExecutorRegistry()
+	executors.Register("tool", failingExecutor{})
+	executors.Register("slack", box)
+	deps := slackDeps(func(d *runtime.AgentDeps) {
+		d.Executors = executors
+		d.ToolsByID = map[string]*domain.ToolDefinition{"t1": t1}
+		d.IntegrationsByID[integ.ID] = integ
+	})
+	host := runtime.NewHost()
+	host.Register(&runtime.HostedAgent{Agent: agent, Deps: deps})
+	if err := host.RunScheduledSkillForUser(context.Background(), "a1", "morning_summary", "u1", "id_slack", "C1"); err != nil {
+		t.Fatal(err)
+	}
+	got := waitTexts(box, 1)
+	want := "I couldn't finish your scheduled task just now (Summarises my day). I'll try again next time."
+	if len(got) != 1 || got[0] != want {
+		t.Fatalf("failure message:\n got %q\nwant %q", got, want)
+	}
+	if strings.Contains(got[0], "_") || strings.Contains(strings.ToLower(got[0]), "secret-detail") {
+		t.Errorf("no internal name and no error text: %q", got[0])
+	}
+}
+
+type failingExecutor struct{}
+
+func (failingExecutor) Execute(context.Context, *domain.Identity, string, string, map[string]any) (any, error) {
+	return nil, errors.New("secret-detail: connection refused to 10.0.0.1")
 }
