@@ -256,6 +256,9 @@ type Host struct {
 	// follow-up that matches nothing on its own stays with them.
 	carry *carryOver
 
+	// repeatingTasksNote describes a person's repeating tasks for the agent's instructions.
+	repeatingTasksNote func(ctx context.Context, userID, agentID string) string
+
 	// greetingJudge tells a bare hello from a real message (see GreetingJudge).
 	greetingJudge GreetingJudge
 
@@ -1296,7 +1299,13 @@ func (h *Host) HandleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 	}
 	// Abilities run as their own loops: they must know who this is and when it is too.
 	ctx = domain.WithUserDetails(ctx, person)
-	messages = append(messages, domain.Message{Role: domain.RoleSystem, Content: buildSystemPrompt(hosted.Agent, userProfile, userInstructions, integrationNotes, promptIntegrations, messengerSkills, person)})
+	systemPrompt := buildSystemPrompt(hosted.Agent, userProfile, userInstructions, integrationNotes, promptIntegrations, messengerSkills, person)
+	if conv.UserID != "" && h.repeatingTasksNote != nil {
+		if note := strings.TrimSpace(h.repeatingTasksNote(ctx, conv.UserID, hosted.Agent.ID)); note != "" {
+			systemPrompt += "\n\n" + note
+		}
+	}
+	messages = append(messages, domain.Message{Role: domain.RoleSystem, Content: systemPrompt})
 	messages = append(messages, prior...)
 	messages = append(messages, domain.Message{Role: domain.RoleUser, Content: userText})
 

@@ -269,3 +269,30 @@ func TestChat_ASocialMessageIsAnsweredWithoutToolsAndWithoutLeavingTheInstructio
 		t.Errorf("the reply itself is kept: %+v", stored)
 	}
 }
+
+// The agent is told about the person's own repeating tasks, so it can keep them apart from
+// their calendar ("what's my schedule" is the calendar) and point them out.
+func TestRepeatingTasksNote_ReachesTheAgentOnlyWhenThereAreSome(t *testing.T) {
+	var seen string
+	spy := &promptSpy{seen: &seen}
+	agent := &domain.Agent{ID: "a1", Name: "Desk", LLMs: []domain.LLM{spy}, MaxIterations: 3}
+	host, hosted, _ := onboardingRig(t, agent)
+	note := "The person has 2 repeating tasks."
+	host.SetRepeatingTasksNote(func(_ context.Context, userID, agentID string) string {
+		if userID == "u1" && agentID == "a1" {
+			return note
+		}
+		return ""
+	})
+	host.DispatchInbound(context.Background(), hosted, firstMessage("what is my schedule"))
+	if !strings.Contains(seen, note) {
+		t.Errorf("the agent must know about their repeating tasks: %q", seen)
+	}
+
+	seen = ""
+	host.SetRepeatingTasksNote(func(context.Context, string, string) string { return "" })
+	host.DispatchInbound(context.Background(), hosted, firstMessage("what is my schedule"))
+	if strings.Contains(seen, "repeating tasks") {
+		t.Errorf("with none, nothing is added: %q", seen)
+	}
+}

@@ -201,3 +201,12 @@ func (h *Host) RemoveGettingStartedButton(ctx context.Context, agentID, identity
 		log.Printf("runtime: remove welcome button %s/%s: %v", identityID, channelRef, err)
 	}
 }
+
+// SetRepeatingTasksNote registers how to describe the repeating tasks a person has set up
+// with this agent (work the agent does by itself at set times), as text for the agent's
+// instructions ("" when there are none). It lets the agent keep these apart from the
+// person's calendar: "what's my schedule" is the calendar, and the agent can point out that
+// they also have repeating tasks.
+func (h *Host) SetRepeatingTasksNote(f func(ctx context.Context, userID, agentID string) string) {
+	h.repeatingTasksNote = f
+}
