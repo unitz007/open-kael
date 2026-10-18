@@ -67,3 +67,18 @@ func TestChangeFailed(t *testing.T) {
 		}
 	}
 }
+
+func TestFinishCheck_TheRefusalReadsCleanly(t *testing.T) {
+	r := &Requirements{Tools: []string{"create_recurring_event", "create_event"}}
+	ok, msg := finishCheck(map[string]any{"outcome": OutcomeDone}, r, nil)
+	if ok {
+		t.Fatal("a claim with nothing done is refused")
+	}
+	if !strings.Contains(msg, "none of create_recurring_event, create_event has succeeded this turn") || strings.Contains(msg, "has not succeeded") && strings.Contains(msg, "none of") {
+		t.Errorf("no double negative: %q", msg)
+	}
+	_, any := finishCheck(map[string]any{"outcome": OutcomeDone}, &Requirements{AnyChange: true}, nil)
+	if !strings.Contains(any, "the action you were asked to carry out has not succeeded this turn") {
+		t.Errorf("unnamed action: %q", any)
+	}
+}

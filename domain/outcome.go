@@ -187,11 +187,11 @@ func finishCheck(args map[string]any, r *Requirements, records []ActionRecord) (
 		if r.satisfied(records) {
 			return true, ""
 		}
-		what := "the action you were asked to carry out"
+		clause := "the action you were asked to carry out has not succeeded this turn"
 		if len(r.Tools) > 0 {
-			what = "none of " + strings.Join(r.Tools, ", ")
+			clause = "none of " + strings.Join(r.Tools, ", ") + " has succeeded this turn"
 		}
-		msg := fmt.Sprintf("You finished with outcome %q, but %s has not succeeded this turn.", OutcomeDone, what)
+		msg := fmt.Sprintf("You finished with outcome %q, but %s.", OutcomeDone, clause)
 		if att := r.lastAttempt(records); att != nil && !att.Done {
 			msg += fmt.Sprintf(" The last attempt did not go through: %s.", att.Reason)
 		} else if r.lastAttempt(records) == nil {
