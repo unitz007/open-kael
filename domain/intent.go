@@ -16,6 +16,9 @@ const (
 	// small talk): nothing to look up, nothing to do. The agent answers warmly and briefly,
 	// in their language, with no tools.
 	IntentChat Intent = "chat"
+	// IntentOffTopic means the message is unrelated to what the agent is for (general
+	// knowledge, entertainment, tasks outside its field). It is declined, in fixed words.
+	IntentOffTopic Intent = "off_topic"
 )
 
 type intentKey struct{}

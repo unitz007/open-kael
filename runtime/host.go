@@ -439,6 +439,15 @@ type ScopeChecker interface {
 	IsInScope(ctx context.Context, userText, agentContext string) (bool, error)
 }
 
+// IntentClassifier is an optional extension of SkillRouter. When the configured router also
+// implements it, the kind of statement is decided FIRST, on its own, and everything after
+// follows from that: a social message is answered warmly, something unrelated to the agent is
+// declined, and only the rest go on to find which abilities they need. agentArea is what the
+// agent is for (its description); empty means the router can't judge "unrelated".
+type IntentClassifier interface {
+	ClassifyIntent(ctx context.Context, userText string, earlier domain.Earlier, agentArea string) (domain.Intent, error)
+}
+
 // ToolFilter, when set on the Host, trims the merged tool list before it is
 // passed to the LLM. It receives the user's message and the full hydrated list,
 // and returns the subset that is relevant. The filter must never return an empty
@@ -1503,15 +1512,46 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 	var intent domain.Intent
 	var err error
 	earlier := recentTurn(messages)
+
+	// What kind of statement is this? Asked first and on its own, so that what happens next
+	// does not depend on which abilities the agent has or how well they happen to match.
+	classified := false
+	if ic, ok := h.skillRouter.(IntentClassifier); ok {
+		in, ierr := ic.ClassifyIntent(ctx, userText, earlier, scopeContext(hosted.Agent))
+		if ierr != nil {
+			log.Printf("skill-router: classify intent failed: %v — reading intent and abilities together", ierr)
+		} else {
+			intent, classified = in, true
+			log.Printf("skill-router: intent=%q", intent)
+			switch intent {
+			case domain.IntentChat:
+				log.Printf("skill-router: just being friendly — answering without tools")
+				return h.chatReply(ctx, hosted, messages, actions)
+			case domain.IntentOffTopic:
+				if len(hosted.Agent.Skills) > 0 {
+					log.Printf("skill-router: unrelated to this agent — replying with what I can do")
+					result, final := fixedReply(messages, declineText(hosted.Agent))
+					return result, final, nil
+				}
+				log.Printf("skill-router: unrelated to this agent (no abilities) — letting LLM decline")
+				return h.respondDirectly(ctx, hosted, withDeclineHint(messages), actions)
+			}
+		}
+	}
+
+	var pickedIntent domain.Intent
 	if cr, ok := h.skillRouter.(ContextualSkillRouter); ok && !earlier.IsZero() {
 		log.Printf("skill-router: reading the message next to the one before it")
-		skillNames, intent, err = cr.PickSkillsInContext(ctx, userText, earlier, hosted.Agent.Skills)
+		skillNames, pickedIntent, err = cr.PickSkillsInContext(ctx, userText, earlier, hosted.Agent.Skills)
 	} else {
-		skillNames, intent, err = h.skillRouter.PickSkills(ctx, userText, hosted.Agent.Skills)
+		skillNames, pickedIntent, err = h.skillRouter.PickSkills(ctx, userText, hosted.Agent.Skills)
 	}
 	if err != nil {
 		log.Printf("skill-router: pick skills failed: %v — running NativeLoop with full actions", err)
 		return h.runNativeLoop(ctx, hosted, messages, actions)
+	}
+	if !classified {
+		intent = pickedIntent // no separate classifier: the picker's own reading stands
 	}
 
 	log.Printf("skill-router: skills=%v intent=%q", skillNames, intent)
@@ -1564,23 +1604,16 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 		// outside this agent's scope — decline instead of letting the LLM
 		// answer anything. Agents with no skills fall back to the full loop.
 		if len(hosted.Agent.Skills) > 0 {
-			// A question in the agent's own area that none of its abilities covers ("is the
-			// market open?" to a forex agent) is answered plainly, with no tools and no
-			// pretence of looking anything up. Only what is clearly off topic is declined.
-			// If the router can't say, the safe answer is still the fixed decline.
-			if sc, ok := h.skillRouter.(ScopeChecker); ok {
-				if scope := scopeContext(hosted.Agent); scope != "" {
-					inScope, serr := sc.IsInScope(ctx, userText, scope)
-					if serr != nil {
-						log.Printf("skill-router: scope check failed: %v — replying with what I can do", serr)
-					} else if inScope {
-						log.Printf("skill-router: no ability matched but it is in this agent's area — answering without tools")
-						result, final, rerr := h.respondDirectly(ctx, hosted, withHint(messages, inAreaHint), actions)
-						return result, withoutHint(final, inAreaHint), rerr
-					}
-				}
+			// A question (not an off-topic one: that was settled above) that none of its
+			// abilities covers, like "is the market open?" to a forex agent, is answered
+			// plainly with no tools and no pretence of looking anything up. A request to DO
+			// something it has no ability for is told what it can do instead.
+			if classified && intent == domain.IntentRecommend {
+				log.Printf("skill-router: a question no ability covers — answering without tools")
+				result, final, rerr := h.respondDirectly(ctx, hosted, withHint(messages, inAreaHint), actions)
+				return result, withoutHint(final, inAreaHint), rerr
 			}
-			log.Printf("skill-router: no skills matched — out of scope, replying with what I can do")
+			log.Printf("skill-router: nothing it can do for this matched — replying with what I can do")
 			result, final := fixedReply(messages, declineText(hosted.Agent))
 			return result, final, nil
 		}
