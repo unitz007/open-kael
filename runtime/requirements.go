@@ -52,7 +52,7 @@ func (h *Host) requirementsFor(ctx context.Context, userText string, earlier str
 	if len(names) == 0 {
 		return nil
 	}
-	log.Printf("skill-router: execute intent — these must succeed for the request to be done: %v", names)
+	log.Printf("skill-router: execute intent — any one of these succeeding means the request is done: %v", names)
 	return &domain.Requirements{Tools: names}
 }
 

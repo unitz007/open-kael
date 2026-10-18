@@ -89,7 +89,10 @@ func OutcomeOf(output any, err error) (done bool, message, reason string) {
 
 // Requirements say what must have really happened for a turn to be called done.
 type Requirements struct {
-	// Tools are the names of the actions that must each have succeeded.
+	// Tools are the actions that fit the request: any ONE of them having succeeded is enough.
+	// They are alternatives, not a checklist. Jev says yes to every action that could carry
+	// out the request ("create_event" and "create_recurring_event" both fit "add a weekly
+	// meeting"); requiring all of them would make a correct, successful turn impossible.
 	Tools []string
 	// AnyChange, when set and Tools is empty, is satisfied by any one action that
 	// changes something having succeeded. It is the fallback when it can't be
@@ -126,17 +129,13 @@ func (r *Requirements) satisfied(records []ActionRecord) bool {
 		return false
 	}
 	for _, name := range r.Tools {
-		ok := false
 		for _, rec := range records {
 			if rec.Name == name && rec.Done {
-				ok = true
+				return true
 			}
 		}
-		if !ok {
-			return false
-		}
 	}
-	return true
+	return false
 }
 
 // lastAttempt finds the most recent attempt at a required action (or at any
@@ -159,9 +158,17 @@ func (r *Requirements) lastAttempt(records []ActionRecord) *ActionRecord {
 	return nil
 }
 
-// NothingChangedMessage states plainly that the request was not carried out, and
-// why, from what actually happened. Used when the agent keeps claiming otherwise.
+// NothingChangedMessage states plainly what really happened when the agent keeps claiming
+// otherwise. It never says "nothing was changed" if something was: it says what went through.
 func (r *Requirements) NothingChangedMessage(records []ActionRecord) string {
+	for _, rec := range records {
+		if rec.Changes && rec.Done {
+			if lines := receipts(records); len(lines) > 0 {
+				return "This went through, but I couldn't confirm it was everything you asked for:\n" + strings.Join(lines, "\n")
+			}
+			return "Part of that went through, but I couldn't confirm all of it. Please check."
+		}
+	}
 	reason := "I didn't carry that out"
 	if att := r.lastAttempt(records); att != nil && !att.Done && att.Reason != "" {
 		reason = att.Reason
@@ -182,7 +189,7 @@ func finishCheck(args map[string]any, r *Requirements, records []ActionRecord) (
 		}
 		what := "the action you were asked to carry out"
 		if len(r.Tools) > 0 {
-			what = fmt.Sprintf("%q", strings.Join(r.Tools, `", "`))
+			what = "none of " + strings.Join(r.Tools, ", ")
 		}
 		msg := fmt.Sprintf("You finished with outcome %q, but %s has not succeeded this turn.", OutcomeDone, what)
 		if att := r.lastAttempt(records); att != nil && !att.Done {

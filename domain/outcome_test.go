@@ -221,8 +221,10 @@ func TestLoop_TheWrongToolSucceedingDoesNotSatisfyTheRequest(t *testing.T) {
 		say(finishCall("3", "Trade placed!", "done")),
 		say(finishCall("4", "Trade placed!", "done")),
 	}, tradeTool("close_trade", &n1, "closed", nil), tradeTool("place_trade", &n2, "x", nil), finishWithOutcome())
-	if !strings.HasPrefix(res.Content, "Nothing was changed:") || n2 != 0 {
-		t.Errorf("only the tool this request needs counts: %q", res.Content)
+	// The request is not satisfied (only the tool it needs counts), but something DID go
+	// through, so the reply must never say "nothing was changed".
+	if !strings.HasPrefix(res.Content, "Part of that went through") || strings.Contains(res.Content, "Nothing was changed") || n2 != 0 {
+		t.Errorf("only the tool this request needs counts, and what went through is not denied: %q", res.Content)
 	}
 }
 
@@ -293,4 +295,82 @@ type recordingLLM struct{ inner *funcLLM }
 
 func (r *recordingLLM) Call(ctx context.Context, m []domain.Message, a []domain.ActionSpec) (*domain.LLMResponse, error) {
 	return r.inner.Call(ctx, m, a)
+}
+
+// THE incident: "add a weekly team meeting" fits both create_event and create_recurring_event,
+// so both were required. The agent correctly used one; the guard refused its "done" until it
+// repeated the action (a duplicate calendar event) and then said "Nothing was changed".
+// Required actions are alternatives: any one succeeding is enough.
+func TestLoop_AnyOneOfTheFittingActionsIsEnough(t *testing.T) {
+	ctx := domain.WithRequirements(context.Background(), &domain.Requirements{Tools: []string{"create_event", "create_recurring_event"}})
+	single, recurring := 0, 0
+	res, asked := runLoop(t, ctx, []*domain.LLMResponse{
+		say(call("1", "create_recurring_event", map[string]any{"summary": "Team meeting"})),
+		say(finishCall("2", "Added your weekly team meeting.", "done")),
+	}, tradeTool("create_event", &single, map[string]any{"message": "event added"}, nil),
+		tradeTool("create_recurring_event", &recurring, map[string]any{"message": "weekly event added"}, nil), finishWithOutcome())
+	if asked != 2 || recurring != 1 || single != 0 {
+		t.Fatalf("one fitting action doing it is enough, and nothing is repeated: asked=%d recurring=%d single=%d", asked, recurring, single)
+	}
+	if !strings.Contains(res.Content, "Added your weekly team meeting.") || strings.Contains(res.Content, "Nothing was changed") {
+		t.Errorf("the agent's own words stand, with the receipt: %q", res.Content)
+	}
+	if !strings.Contains(res.Content, "✓ weekly event added") {
+		t.Errorf("receipt: %q", res.Content)
+	}
+}
+
+// If the guard does have to give up, it says what really went through.
+func TestLoop_GivingUpNeverDeniesWhatWentThrough(t *testing.T) {
+	n, m := 0, 0
+	res, _ := runLoop(t, needTrade(), []*domain.LLMResponse{
+		say(call("1", "close_trade", nil)),
+		say(finishCall("2", "Done!", "done")), say(finishCall("3", "Done!", "done")), say(finishCall("4", "Done!", "done")),
+	}, tradeTool("close_trade", &n, map[string]any{"message": "Closed your EURUSD position."}, nil), tradeTool("place_trade", &m, "x", nil), finishWithOutcome())
+	want := "This went through, but I couldn't confirm it was everything you asked for:\n✓ Closed your EURUSD position."
+	if res.Content != want {
+		t.Errorf("got %q\nwant %q", res.Content, want)
+	}
+}
+
+func TestLoop_AnIdenticalChangeIsNeverMadeTwiceInOneTurn(t *testing.T) {
+	n := 0
+	args := map[string]any{"summary": "Team meeting", "start": "2026-10-19T10:00:00"}
+	res, _ := runLoop(t, context.Background(), []*domain.LLMResponse{
+		say(call("1", "create_event", args)),
+		say(call("2", "create_event", map[string]any{"start": "2026-10-19T10:00:00", "summary": "Team meeting"})), // same change, keys in another order
+		say(finishCall("3", "Added it.", "")),
+	}, tradeTool("create_event", &n, map[string]any{"message": "added"}, nil), plainFinish())
+	if n != 1 {
+		t.Errorf("the same change must not be made twice: ran %d times", n)
+	}
+	_ = res
+
+	// A genuinely different change is a different change.
+	n = 0
+	runLoop(t, context.Background(), []*domain.LLMResponse{
+		say(call("1", "create_event", args)),
+		say(call("2", "create_event", map[string]any{"summary": "Team meeting", "start": "2026-10-26T10:00:00"})),
+		say(finishCall("3", "Added both.", "")),
+	}, tradeTool("create_event", &n, map[string]any{"message": "added"}, nil), plainFinish())
+	if n != 2 {
+		t.Errorf("different arguments are a different change: ran %d times", n)
+	}
+
+	// A failed attempt may be retried: only what went through is remembered.
+	n = 0
+	calls := 0
+	flaky := &domain.BoundAction{Spec: domain.ActionSpec{Name: "create_event", Changes: true}, Invoke: func(context.Context, map[string]any) (any, error) {
+		calls++
+		if calls == 1 {
+			return nil, errors.New("temporary")
+		}
+		return map[string]any{"message": "added"}, nil
+	}}
+	runLoop(t, context.Background(), []*domain.LLMResponse{
+		say(call("1", "create_event", args)), say(call("2", "create_event", args)), say(finishCall("3", "Added it.", "")),
+	}, flaky, plainFinish())
+	if calls != 2 {
+		t.Errorf("a failed attempt can be retried: %d calls", calls)
+	}
 }

@@ -108,6 +108,9 @@ func (l *NativeLoop) Run(ctx context.Context, messages []Message, actions []*Bou
 	// What each action really did, and — for a request to DO something — what must
 	// have really happened before the agent may call it done.
 	var records []ActionRecord
+	// Changes that already went through this turn, by action and exact arguments. The same
+	// change is never made twice in one turn, whatever makes the model ask again.
+	doneChanges := map[string]string{}
 	reqs := RequirementsFromContext(ctx)
 	if fin, ok := actionsByName[FinishActionName]; !reqs.Active() || !ok || !hasProperty(fin.Spec.InputSchema, "outcome") {
 		// Only a loop whose finish asks for an outcome is held to the requirements, so
@@ -221,6 +224,19 @@ func (l *NativeLoop) Run(ctx context.Context, messages []Message, actions []*Bou
 				continue
 			}
 
+			changeKey := ""
+			if action.Spec.Changes {
+				if args, merr := json.Marshal(call.Arguments); merr == nil {
+					changeKey = call.Name + "|" + string(args)
+					if prev, repeated := doneChanges[changeKey]; repeated {
+						log.Printf("loop: action %q already made this exact change this turn — not repeating it", call.Name)
+						messages = append(messages, Message{Role: RoleTool, ToolCallID: call.ID, Name: call.Name,
+							Content: "already done this turn, so it was not repeated. Result: " + prev})
+						continue
+					}
+				}
+			}
+
 			output, err := action.Invoke(ctx, call.Arguments)
 			done, msg, why := OutcomeOf(output, err)
 			records = append(records, ActionRecord{Name: call.Name, Changes: action.Spec.Changes, Done: done, Message: msg, Reason: why})
@@ -235,6 +251,9 @@ func (l *NativeLoop) Run(ctx context.Context, messages []Message, actions []*Bou
 			}
 
 			consecutiveFailures = 0
+			if changeKey != "" && done {
+				doneChanges[changeKey] = truncateRunes(StringifyResult(output), 300)
+			}
 			messages = append(messages, Message{Role: RoleTool, ToolCallID: call.ID, Name: call.Name, Content: StringifyResult(output)})
 		}
 	}
@@ -326,4 +345,12 @@ func StringifyResult(output any) string {
 func hasProperty(s Schema, name string) bool {
 	_, ok := s.Properties[name]
 	return ok
+}
+
+// truncateRunes keeps the first n characters of s.
+func truncateRunes(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n]) + "…"
+	}
+	return s
 }
