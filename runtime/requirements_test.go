@@ -297,7 +297,7 @@ type ctxRouter struct {
 	mu         sync.Mutex
 	plainCalls int
 	ctxCalls   int
-	earlier    []string
+	earlier    []domain.Earlier
 }
 
 func (r *ctxRouter) PickSkill(context.Context, string, []*domain.Skill) (string, float64, domain.Intent, error) {
@@ -309,7 +309,7 @@ func (r *ctxRouter) PickSkills(context.Context, string, []*domain.Skill) ([]stri
 	r.plainCalls++
 	return []string{"forex"}, domain.IntentExecute, nil
 }
-func (r *ctxRouter) PickSkillsInContext(_ context.Context, _ string, earlier string, _ []*domain.Skill) ([]string, domain.Intent, error) {
+func (r *ctxRouter) PickSkillsInContext(_ context.Context, _ string, earlier domain.Earlier, _ []*domain.Skill) ([]string, domain.Intent, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.ctxCalls++
@@ -358,8 +358,8 @@ func TestRouter_AShortReplyIsReadNextToWhatItAnswers(t *testing.T) {
 	if router.ctxCalls != 1 || router.plainCalls != 1 {
 		t.Fatalf("a reply is read in context: plain=%d ctx=%d", router.plainCalls, router.ctxCalls)
 	}
-	if len(router.earlier) != 1 || !strings.Contains(router.earlier[0], "Shall I place it?") {
-		t.Errorf("the picker must be shown the offer the person is answering: %v", router.earlier)
+	if len(router.earlier) != 1 || !strings.Contains(router.earlier[0].Assistant, "Shall I place it?") || router.earlier[0].User != "buy EURUSD" {
+		t.Errorf("the picker must be shown the offer the person is answering and what they had asked: %+v", router.earlier)
 	}
 }
 

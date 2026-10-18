@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -134,5 +135,98 @@ func TestBuildSystemPrompt_IncludesWhoTheyAreBeforeWhatTimeItIs(t *testing.T) {
 	i, j := strings.Index(p, `called "Ada"`), strings.Index(p, "Right now it is")
 	if i < 0 || j < 0 || i > j || !strings.Contains(p, "preferred language is Yoruba") {
 		t.Errorf("who they are, then the time: %q", p)
+	}
+}
+
+func TestRecentTurn_IsThePersonsPreviousMessageAndTheReplyToIt(t *testing.T) {
+	msgs := []domain.Message{
+		{Role: domain.RoleSystem, Content: "be helpful"},
+		{Role: domain.RoleUser, Content: "older question"},
+		{Role: domain.RoleAssistant, Content: "older answer"},
+		{Role: domain.RoleUser, Content: "  Check audusd "},
+		{Role: domain.RoleAssistant, ToolCalls: []domain.ToolCall{{ID: "1", Name: "get_quote"}}},
+		{Role: domain.RoleTool, Content: `{"price":0.69}`},
+		{Role: domain.RoleAssistant, ToolCalls: []domain.ToolCall{{ID: "2", Name: domain.FinishActionName, Arguments: map[string]any{"content": "Here is the rundown on AUD/USD."}}}},
+		{Role: domain.RoleTool, Content: "done"},
+		{Role: domain.RoleUser, Content: "Pull up the full context"},
+	}
+	e := recentTurn(msgs)
+	if e.User != "Check audusd" || e.Assistant != "Here is the rundown on AUD/USD." {
+		t.Errorf("recent turn: %+v", e)
+	}
+	// The reply is kept whole here; it is cut where it is shown.
+	long := strings.Repeat("analysis ", 500)
+	if got := recentTurn([]domain.Message{{Role: domain.RoleUser, Content: "q"}, {Role: domain.RoleAssistant, Content: long}}); got.Assistant != strings.TrimSpace(long) {
+		t.Errorf("the reply must not be cut by the runtime")
+	}
+	// Nothing earlier, or no reply yet.
+	if !recentTurn(nil).IsZero() || !recentTurn([]domain.Message{{Role: domain.RoleUser, Content: "hi"}}).IsZero() {
+		t.Error("nothing earlier means nothing to show")
+	}
+}
+
+func TestCarryOver_RemembersPerConversationForAWhile(t *testing.T) {
+	c := newCarryOver()
+	now := time.Date(2026, 10, 18, 9, 0, 0, 0, time.UTC)
+	c.now = func() time.Time { return now }
+	conv := domain.ConversationRef{UserID: "u1", IdentityID: "bot", ChatID: "C1"}
+	a, b := carryKey("agent", conv), carryKey("agent", domain.ConversationRef{UserID: "u1", IdentityID: "bot", ChatID: "C2"})
+	other := carryKey("agent2", conv)
+	if a == "" || a == b || a == other {
+		t.Fatalf("a conversation is one person, one agent, one chat: %q %q %q", a, b, other)
+	}
+	if carryKey("agent", domain.ConversationRef{ChatID: "C1"}) != "" {
+		t.Error("no person, no memory")
+	}
+
+	c.remember(a, []string{"forex"})
+	if got := c.recall(a); len(got) != 1 || got[0] != "forex" {
+		t.Fatalf("recall: %v", got)
+	}
+	if c.recall(b) != nil || c.recall(other) != nil {
+		t.Error("another chat or agent must not inherit it")
+	}
+	now = now.Add(carryOverFor + time.Second)
+	if c.recall(a) != nil {
+		t.Error("after the time is up the follow-up stands on its own")
+	}
+	c.remember(a, nil)
+	if c.recall(a) != nil {
+		t.Error("nothing matched, nothing to remember")
+	}
+}
+
+func TestCarryOver_NeverGrowsWithoutBound(t *testing.T) {
+	c := newCarryOver()
+	for i := 0; i < carryOverMax*2; i++ {
+		c.remember(fmt.Sprintf("k%d", i), []string{"s"})
+	}
+	c.mu.Lock()
+	n := len(c.last)
+	c.mu.Unlock()
+	if n > carryOverMax {
+		t.Errorf("memory must stay bounded: %d", n)
+	}
+}
+
+func TestIsShortFollowUp(t *testing.T) {
+	for text, want := range map[string]bool{
+		"Pull up the full context": true, "do it": true, "": false, "   ": false,
+		strings.Repeat("a long new question about something else ", 3): false,
+	} {
+		if got := isShortFollowUp(text); got != want {
+			t.Errorf("%q: got %v want %v", text, got, want)
+		}
+	}
+}
+
+func TestDeclineText_IsFixedAndListsWhatTheAgentDoes(t *testing.T) {
+	agent := &domain.Agent{Skills: []*domain.Skill{
+		{Name: "analyse_pair", Description: "Analyses a currency pair"},
+		{Name: "places_trades"},
+	}}
+	want := "I can't help with that one. Here's what I can do:\n• Analyses a currency pair\n• Places Trades\n\nWhat would you like to try?"
+	if got := declineText(agent); got != want {
+		t.Errorf("decline:\n got %q\nwant %q", got, want)
 	}
 }

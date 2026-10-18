@@ -92,31 +92,56 @@ func actionNames(actions []*domain.BoundAction) []string {
 // maxEarlierRunes bounds how much of the previous message is shown to Jev.
 const maxEarlierRunes = 600
 
-// lastAssistantText is the assistant's most recent message with any words in it.
-// An agent speaks by calling finish, so in the stored history its words are the
-// content of that call, not the message's own text.
-func lastAssistantText(messages []domain.Message) string {
+// lastAssistant returns the agent's most recent reply in full (empty if none) and where
+// it sits in messages. A reply is stored either as plain content or, for an agent that
+// finishes with a tool call, as that call's "content" argument; both are read.
+func lastAssistant(messages []domain.Message) (text string, at int) {
 	for i := len(messages) - 1; i >= 0; i-- {
 		if messages[i].Role != domain.RoleAssistant {
 			continue
 		}
-		text := strings.TrimSpace(messages[i].Content)
-		if text == "" {
+		t := strings.TrimSpace(messages[i].Content)
+		if t == "" {
 			for _, call := range messages[i].ToolCalls {
 				if call.Name == domain.FinishActionName {
 					if c, ok := call.Arguments["content"].(string); ok {
-						text = strings.TrimSpace(c)
+						t = strings.TrimSpace(c)
 					}
 				}
 			}
 		}
-		if text == "" {
-			continue
+		if t != "" {
+			return t, i
 		}
-		if r := []rune(text); len(r) > maxEarlierRunes {
-			text = string(r[:maxEarlierRunes]) + "…"
-		}
-		return text
 	}
-	return ""
+	return "", -1
+}
+
+// lastAssistantText is the agent's most recent reply, cut to its first maxEarlierRunes
+// characters: what a short follow-up like "yes" is judged against.
+func lastAssistantText(messages []domain.Message) string {
+	text, _ := lastAssistant(messages)
+	if r := []rune(text); len(r) > maxEarlierRunes {
+		text = string(r[:maxEarlierRunes]) + "…"
+	}
+	return text
+}
+
+// recentTurn is what was said just before the latest message: the agent's last reply and
+// the person's message that it answered.
+func recentTurn(messages []domain.Message) domain.Earlier {
+	reply, at := lastAssistant(messages)
+	if at < 0 {
+		return domain.Earlier{}
+	}
+	e := domain.Earlier{Assistant: reply}
+	for i := at - 1; i >= 0; i-- {
+		if messages[i].Role == domain.RoleUser {
+			if t := strings.TrimSpace(messages[i].Content); t != "" {
+				e.User = t
+				break
+			}
+		}
+	}
+	return e
 }

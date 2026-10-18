@@ -252,6 +252,10 @@ type Host struct {
 	// welcomeMessageStore remembers which message carries the Get started button.
 	welcomeMessageStore WelcomeMessageStore
 
+	// carry remembers which abilities each conversation was just using, so a short
+	// follow-up that matches nothing on its own stays with them.
+	carry *carryOver
+
 	// greetingJudge tells a bare hello from a real message (see GreetingJudge).
 	greetingJudge GreetingJudge
 
@@ -413,12 +417,12 @@ type SkillRouter interface {
 	PickSkills(ctx context.Context, userText string, skills []*domain.Skill) (skillNames []string, intent domain.Intent, err error)
 }
 
-// ContextualSkillRouter is an optional extension of SkillRouter. A short reply such as
-// "yes" or "do it" means nothing alone, so when the router also implements this, the
-// host passes it the assistant's previous message and the router can see what the
-// person is answering. Without it (or with nothing earlier) PickSkills is used.
+// ContextualSkillRouter is an optional extension of SkillRouter. A short follow-up such as
+// "yes", "do it" or "pull up the full context" means nothing alone, so when the router also
+// implements this, the host passes it what was said just before: the person's previous
+// message and the agent's reply to it. Without it (or with nothing earlier) PickSkills is used.
 type ContextualSkillRouter interface {
-	PickSkillsInContext(ctx context.Context, userText, earlier string, skills []*domain.Skill) (skillNames []string, intent domain.Intent, err error)
+	PickSkillsInContext(ctx context.Context, userText string, earlier domain.Earlier, skills []*domain.Skill) (skillNames []string, intent domain.Intent, err error)
 }
 
 // ScopeChecker is an optional extension of SkillRouter. When the configured
@@ -445,6 +449,7 @@ func NewHost() *Host {
 		agents:         make(map[string]*HostedAgent),
 		bus:            newEventBus(),
 		intentHandlers: make(map[domain.Intent]IntentHandler),
+		carry:          newCarryOver(),
 	}
 }
 
@@ -1492,9 +1497,9 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 	var skillNames []string
 	var intent domain.Intent
 	var err error
-	earlier := lastAssistantText(messages)
-	if cr, ok := h.skillRouter.(ContextualSkillRouter); ok && earlier != "" {
-		log.Printf("skill-router: reading the message next to the assistant's previous one")
+	earlier := recentTurn(messages)
+	if cr, ok := h.skillRouter.(ContextualSkillRouter); ok && !earlier.IsZero() {
+		log.Printf("skill-router: reading the message next to the one before it")
 		skillNames, intent, err = cr.PickSkillsInContext(ctx, userText, earlier, hosted.Agent.Skills)
 	} else {
 		skillNames, intent, err = h.skillRouter.PickSkills(ctx, userText, hosted.Agent.Skills)
@@ -1505,6 +1510,18 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 	}
 
 	log.Printf("skill-router: skills=%v intent=%q", skillNames, intent)
+
+	// A short follow-up that matches nothing on its own stays with what the conversation was
+	// just doing; and whatever matched is remembered for the next one.
+	carryConv, _ := domain.ConversationFromContext(ctx)
+	carryID := carryKey(hosted.Agent.ID, carryConv)
+	if len(skillNames) == 0 && isShortFollowUp(userText) {
+		if prev := h.carry.recall(carryID); len(prev) > 0 {
+			log.Printf("skill-router: nothing matched a short follow-up — staying with %v from the last message", prev)
+			skillNames = prev
+		}
+	}
+	h.carry.remember(carryID, skillNames)
 
 	// Store intent on context so skills and prompt builders can read it.
 	ctx = domain.WithIntent(ctx, intent)
@@ -1532,8 +1549,9 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 		// outside this agent's scope — decline instead of letting the LLM
 		// answer anything. Agents with no skills fall back to the full loop.
 		if len(hosted.Agent.Skills) > 0 {
-			log.Printf("skill-router: no skills matched — out of scope, letting LLM decline")
-			return h.respondDirectly(ctx, hosted, withDeclineHint(messages), actions)
+			log.Printf("skill-router: no skills matched — out of scope, replying with what I can do")
+			result, final := fixedReply(messages, declineText(hosted.Agent))
+			return result, final, nil
 		}
 		// No skills defined — use ScopeChecker if available to gate by
 		// the agent's description before running the full NativeLoop.
