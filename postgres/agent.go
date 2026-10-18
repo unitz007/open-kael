@@ -28,9 +28,17 @@ func (s *Store) SaveAgent(ctx context.Context, a *domain.Agent) error {
 	if err != nil {
 		return fmt.Errorf("postgres: encode agent %q commands: %w", a.ID, err)
 	}
+	rules := a.Rules
+	if rules == nil {
+		rules = []domain.ToolRule{}
+	}
+	rulesJSON, err := json.Marshal(rules)
+	if err != nil {
+		return fmt.Errorf("postgres: encode agent %q rules: %w", a.ID, err)
+	}
 	_, err = tx.Exec(ctx, `
-		INSERT INTO agents (id, name, description, instructions, max_iterations, llm_model, llm_base_url, created_by, commands)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		INSERT INTO agents (id, name, description, instructions, max_iterations, llm_model, llm_base_url, created_by, commands, rules)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		ON CONFLICT (id) DO UPDATE SET
 			name = EXCLUDED.name,
 			description = EXCLUDED.description,
@@ -38,8 +46,9 @@ func (s *Store) SaveAgent(ctx context.Context, a *domain.Agent) error {
 			max_iterations = EXCLUDED.max_iterations,
 			llm_model = EXCLUDED.llm_model,
 			llm_base_url = EXCLUDED.llm_base_url,
-			commands = EXCLUDED.commands
-	`, a.ID, a.Name, a.Description, a.Instructions, a.MaxIterations, a.LLMConfig.Model, a.LLMConfig.BaseURL, createdBy, cmdsJSON)
+			commands = EXCLUDED.commands,
+			rules = EXCLUDED.rules
+	`, a.ID, a.Name, a.Description, a.Instructions, a.MaxIterations, a.LLMConfig.Model, a.LLMConfig.BaseURL, createdBy, cmdsJSON, rulesJSON)
 	if err != nil {
 		return err
 	}
@@ -62,7 +71,7 @@ func (s *Store) SaveAgent(ctx context.Context, a *domain.Agent) error {
 // Skills is left nil; see Store.LoadAgent to also populate it.
 func (s *Store) GetAgent(ctx context.Context, id string) (*domain.Agent, error) {
 	row := s.pool.QueryRow(ctx, `
-		SELECT id, name, description, instructions, max_iterations, llm_model, llm_base_url, created_by, commands
+		SELECT id, name, description, instructions, max_iterations, llm_model, llm_base_url, created_by, commands, rules
 		FROM agents WHERE id = $1
 	`, id)
 	a, err := scanAgent(row)
@@ -85,12 +94,12 @@ func (s *Store) ListAgents(ctx context.Context, ownerID string) ([]*domain.Agent
 	var err error
 	if ownerID != "" {
 		rows, err = s.pool.Query(ctx, `
-			SELECT id, name, description, instructions, max_iterations, llm_model, llm_base_url, created_by, commands
+			SELECT id, name, description, instructions, max_iterations, llm_model, llm_base_url, created_by, commands, rules
 			FROM agents WHERE (created_by = $1 OR created_by IS NULL) ORDER BY id
 		`, ownerID)
 	} else {
 		rows, err = s.pool.Query(ctx, `
-			SELECT id, name, description, instructions, max_iterations, llm_model, llm_base_url, created_by, commands
+			SELECT id, name, description, instructions, max_iterations, llm_model, llm_base_url, created_by, commands, rules
 			FROM agents ORDER BY id
 		`)
 	}
@@ -145,7 +154,7 @@ func (s *Store) ListAgents(ctx context.Context, ownerID string) ([]*domain.Agent
 // or ErrNotFound when no agent uses that identity.
 func (s *Store) GetAgentByIdentityID(ctx context.Context, identityID string) (*domain.Agent, error) {
 	row := s.pool.QueryRow(ctx, `
-		SELECT a.id, a.name, a.description, a.instructions, a.max_iterations, a.llm_model, a.llm_base_url, a.created_by, a.commands
+		SELECT a.id, a.name, a.description, a.instructions, a.max_iterations, a.llm_model, a.llm_base_url, a.created_by, a.commands, a.rules
 		FROM agents a
 		JOIN agent_identities ai ON ai.agent_id = a.id
 		WHERE ai.identity_id = $1
@@ -212,8 +221,8 @@ func (s *Store) loadIdentityIDs(ctx context.Context, a *domain.Agent) error {
 func scanAgent(row rowScanner) (*domain.Agent, error) {
 	var a domain.Agent
 	var createdBy *string
-	var cmdsJSON []byte
-	if err := row.Scan(&a.ID, &a.Name, &a.Description, &a.Instructions, &a.MaxIterations, &a.LLMConfig.Model, &a.LLMConfig.BaseURL, &createdBy, &cmdsJSON); err != nil {
+	var cmdsJSON, rulesJSON []byte
+	if err := row.Scan(&a.ID, &a.Name, &a.Description, &a.Instructions, &a.MaxIterations, &a.LLMConfig.Model, &a.LLMConfig.BaseURL, &createdBy, &cmdsJSON, &rulesJSON); err != nil {
 		return nil, err
 	}
 	if createdBy != nil {
@@ -222,6 +231,11 @@ func scanAgent(row rowScanner) (*domain.Agent, error) {
 	if len(cmdsJSON) > 0 {
 		if err := json.Unmarshal(cmdsJSON, &a.Commands); err != nil {
 			return nil, fmt.Errorf("postgres: decode agent %q commands: %w", a.ID, err)
+		}
+	}
+	if len(rulesJSON) > 0 {
+		if err := json.Unmarshal(rulesJSON, &a.Rules); err != nil {
+			return nil, fmt.Errorf("postgres: decode agent %q rules: %w", a.ID, err)
 		}
 	}
 	return &a, nil

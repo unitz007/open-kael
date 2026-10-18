@@ -232,6 +232,98 @@ func (s *Server) setAgentCommands(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, agent)
 }
 
+// getAgentRules returns the rules the creator has set on how this agent uses its tools.
+// GET /agents/{id}/rules
+func (s *Server) getAgentRules(w http.ResponseWriter, r *http.Request) {
+	agent, ok := s.accessibleAgent(w, r)
+	if !ok {
+		return
+	}
+	rules := agent.Rules
+	if rules == nil {
+		rules = []domain.ToolRule{}
+	}
+	writeJSON(w, http.StatusOK, rules)
+}
+
+// setAgentRules replaces the full set of rules for an agent.
+// PUT /agents/{id}/rules — body: [{"tool_id":"…","input":"size","kind":"max","value":100000,"message":"…"}]
+//
+// Every rule is checked against the tool it names (the input must exist and the value must fit
+// it) and the tool must be one the creator may use; a set that can't all hold is refused with a
+// reason in plain words. Saving reloads the agent, so the rules apply to the next message.
+func (s *Server) setAgentRules(w http.ResponseWriter, r *http.Request) {
+	agent, ok := s.accessibleAgent(w, r)
+	if !ok {
+		return
+	}
+	var rules []domain.ToolRule
+	if err := decodeJSON(r, &rules); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	tools := make(map[string]*domain.ToolDefinition, len(rules))
+	for _, rule := range rules {
+		if _, seen := tools[rule.ToolID]; seen {
+			continue
+		}
+		tool, err := s.store.GetTool(r.Context(), rule.ToolID)
+		if err != nil {
+			if errors.Is(err, domain.ErrNotFound) {
+				writeError(w, http.StatusBadRequest, errors.New("one of the rules is for something that doesn't exist"))
+				return
+			}
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		integration, err := s.store.LoadIntegration(r.Context(), tool.IntegrationID)
+		if err != nil || !integrationAccessible(r.Context(), integration) {
+			// A tool the creator can't see is a tool that doesn't exist, as everywhere else.
+			writeError(w, http.StatusBadRequest, errors.New("one of the rules is for something that doesn't exist"))
+			return
+		}
+		tools[rule.ToolID] = tool
+	}
+	normalized, err := domain.NormalizeRules(rules, tools)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	for i := range normalized {
+		if normalized[i].ID == "" {
+			normalized[i].ID = domain.NewID()
+		}
+	}
+	agent.Rules = normalized
+	if err := s.store.SaveAgent(r.Context(), agent); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if s.onAgentUpdate != nil {
+		s.onAgentUpdate(agent.ID)
+	}
+	writeJSON(w, http.StatusOK, agent)
+}
+
+// accessibleAgent loads the agent in the path and checks the requester may use it; on failure it
+// has already written the answer.
+func (s *Server) accessibleAgent(w http.ResponseWriter, r *http.Request) (*domain.Agent, bool) {
+	agent, err := s.store.GetAgent(r.Context(), r.PathValue("id"))
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			writeError(w, http.StatusNotFound, err)
+			return nil, false
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return nil, false
+	}
+	if !agentAccessible(r.Context(), agent) {
+		writeError(w, http.StatusNotFound, domain.ErrNotFound)
+		return nil, false
+	}
+	return agent, true
+}
+
 // agentAccessible returns true when the requesting user may access the agent.
 // When a user session is present, only the agent's owner may access it.
 // When no session is in context (static-token or unauthenticated dev mode),

@@ -176,6 +176,8 @@ ALTER TABLE agents ADD COLUMN IF NOT EXISTS llm_model    TEXT NOT NULL DEFAULT '
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS llm_base_url TEXT NOT NULL DEFAULT '';
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS created_by   TEXT REFERENCES users(id);
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS commands     JSONB NOT NULL DEFAULT '[]'::jsonb;
+-- rules: what the creator has said about how this agent may use its tools (see domain.ToolRule).
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS rules        JSONB NOT NULL DEFAULT '[]'::jsonb;
 
 CREATE TABLE IF NOT EXISTS skills (
     id             TEXT PRIMARY KEY,

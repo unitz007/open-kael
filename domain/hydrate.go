@@ -17,8 +17,8 @@ import (
 // WithConnectionRef) rather than at hydration time — this is what makes
 // multi-tenancy work: the same BoundAction serves every user, each getting
 // their own credential resolved on the fly.
-func HydrateTool(def *ToolDefinition, identity *Identity, integration *Integration, registry *ExecutorRegistry) (*BoundAction, error) {
-	tool, err := BindTool(def, identity, integration, registry)
+func HydrateTool(def *ToolDefinition, identity *Identity, integration *Integration, registry *ExecutorRegistry, rules ...ToolRule) (*BoundAction, error) {
+	tool, err := BindTool(def, identity, integration, registry, rules...)
 	if err != nil {
 		return nil, err
 	}
@@ -30,7 +30,7 @@ func HydrateTool(def *ToolDefinition, identity *Identity, integration *Integrati
 // platform require — the input check, the user's own approval setting, the tool's
 // approval, the sign-in check, and the once-per-run guard. The gates are part of
 // the Tool, so nothing that holds a Tool can run it without them.
-func BindTool(def *ToolDefinition, identity *Identity, integration *Integration, registry *ExecutorRegistry) (Tool, error) {
+func BindTool(def *ToolDefinition, identity *Identity, integration *Integration, registry *ExecutorRegistry, rules ...ToolRule) (Tool, error) {
 	if def.IntegrationID != integration.ID {
 		return nil, fmt.Errorf("hydrate tool %q: belongs to integration %q, got %q", def.ID, def.IntegrationID, integration.ID)
 	}
@@ -71,9 +71,18 @@ func BindTool(def *ToolDefinition, identity *Identity, integration *Integration,
 	// The input contract is the outermost step: a call that doesn't match the
 	// tool's schema is turned back to the model before anyone is asked to approve
 	// it and before any executor sees it.
+	// The creator's rules come next: a call that breaks one is refused here, before anyone is
+	// asked to approve it and before the service sees it.
+	if len(rules) > 0 {
+		invoke = withRules(rules, def.ModelName(), invoke)
+	}
 	invoke = withInputContract(def, invoke)
+	// Fixed and default values are filled in first, so the input check sees a whole call.
+	if len(rules) > 0 {
+		invoke = withPins(rules, invoke)
+	}
 
-	return &boundTool{spec: def.Spec(), invoke: invoke}, nil
+	return &boundTool{spec: specWithRules(def.Spec(), rules), invoke: invoke}, nil
 }
 
 // withInputContract checks and normalises a call's input against the tool's schema
@@ -178,7 +187,7 @@ func HydrateSkillTools(skill *Skill, agent *Agent, toolsByID map[string]*ToolDef
 			return nil, fmt.Errorf("skill %q: tool %q references unknown integration %q", skill.ID, def.ID, def.IntegrationID)
 		}
 		identity := resolveIdentityForIntegration(agent, integration, identitiesByID)
-		action, err := HydrateTool(def, identity, integration, registry)
+		action, err := HydrateTool(def, identity, integration, registry, agent.RulesFor(def.ID)...)
 		if err != nil {
 			return nil, fmt.Errorf("skill %q: %w", skill.ID, err)
 		}
@@ -207,7 +216,7 @@ func HydrateSkillTools(skill *Skill, agent *Agent, toolsByID map[string]*ToolDef
 			if seen[name] {
 				continue // already bound via explicit tool list
 			}
-			action, err := HydrateTool(def, identity, integration, registry)
+			action, err := HydrateTool(def, identity, integration, registry, agent.RulesFor(def.ID)...)
 			if err != nil {
 				return nil, fmt.Errorf("skill %q: %w", skill.ID, err)
 			}

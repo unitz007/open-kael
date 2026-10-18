@@ -223,3 +223,56 @@ func TestAgentAndSkillCRUD(t *testing.T) {
 		t.Fatalf("expected tool bindings to be cleared: %+v, err=%v", got, err)
 	}
 }
+
+// The rules a creator sets live with the agent: saved, loaded back the way they went in, kept when
+// the agent is saved again from what was loaded (as every update does), and gone with the agent.
+func TestAgentRulesRoundTrip(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	agent := &domain.Agent{ID: "ag_rules", Name: "Desk", Rules: []domain.ToolRule{
+		{ID: "r1", ToolID: "tool_trade", Input: "size", Kind: domain.RuleMax, Value: 100000.0, Message: "Too big."},
+		{ID: "r2", ToolID: "tool_trade", Input: "symbol", Kind: domain.RuleOneOf, Value: []any{"EURUSD", "GBPUSD"}},
+		{ID: "r3", ToolID: "tool_trade", Input: "min_rr", Kind: domain.RuleFixed, Value: 2.0},
+	}}
+	if err := store.SaveAgent(ctx, agent); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	got, err := store.LoadAgent(ctx, "ag_rules")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Rules) != 3 || got.Rules[0].Kind != domain.RuleMax || got.Rules[0].Value != 100000.0 || got.Rules[0].Message != "Too big." {
+		t.Fatalf("rules come back as saved: %+v", got.Rules)
+	}
+	if list, _ := got.Rules[1].Value.([]any); len(list) != 2 || list[0] != "EURUSD" {
+		t.Errorf("a list of values comes back as a list: %#v", got.Rules[1].Value)
+	}
+
+	// Every update loads the agent, changes one thing and saves it back: the rules must survive that.
+	got.Description = "Trades currencies"
+	if err := store.SaveAgent(ctx, got); err != nil {
+		t.Fatal(err)
+	}
+	again, _ := store.GetAgent(ctx, "ag_rules")
+	if len(again.Rules) != 3 {
+		t.Errorf("rules survive an unrelated update: %+v", again.Rules)
+	}
+
+	// An agent with no rules reads back with none.
+	if err := store.SaveAgent(ctx, &domain.Agent{ID: "ag_plain", Name: "Plain"}); err != nil {
+		t.Fatal(err)
+	}
+	if plain, _ := store.GetAgent(ctx, "ag_plain"); len(plain.Rules) != 0 {
+		t.Errorf("no rules: %+v", plain.Rules)
+	}
+
+	// Clearing them is saving the agent with none.
+	again.Rules = nil
+	if err := store.SaveAgent(ctx, again); err != nil {
+		t.Fatal(err)
+	}
+	if cleared, _ := store.GetAgent(ctx, "ag_rules"); len(cleared.Rules) != 0 {
+		t.Errorf("rules cleared: %+v", cleared.Rules)
+	}
+}

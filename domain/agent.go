@@ -43,6 +43,9 @@ type Agent struct {
 
 	Skills []*Skill `json:"skills"`
 
+	// Rules are what the creator has said about how this agent may use its tools (see ToolRule).
+	Rules []ToolRule `json:"rules,omitempty"`
+
 	// IdentityIDs lists the specific Identity IDs this agent is authorized to
 	// use. When a skill's tool belongs to an Integration, the runtime picks
 	// the Identity from this list whose IntegrationID matches. Agents with

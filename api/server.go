@@ -301,6 +301,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /agents/{id}", ca(s.deleteAgent))
 	s.mux.HandleFunc("PUT /agents/{id}/identities", ca(s.setAgentIdentities))
 	s.mux.HandleFunc("PUT /agents/{id}/commands", ca(s.setAgentCommands))
+	s.mux.HandleFunc("GET /agents/{id}/rules", ca(s.getAgentRules))
+	s.mux.HandleFunc("PUT /agents/{id}/rules", ca(s.setAgentRules))
 
 	s.mux.HandleFunc("POST /agents/{agentID}/skills", ca(s.createSkill))
 	s.mux.HandleFunc("GET /agents/{agentID}/skills", ca(s.listSkillsByAgent))
