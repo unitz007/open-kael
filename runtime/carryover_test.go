@@ -221,3 +221,31 @@ type failingExecutor struct{}
 func (failingExecutor) Execute(context.Context, *domain.Identity, string, string, map[string]any) (any, error) {
 	return nil, errors.New("secret-detail: connection refused to 10.0.0.1")
 }
+
+// A plain hello matches no ability but is not "out of scope": it is greeted, by name when we
+// know it, with the same fixed list; unrelated messages still get the decline.
+func TestOutOfScope_AHelloIsGreetedNotDeclined(t *testing.T) {
+	router := &followRouter{}
+	r := newFollowRig(t, router)
+	judge := &fakeJudge{just: true}
+	r.host.SetGreetingJudge(judge)
+	r.host.SetUserDetailsLoader(func(context.Context, string) (domain.UserDetails, error) {
+		return domain.UserDetails{Name: "Dinneya"}, nil
+	})
+
+	r.say(t, "C1", "Hi")
+	want := "Hi Dinneya! 👋 Here's what I can help with:\n• Analyses a currency pair\n\nWhat would you like to do?"
+	if got := r.box.texts(); len(got) != 1 || got[0] != want {
+		t.Fatalf("hello:\n got %q\nwant %q", got, want)
+	}
+	if r.spy.calls() != 0 {
+		t.Errorf("no model greets: %d calls", r.spy.calls())
+	}
+
+	judge.just = false
+	r.say(t, "C1", "what's the weather like")
+	got := r.box.texts()
+	if len(got) != 2 || !strings.HasPrefix(got[1], "I can't help with that one.") {
+		t.Errorf("an unrelated message is still declined: %q", got)
+	}
+}

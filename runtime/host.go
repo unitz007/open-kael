@@ -1544,6 +1544,12 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 		// outside this agent's scope — decline instead of letting the LLM
 		// answer anything. Agents with no skills fall back to the full loop.
 		if len(hosted.Agent.Skills) > 0 {
+			// A plain hello matches no ability, but it is not "out of scope": greet back.
+			if h.onlySaysHello(ctx, userText) {
+				log.Printf("skill-router: a plain hello — greeting back with what I can do")
+				result, final := fixedReply(messages, helloText(hosted.Agent, domain.UserDetailsFromContext(ctx).Name))
+				return result, final, nil
+			}
 			log.Printf("skill-router: no skills matched — out of scope, replying with what I can do")
 			result, final := fixedReply(messages, declineText(hosted.Agent))
 			return result, final, nil
