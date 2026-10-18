@@ -1564,6 +1564,22 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 		// outside this agent's scope — decline instead of letting the LLM
 		// answer anything. Agents with no skills fall back to the full loop.
 		if len(hosted.Agent.Skills) > 0 {
+			// A question in the agent's own area that none of its abilities covers ("is the
+			// market open?" to a forex agent) is answered plainly, with no tools and no
+			// pretence of looking anything up. Only what is clearly off topic is declined.
+			// If the router can't say, the safe answer is still the fixed decline.
+			if sc, ok := h.skillRouter.(ScopeChecker); ok {
+				if scope := scopeContext(hosted.Agent); scope != "" {
+					inScope, serr := sc.IsInScope(ctx, userText, scope)
+					if serr != nil {
+						log.Printf("skill-router: scope check failed: %v — replying with what I can do", serr)
+					} else if inScope {
+						log.Printf("skill-router: no ability matched but it is in this agent's area — answering without tools")
+						result, final, rerr := h.respondDirectly(ctx, hosted, withHint(messages, inAreaHint), actions)
+						return result, withoutHint(final, inAreaHint), rerr
+					}
+				}
+			}
 			log.Printf("skill-router: no skills matched — out of scope, replying with what I can do")
 			result, final := fixedReply(messages, declineText(hosted.Agent))
 			return result, final, nil
@@ -1728,6 +1744,31 @@ func withoutHint(messages []domain.Message, hint string) []domain.Message {
 		out = append(out, m)
 	}
 	return out
+}
+
+// inAreaHint tells the model what a question in its own area, that none of its abilities
+// covers, needs: a short honest answer, and no pretence of looking anything up or doing anything.
+const inAreaHint = "The person asked about something in your area that none of your abilities covers. " +
+	"Answer in a sentence or two from general knowledge if you can, in the language they write in. " +
+	"Never say or imply that you are looking something up, checking, running or doing anything. " +
+	"Do not state live prices, quotes or other current data that you do not have, and do not promise anything you cannot do. " +
+	"If you cannot answer without live data or an ability you do not have, say so plainly and say briefly what you can do."
+
+// scopeContext describes what an agent is for, so a router can judge whether a message is in
+// its area: what the creator wrote about it. The list of abilities is deliberately left out:
+// measured on the real router, it reads "in scope" as "one of these abilities" and turns away
+// ordinary questions in the same field (a bank's support agent scored 0.04 on "what are your
+// opening hours"), while the description alone separates in-area (0.92 and up) from off-topic
+// (0.20 and under) cleanly.
+func scopeContext(agent *domain.Agent) string {
+	about := strings.TrimSpace(agent.Description)
+	if about == "" {
+		about = strings.TrimSpace(agent.Instructions)
+		if len(about) > 500 {
+			about = about[:500]
+		}
+	}
+	return about
 }
 
 func withDeclineHint(messages []domain.Message) []domain.Message {
