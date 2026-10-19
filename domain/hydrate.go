@@ -68,6 +68,9 @@ func BindTool(def *ToolDefinition, identity *Identity, integration *Integration,
 		// the model cannot loop on an approved write action.
 		invoke = withOneShotGuard(invoke)
 	}
+	// A tool that depends on the person's own clock asks for their time zone first, once, before
+	// anyone is asked to approve anything: the approval would otherwise be asked for twice.
+	invoke = withTimezoneGate(def, invoke)
 	// The input contract is the outermost step: a call that doesn't match the
 	// tool's schema is turned back to the model before anyone is asked to approve
 	// it and before any executor sees it.

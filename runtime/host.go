@@ -391,6 +391,9 @@ type Host struct {
 
 	// routeByTools lets a ToolAwareSkillRouter pick abilities by what their tools do.
 	routeByTools bool
+
+	// timezoneLink makes the link a person follows to set their time zone (see SetTimezoneLink).
+	timezoneLink func(ctx context.Context, userID, agentID string) (string, error)
 }
 
 // ProfileExtractInput groups the inputs passed to the profile extractor hook.
@@ -1352,6 +1355,10 @@ func (h *Host) HandleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 	}
 	// Abilities run as their own loops: they must know who this is and when it is too.
 	ctx = domain.WithUserDetails(ctx, person)
+	if !unattended && conv.UserID != "" && person.Timezone == "" && h.timezoneLink != nil {
+		// Their time zone is not known: anything that depends on their clock asks for it, once.
+		ctx = domain.WithTimezoneRequester(ctx, h.timezoneRequester(hosted))
+	}
 	systemPrompt := buildSystemPrompt(hosted.Agent, userProfile, userInstructions, integrationNotes, promptIntegrations, messengerSkills, person)
 	if conv.UserID != "" && h.repeatingTasksNote != nil {
 		if note := strings.TrimSpace(h.repeatingTasksNote(ctx, conv.UserID, hosted.Agent.ID)); note != "" {

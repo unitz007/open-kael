@@ -73,6 +73,8 @@ func OutcomeOf(output any, err error) (done bool, message, reason string) {
 			return false, "", "it wasn't approved"
 		case strings.HasPrefix(v, OutputAuthPendingPrefix):
 			return false, "", "you need to connect your account first"
+		case isTimezonePending(v):
+			return false, "", "I need your time zone first"
 		}
 	case map[string]any:
 		message, _ = v["message"].(string)

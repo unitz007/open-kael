@@ -159,6 +159,7 @@ ALTER TABLE tools ADD COLUMN IF NOT EXISTS approval_prompt_template TEXT NOT NUL
 ALTER TABLE tools ADD COLUMN IF NOT EXISTS approval_timeout_seconds INT NOT NULL DEFAULT 0;
 ALTER TABLE tools ADD COLUMN IF NOT EXISTS read_only                BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE tools ADD COLUMN IF NOT EXISTS disabled                 BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE tools ADD COLUMN IF NOT EXISTS needs_local_time         BOOLEAN NOT NULL DEFAULT FALSE;
 
 CREATE INDEX IF NOT EXISTS idx_tools_integration_id ON tools (integration_id);
 

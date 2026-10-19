@@ -325,6 +325,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /users/verify", s.verifyEmail)
 	s.mux.HandleFunc("POST /sessions", s.loginUser)
 	s.mux.HandleFunc("GET /users/me", s.userAuth(s.getMe))
+	s.mux.HandleFunc("POST /users/me/timezone-hint", s.userAuth(s.rememberMyTimezone))
 	s.mux.HandleFunc("DELETE /sessions", s.userAuth(s.logoutUser))
 
 	// User's AppAuthorizations: list connections the user has granted.

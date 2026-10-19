@@ -66,6 +66,12 @@ type ToolDefinition struct {
 	// Disabled turns the tool off: it stays listed for whoever manages the
 	// integration but is never offered to a skill or run.
 	Disabled bool `json:"disabled,omitempty"`
+
+	// NeedsLocalTime marks a tool whose result depends on the person's own clock (a calendar booking
+	// "at 10", a day's events, free time). When their time zone is not known yet, the first call asks
+	// for it once (see TimezoneRequester) and carries on with what they asked afterwards, instead of
+	// quietly assuming UTC.
+	NeedsLocalTime bool `json:"needs_local_time,omitempty"`
 }
 
 // RenderApprovalPrompt fills ApprovalPromptTemplate's "{{field}}"

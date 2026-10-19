@@ -280,3 +280,41 @@ func TestAgentRulesRoundTrip(t *testing.T) {
 		t.Errorf("rules cleared: %+v", cleared.Rules)
 	}
 }
+
+// A tool that depends on the person's own clock keeps saying so, through every way a tool is read.
+func TestToolNeedsLocalTimeRoundTrip(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	if err := store.SaveIntegration(ctx, &domain.Integration{ID: "int_nlt", Name: "Calendar", Service: "cal"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, def := range []*domain.ToolDefinition{
+		{ID: "nlt_a", Name: "book", IntegrationID: "int_nlt", Action: "a", NeedsLocalTime: true},
+		{ID: "nlt_b", Name: "list_calendars", IntegrationID: "int_nlt", Action: "b", ReadOnly: true},
+	} {
+		if err := store.SaveTool(ctx, def); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a, _ := store.GetTool(ctx, "nlt_a")
+	b, _ := store.GetTool(ctx, "nlt_b")
+	if !a.NeedsLocalTime || b.NeedsLocalTime {
+		t.Errorf("GetTool: %v %v", a.NeedsLocalTime, b.NeedsLocalTime)
+	}
+	list, err := store.ListToolsByIntegration(ctx, "int_nlt")
+	if err != nil || len(list) != 2 {
+		t.Fatalf("%v %v", list, err)
+	}
+	for _, d := range list {
+		if d.NeedsLocalTime != (d.ID == "nlt_a") {
+			t.Errorf("ListToolsByIntegration %s: %v", d.ID, d.NeedsLocalTime)
+		}
+	}
+	a.NeedsLocalTime = false
+	if err := store.SaveTool(ctx, a); err != nil {
+		t.Fatal(err)
+	}
+	if again, _ := store.GetTool(ctx, "nlt_a"); again.NeedsLocalTime {
+		t.Error("saving again can turn it off")
+	}
+}
