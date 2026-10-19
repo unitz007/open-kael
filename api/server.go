@@ -22,6 +22,9 @@ type Server struct {
 	store domain.Store
 	mux   *http.ServeMux
 
+	// activity, when set, serves GET /activity: how a creator's agents are doing (counts only).
+	activity domain.ActivityReader
+
 	// authToken, when non-empty, requires every request to carry
 	// "Authorization: Bearer <authToken>". Set via WithBearerAuth.
 	authToken string
@@ -293,6 +296,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /integrations/{id}", ca(s.getIntegration))
 	s.mux.HandleFunc("GET /integrations/{integrationID}/tools", ca(s.listToolsByIntegration))
 	s.mux.HandleFunc("GET /tools/{id}", ca(s.getTool))
+
+	s.mux.HandleFunc("GET /activity", ca(s.getActivity))
 
 	s.mux.HandleFunc("POST /agents", ca(s.createAgent))
 	s.mux.HandleFunc("GET /agents", ca(s.listAgents))

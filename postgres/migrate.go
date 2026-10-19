@@ -31,6 +31,7 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 // Store persists domain types to Postgres.
 type Store struct {
 	pool *pgxpool.Pool
+	act  activityState
 }
 
 func New(pool *pgxpool.Pool) *Store {

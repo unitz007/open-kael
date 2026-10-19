@@ -211,3 +211,44 @@ func TestConnectPrompt_TheRecordOfPastPromptsDoesNotGrowForever(t *testing.T) {
 		t.Errorf("old entries should be forgotten, %d remain", len(h.connectPromptSent))
 	}
 }
+
+// A tool that needs a connection also counts as a sign-in request for the agent, once per prompt.
+func TestConnectRequester_CountsTheSignInRequestByService(t *testing.T) {
+	exec := &sendExec{result: map[string]any{"message_id": "5"}}
+	h, hosted, conv := deliverRig(exec)
+	h.connectURLGenerator = func(context.Context, string, string) (string, error) { return "https://app.example/c", nil }
+	h.SetConnectIntegrationNameLoader(func(context.Context, string) (string, error) { return "Google Calendar", nil })
+	rec := &recordingActivity{}
+	h.SetActivityRecorder(rec)
+
+	req := h.resolveConnectRequester(context.Background(), hosted, conv, "u1")
+	for i := 0; i < 3; i++ { // a model calling three tools at once sends one prompt
+		_, _ = req.RequestConnect(context.Background(), conv, &domain.Identity{ID: "cal"}, "u1")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && rec.count() < 1 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if got := rec.all(); len(got) != 1 || got[0] != hosted.Agent.ID+"|signin|Google Calendar" {
+		t.Errorf("one prompt, one count: %q", got)
+	}
+}
+
+type recordingActivity struct {
+	mu sync.Mutex
+	ev []string
+}
+
+func (r *recordingActivity) PersonActive(context.Context, string, string) {}
+func (r *recordingActivity) ActivityEvent(_ context.Context, agentID string, kind domain.ActivityKind, detail string) {
+	r.mu.Lock()
+	r.ev = append(r.ev, agentID+"|"+string(kind)+"|"+detail)
+	r.mu.Unlock()
+}
+func (r *recordingActivity) count() int { r.mu.Lock(); defer r.mu.Unlock(); return len(r.ev) }
+func (r *recordingActivity) all() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.ev...)
+}

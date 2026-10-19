@@ -10,11 +10,17 @@ import (
 )
 
 func (s *Store) SaveMessengerChannel(ctx context.Context, ch *domain.MessengerChannel) error {
-	_, err := s.pool.Exec(ctx, `
+	var inserted bool
+	err := s.pool.QueryRow(ctx, `
 		INSERT INTO messenger_channels (id, identity_id, user_id, channel_ref, sender_id)
 		VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (identity_id, channel_ref) DO UPDATE SET user_id = EXCLUDED.user_id, sender_id = EXCLUDED.sender_id
-	`, ch.ID, ch.IdentityID, ch.UserID, ch.ChannelRef, ch.SenderID)
+		RETURNING (xmax = 0)
+	`, ch.ID, ch.IdentityID, ch.UserID, ch.ChannelRef, ch.SenderID).Scan(&inserted)
+	if err == nil && inserted {
+		// Someone new connected: the creator of every agent using this bot sees a count, not who.
+		s.recordJoined(ctx, ch.IdentityID)
+	}
 	return err
 }
 

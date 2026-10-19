@@ -399,3 +399,27 @@ ALTER TABLE messenger_channels ADD COLUMN IF NOT EXISTS welcome_message_id TEXT 
 DELETE FROM identities
 WHERE kind = 'bot'
   AND id NOT IN (SELECT identity_id FROM agent_identities);
+
+-- Activity: how an agent is doing, for the creator who owns it. Counts only. Nothing here holds
+-- what anyone wrote or who they are: a person is a one-way code (an HMAC with a platform secret),
+-- kept to count each person once, and removed after 35 days.
+ALTER TABLE messenger_channels ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ;
+ALTER TABLE messenger_channels ALTER COLUMN created_at SET DEFAULT NOW();
+
+CREATE TABLE IF NOT EXISTS agent_activity_people (
+    agent_id TEXT NOT NULL REFERENCES agents (id) ON DELETE CASCADE,
+    day      DATE NOT NULL,
+    person   TEXT NOT NULL,
+    PRIMARY KEY (agent_id, day, person)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_activity_people_day ON agent_activity_people (day);
+
+CREATE TABLE IF NOT EXISTS agent_activity_events (
+    id       BIGSERIAL PRIMARY KEY,
+    agent_id TEXT NOT NULL REFERENCES agents (id) ON DELETE CASCADE,
+    at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    kind     TEXT NOT NULL,
+    detail   TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_agent_activity_events_agent ON agent_activity_events (agent_id, id DESC);
+CREATE INDEX IF NOT EXISTS idx_agent_activity_events_at ON agent_activity_events (at);

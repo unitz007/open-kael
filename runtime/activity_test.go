@@ -1,0 +1,199 @@
+package runtime_test
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/unitz007/open-kael/domain"
+	"github.com/unitz007/open-kael/runtime"
+)
+
+// activityLog is a recorder that keeps what it was told.
+type activityLog struct {
+	mu     sync.Mutex
+	people []string // agent|person
+	events []string // agent|kind|detail
+}
+
+func (a *activityLog) PersonActive(_ context.Context, agentID, person string) {
+	a.mu.Lock()
+	a.people = append(a.people, agentID+"|"+person)
+	a.mu.Unlock()
+}
+func (a *activityLog) ActivityEvent(_ context.Context, agentID string, kind domain.ActivityKind, detail string) {
+	a.mu.Lock()
+	a.events = append(a.events, agentID+"|"+string(kind)+"|"+detail)
+	a.mu.Unlock()
+}
+func (a *activityLog) snapshot() ([]string, []string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]string(nil), a.people...), append([]string(nil), a.events...)
+}
+
+// waitEvents waits for the recorder (which is fed off the reply's path) to have n events.
+func (a *activityLog) waitEvents(n int) []string {
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, ev := a.snapshot(); len(ev) >= n {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	_, ev := a.snapshot()
+	return ev
+}
+
+func (a *activityLog) waitPeople(n int) []string {
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if p, _ := a.snapshot(); len(p) >= n {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	p, _ := a.snapshot()
+	return p
+}
+
+// A person who writes to an agent is counted for that agent; what repeating tasks do on their
+// own is not them being active.
+func TestActivity_APersonWhoWritesIsCountedAndATaskRunningOnItsOwnIsNot(t *testing.T) {
+	router := &intentRouter{intents: map[string]domain.Intent{"thanks!": domain.IntentChat}}
+	r := newIntentRig(t, router)
+	log := &activityLog{}
+	r.host.SetActivityRecorder(log)
+
+	r.say(t, "C1", "thanks!")
+	if got := log.waitPeople(1); len(got) != 1 || got[0] != "a1|u1" {
+		t.Fatalf("the person, for the agent: %q", got)
+	}
+	if err := r.host.RunScheduledTask(context.Background(), "a1", "u1", "id_slack", "C1", "check my calendar"); err != nil {
+		t.Fatal(err)
+	}
+	waitTexts(r.box, 2)
+	time.Sleep(100 * time.Millisecond)
+	if got, _ := log.snapshot(); len(got) != 1 {
+		t.Errorf("a repeating task is not the person being active: %q", got)
+	}
+}
+
+// What the agent couldn't do is counted by a topic in a few plain words; the person's own words
+// reach only the labeler, never the record.
+func TestActivity_WhatTheAgentCouldNotDoIsKeptAsATopicNotAsTheWords(t *testing.T) {
+	router := &intentRouter{intents: map[string]domain.Intent{"write me a poem about my sister Ada 0791234": domain.IntentOffTopic}}
+	r := newIntentRig(t, router)
+	log := &activityLog{}
+	r.host.SetActivityRecorder(log)
+	var asked []string
+	var mu sync.Mutex
+	r.host.SetTopicLabeler(func(_ context.Context, request string) string {
+		mu.Lock()
+		asked = append(asked, request)
+		mu.Unlock()
+		return "write a poem"
+	})
+	r.say(t, "C1", "write me a poem about my sister Ada 0791234")
+
+	ev := log.waitEvents(1)
+	if len(ev) != 1 || ev[0] != "a1|unsupported|write a poem" {
+		t.Fatalf("a topic, not their words: %q", ev)
+	}
+	for _, e := range ev {
+		if strings.Contains(e, "Ada") || strings.Contains(e, "0791234") {
+			t.Errorf("the record must not hold their words: %q", e)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(asked) != 1 || !strings.Contains(asked[0], "poem") {
+		t.Errorf("only the labeler sees the request: %q", asked)
+	}
+}
+
+// With no labeler it is still counted, with no topic. A reply that already went out is never
+// held up by the recording.
+func TestActivity_WithoutALabelerItIsStillCountedAndRecordingNeverHoldsUpAReply(t *testing.T) {
+	router := &intentRouter{intents: map[string]domain.Intent{"write me a poem": domain.IntentOffTopic}}
+	r := newIntentRig(t, router)
+	slow := make(chan struct{})
+	r.host.SetActivityRecorder(&blockingActivity{release: slow})
+	r.say(t, "C1", "write me a poem")
+	if got := r.box.texts(); len(got) != 1 || got[0] != fixedDecline() {
+		t.Fatalf("the reply is delivered even though recording is stuck: %q", got)
+	}
+	close(slow)
+
+	r = newIntentRig(t, &intentRouter{intents: map[string]domain.Intent{"write me a poem": domain.IntentOffTopic}})
+	log := &activityLog{}
+	r.host.SetActivityRecorder(log)
+	r.say(t, "C1", "write me a poem")
+	if ev := log.waitEvents(1); len(ev) != 1 || ev[0] != "a1|unsupported|" {
+		t.Errorf("counted, with no topic: %q", ev)
+	}
+}
+
+type blockingActivity struct{ release chan struct{} }
+
+func (b *blockingActivity) PersonActive(context.Context, string, string) { <-b.release }
+func (b *blockingActivity) ActivityEvent(context.Context, string, domain.ActivityKind, string) {
+	<-b.release
+}
+
+// A reply that didn't go through is counted with one of two plain reasons.
+func TestActivity_AFailedReplyIsCountedWithAPlainReason(t *testing.T) {
+	down := &funcLLM{call: func(int) (*domain.LLMResponse, error) { return nil, errors.New("openrouter 402: out of credits") }}
+	agent := &domain.Agent{ID: "a1", Name: "Desk", LLMs: []domain.LLM{down}, MaxIterations: 2}
+	box := &outbox{}
+	executors := domain.NewExecutorRegistry()
+	executors.Register("slack", box)
+	host := runtime.NewHost()
+	hosted := &runtime.HostedAgent{Agent: agent, Deps: slackDeps(func(d *runtime.AgentDeps) { d.Executors = executors })}
+	host.Register(hosted)
+	log := &activityLog{}
+	host.SetActivityRecorder(log)
+
+	conv := domain.ConversationRef{Provider: "slack", ChatID: "C1", IdentityID: "id_slack", UserID: "u1", SenderID: "C1"}
+	if _, err := host.HandleTurn(context.Background(), hosted, conv, "hello there"); err == nil {
+		t.Fatal("the model is down: the turn fails")
+	}
+	ev := log.waitEvents(1)
+	if len(ev) != 1 || ev[0] != "a1|failed|unavailable" {
+		t.Fatalf("%q", ev)
+	}
+	if got := box.texts(); len(got) != 1 || strings.Contains(strings.ToLower(got[0]), "402") || strings.Contains(strings.ToLower(got[0]), "credit") {
+		t.Errorf("the person is told plainly, no internals: %q", got)
+	}
+	// A repeating task failing is that person's business, not a failed reply.
+	if err := host.RunScheduledTask(context.Background(), "a1", "u1", "id_slack", "C1", "check my calendar"); err != nil {
+		t.Fatal(err)
+	}
+	waitTexts(box, 2)
+	time.Sleep(100 * time.Millisecond)
+	if _, ev := log.snapshot(); len(ev) != 1 {
+		t.Errorf("a task failing on its own is not counted: %q", ev)
+	}
+}
+
+// Being asked to connect or sign in to a service is counted by the service, for the agent.
+func TestActivity_ASignInRequestIsCountedByTheService(t *testing.T) {
+	llm := finishOnlyLLM("Done: bought.")
+	agent := &domain.Agent{ID: "a1", Name: "Desk", LLMs: []domain.LLM{llm}, MaxIterations: 5, IdentityIDs: []string{"id_aegis"}}
+	host, hosted, _ := onboardingRig(t, agent)
+	host.SetSetupChecker(func(context.Context, string, *domain.Agent) ([]string, error) { return []string{"id_aegis"}, nil })
+	host.SetConnectURLGenerator(func(context.Context, string, string) (string, error) { return "https://app.example/connect", nil })
+	host.SetConnectIntegrationNameLoader(func(context.Context, string) (string, error) { return "Aegis", nil })
+	log := &activityLog{}
+	host.SetActivityRecorder(log)
+
+	host.DispatchInbound(context.Background(), hosted, firstMessage("buy 10000 EURUSD"))
+	log.waitEvents(1)
+	time.Sleep(150 * time.Millisecond) // anything extra would arrive by now
+	if _, ev := log.snapshot(); len(ev) != 1 || ev[0] != "a1|signin|Aegis" {
+		t.Fatalf("one request, one count: %q", ev)
+	}
+}

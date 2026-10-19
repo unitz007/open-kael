@@ -439,6 +439,9 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 		// Auto-prompt removed — email linking is now user-initiated via /settings.
 	}
 
+	// They wrote to the agent, so they are active, even if they have yet to connect something.
+	h.notePersonActive(hosted, msg.Conversation)
+
 	// Check whether the user still needs to connect any integrations.
 	if h.setupChecker != nil {
 		missingIDs, err := h.setupChecker(ctx, msg.Conversation.UserID, hosted.Agent)
@@ -467,6 +470,7 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 					agentID:     hosted.Agent.ID,
 					userMessage: msg.Text,
 				})
+				h.noteEvent(hosted, domain.ActivitySignIn, integrationName)
 				text, buttonLabel := connectPrompt(integrationName)
 				var extra map[string]any
 				if !isLocalhostURL(connectURL) {

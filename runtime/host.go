@@ -384,6 +384,10 @@ type Host struct {
 	// when no skill was matched) and returns a reply to deliver. When the
 	// handler returns an error the turn falls through to the skill loop.
 	intentHandlers map[domain.Intent]IntentHandler
+
+	// activity, when set, is told how each agent is doing (see activity.go): counts only.
+	activity     domain.ActivityRecorder
+	topicLabeler TopicLabeler
 }
 
 // ProfileExtractInput groups the inputs passed to the profile extractor hook.
@@ -1246,6 +1250,9 @@ func (h *Host) HandleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 	ctx = domain.WithConversation(ctx, conv)
 	unattended := domain.IsUnattended(ctx)
 	if !unattended {
+		h.notePersonActive(hosted, conv)
+	}
+	if !unattended {
 		// With nobody there there is no one to approve, answer a question or sign in.
 		if requester, ok := resolveApprovalRequester(hosted, conv); ok {
 			ctx = domain.WithApprovalRequester(ctx, requester)
@@ -1366,6 +1373,7 @@ func (h *Host) HandleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 		if unattended {
 			h.deliverBestEffort(ctx, hosted, conv, unattendedFailure)
 		} else {
+			h.noteEvent(hosted, domain.ActivityFailed, failureDetail(err))
 			h.deliverBestEffort(ctx, hosted, conv, "Sorry, I ran into an error and couldn't finish handling that. Please try again.")
 		}
 		return result, err
@@ -1378,6 +1386,7 @@ func (h *Host) HandleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 	case result.Status == domain.LoopStatusError:
 		// giveUp reasons are internal diagnostics — never surface raw loop
 		// internals to the user regardless of whether Content is set.
+		h.noteEvent(hosted, domain.ActivityFailed, failureProblem)
 		content = "Sorry, I ran into an error and couldn't finish handling that. Please try again."
 		if domain.ChangeFailed(result.Actions) {
 			// The one thing worth saying plainly: it was tried, it failed, nothing changed.
@@ -1570,10 +1579,12 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 			case domain.IntentOffTopic:
 				if len(hosted.Agent.Skills) > 0 {
 					log.Printf("skill-router: unrelated to this agent — replying with what I can do")
+					h.noteCouldNot(ctx, hosted, userText)
 					result, final := fixedReply(messages, declineText(hosted.Agent))
 					return result, final, nil
 				}
 				log.Printf("skill-router: unrelated to this agent (no abilities) — letting LLM decline")
+				h.noteCouldNot(ctx, hosted, userText)
 				return h.respondDirectly(ctx, hosted, withDeclineHint(messages), actions)
 			}
 		}
@@ -1673,6 +1684,7 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 				return result, withoutHint(final, inAreaHint), rerr
 			}
 			log.Printf("skill-router: nothing it can do for this matched — replying with what I can do")
+			h.noteCouldNot(ctx, hosted, userText)
 			result, final := fixedReply(messages, declineText(hosted.Agent))
 			return result, final, nil
 		}
@@ -2115,6 +2127,7 @@ func (h *Host) resolveConnectRequester(ctx context.Context, hosted *HostedAgent,
 			}
 		}
 
+		h.noteEvent(hosted, domain.ActivitySignIn, integrationName)
 		promptText, buttonLabel := connectPrompt(integrationName)
 		var extra map[string]any
 		if url != "" && !isLocalhostURL(url) {
