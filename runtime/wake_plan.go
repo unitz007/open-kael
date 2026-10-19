@@ -190,7 +190,7 @@ func wakePrompt(req WakeRequest, loc *time.Location) string {
 			b.WriteString("That time has now come.\n")
 		}
 	}
-	b.WriteString(`
+	b.WriteString(strings.ReplaceAll(`
 How to decide:
 1. Find out when the thing the person's words refer to really happens, using your tools. Never answer from memory: dates and times you remember are often out of date, and they move. Times your tools return are usually UTC; convert carefully.
 2. Work out the exact moment the job should happen from it (for example "2 hours before" a deadline is the deadline minus 2 hours). Check your sum. If the next one has already passed or is too close, use the one after it.
@@ -198,10 +198,10 @@ How to decide:
    - kind "act": the exact moment to do the job. You will be woken then and must confirm it still holds, with fresh facts, before it is done.
    - kind "check": a time to look again, because the moment isn't known yet or is far away. Choose it yourself: just before it might change, or soon after something is announced. Never sooner than an hour from now.
    - at: the time with its offset, like 2026-10-25T08:30:00+01:00. Never more than 7 days ahead: if the moment is further off, set a "check" before then.
-   - reason: one plain sentence the person will read, naming what you found, for example "The deadline is Saturday 10:30, so two hours before is 8:30."
+   - reason: one plain sentence the person will read, about THIS next wake-up only (never about what you are doing now), naming what you found, with times on the person's own clock (%s), for example "The deadline is Saturday 10:30, so two hours before is 8:30."
 4. If this is the wake-up of an "act" time and everything you look up still holds: set do_it_now to true, and in the same call give the NEXT wake-up (the next time the job should happen, or when to look for it). If something moved, do not set do_it_now: just give the new time.
 5. If you cannot find out with the tools you have, call cannot_plan with one plain sentence for the person: what you couldn't find, and what you'd need from them.
-Then call finish. Use plain words everywhere the person might read them; never mention tools, schedules or prompts.`)
+Then call finish. Use plain words everywhere the person might read them; never mention tools, schedules or prompts.`, "%s", loc.String()))
 	return b.String()
 }
 
