@@ -2,9 +2,11 @@ package domain_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/unitz007/open-kael/domain"
 )
@@ -303,5 +305,68 @@ func TestDelegation_CallsTargetAgentsOwnLoop(t *testing.T) {
 	}
 	if !sawDelegatedResult {
 		t.Fatalf("expected agent A's transcript to contain agent B's typed result, got %+v", transcript)
+	}
+}
+
+// An out-of-credit refusal is never retried (asking again cannot help), and the next provider is
+// tried at once; an ordinary failure is still retried first.
+func TestNativeLoop_OutOfCreditIsNotRetriedAndTheNextProviderIsTriedAtOnce(t *testing.T) {
+	broke := &funcLLM{call: func(int) (*domain.LLMResponse, error) {
+		return nil, fmt.Errorf("provider said no: %w", domain.ErrLLMOutOfCredit)
+	}}
+	fine := &funcLLM{call: func(int) (*domain.LLMResponse, error) {
+		return &domain.LLMResponse{ToolCalls: []domain.ToolCall{{ID: "1", Name: domain.FinishActionName, Arguments: map[string]any{"content": "answered"}}}}, nil
+	}}
+	finish := &domain.BoundAction{Spec: domain.ActionSpec{Name: domain.FinishActionName, InputSchema: domain.Schema{Type: domain.SchemaTypeObject, Properties: map[string]domain.Schema{"content": {Type: domain.SchemaTypeString}}}}}
+
+	start := time.Now()
+	res, _, err := domain.NewNativeLoop([]domain.LLM{broke, fine}, 3).Run(context.Background(), []domain.Message{{Role: domain.RoleUser, Content: "hi"}}, []*domain.BoundAction{finish})
+	if err != nil || res == nil || res.Content != "answered" {
+		t.Fatalf("the second provider answered: %+v %v", res, err)
+	}
+	if broke.n != 1 {
+		t.Errorf("an out-of-credit provider is asked once, not retried: %d", broke.n)
+	}
+	if time.Since(start) > 900*time.Millisecond {
+		t.Errorf("and without waiting (the retry back-off is a second or more): %v", time.Since(start))
+	}
+
+	// Alone, it fails at once with the reason intact for whoever tells the person.
+	only := &funcLLM{call: func(int) (*domain.LLMResponse, error) { return nil, domain.ErrLLMOutOfCredit }}
+	start = time.Now()
+	_, _, err = domain.NewNativeLoop([]domain.LLM{only}, 3).Run(context.Background(), []domain.Message{{Role: domain.RoleUser, Content: "hi"}}, []*domain.BoundAction{finish})
+	if !errors.Is(err, domain.ErrLLMOutOfCredit) || !domain.LLMDown(err) {
+		t.Errorf("the reason survives: %v", err)
+	}
+	if only.n != 1 || time.Since(start) > 900*time.Millisecond {
+		t.Errorf("one call, no waiting: %d calls in %v", only.n, time.Since(start))
+	}
+}
+
+func TestNativeLoop_AnOrdinaryFailureIsStillRetried(t *testing.T) {
+	flaky := &funcLLM{call: func(n int) (*domain.LLMResponse, error) {
+		if n == 1 {
+			return nil, fmt.Errorf("blip: %w", domain.ErrLLMUnavailable)
+		}
+		return &domain.LLMResponse{ToolCalls: []domain.ToolCall{{ID: "1", Name: domain.FinishActionName, Arguments: map[string]any{"content": "ok"}}}}, nil
+	}}
+	finish := &domain.BoundAction{Spec: domain.ActionSpec{Name: domain.FinishActionName, InputSchema: domain.Schema{Type: domain.SchemaTypeObject, Properties: map[string]domain.Schema{"content": {Type: domain.SchemaTypeString}}}}}
+	res, _, err := domain.NewNativeLoop([]domain.LLM{flaky}, 3).Run(context.Background(), []domain.Message{{Role: domain.RoleUser, Content: "hi"}}, []*domain.BoundAction{finish})
+	if err != nil || res.Content != "ok" || flaky.n != 2 {
+		t.Errorf("a hiccup is retried: %+v %v calls=%d", res, err, flaky.n)
+	}
+}
+
+func TestLLMDown(t *testing.T) {
+	for err, want := range map[error]bool{
+		domain.ErrLLMOutOfCredit: true,
+		domain.ErrLLMUnavailable: true,
+		fmt.Errorf("native loop: call llm: %w", domain.ErrLLMOutOfCredit): true,
+		errors.New("something else"):                                      false,
+		nil:                                                               false,
+	} {
+		if got := domain.LLMDown(err); got != want {
+			t.Errorf("%v: %v", err, got)
+		}
 	}
 }

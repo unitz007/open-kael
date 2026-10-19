@@ -316,6 +316,11 @@ func (l *NativeLoop) callWithRetry(ctx context.Context, provider LLM, messages [
 			return resp, nil
 		}
 		lastErr = err
+		if errors.Is(err, ErrLLMOutOfCredit) {
+			// Asking again cannot help until the account is topped up: say so at once, and let the
+			// next provider (if there is one) have a go.
+			break
+		}
 		if attempt == llmMaxRetries-1 {
 			break
 		}

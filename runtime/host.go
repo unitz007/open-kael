@@ -1388,7 +1388,7 @@ func (h *Host) HandleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 			h.deliverBestEffort(ctx, hosted, conv, unattendedFailure)
 		} else {
 			h.noteEvent(hosted, domain.ActivityFailed, failureDetail(err))
-			h.deliverBestEffort(ctx, hosted, conv, "Sorry, I ran into an error and couldn't finish handling that. Please try again.")
+			h.deliverBestEffort(ctx, hosted, conv, failureText(err))
 		}
 		return result, err
 	}

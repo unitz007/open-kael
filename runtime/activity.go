@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"log"
 	"strings"
 	"time"
@@ -19,9 +20,22 @@ import (
 type TopicLabeler func(ctx context.Context, request string) string
 
 const (
+	failureCredit      = "credit"      // the answering service has no credit left
 	failureUnavailable = "unavailable" // the answering service could not be reached
 	failureProblem     = "problem"     // anything else
 )
+
+// unavailableText is what a person is told when the answering service can't answer: the truth
+// without the reason, which is not theirs to worry about and nothing they can act on.
+const unavailableText = "I'm temporarily unavailable right now. Please try again in a little while."
+
+// failureText says what went wrong to the person who asked.
+func failureText(err error) string {
+	if failureDetail(err) != failureProblem { // the answering service, by type or by how the loop words it
+		return unavailableText
+	}
+	return "Sorry, I ran into an error and couldn't finish handling that. Please try again."
+}
 
 // SetActivityRecorder turns on activity counting.
 func (h *Host) SetActivityRecorder(r domain.ActivityRecorder) { h.activity = r }
@@ -92,6 +106,12 @@ func (h *Host) noteCouldNot(ctx context.Context, hosted *HostedAgent, request st
 
 // failureDetail says in one of two plain categories why a reply did not go through.
 func failureDetail(err error) string {
+	if errors.Is(err, domain.ErrLLMOutOfCredit) {
+		return failureCredit
+	}
+	if errors.Is(err, domain.ErrLLMUnavailable) {
+		return failureUnavailable
+	}
 	if err != nil {
 		m := strings.ToLower(err.Error())
 		if strings.Contains(m, "call llm") || strings.Contains(m, "deadline exceeded") || strings.Contains(m, "no llm") {

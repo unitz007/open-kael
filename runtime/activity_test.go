@@ -3,6 +3,7 @@ package runtime_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -248,5 +249,50 @@ func TestActivity_EachMessageIsCountedOnceAndTasksAreNot(t *testing.T) {
 	log.mu.Unlock()
 	if n != 2 {
 		t.Errorf("a repeating task is not a message: %d", n)
+	}
+}
+
+// When the answering service can't answer, the person is told plainly it is temporarily unavailable
+// (never a reason they can't act on, never "error"), and the creator's count says why.
+func TestActivity_AnOutOfCreditOrUnavailableServiceIsSaidPlainlyToThePersonAndCountedWithItsReason(t *testing.T) {
+	for _, tc := range []struct {
+		err    error
+		detail string
+	}{
+		{fmt.Errorf("provider said: out of credits: %w", domain.ErrLLMOutOfCredit), "a1|failed|credit"},
+		{fmt.Errorf("provider overloaded: %w", domain.ErrLLMUnavailable), "a1|failed|unavailable"},
+	} {
+		down := &funcLLM{call: func(int) (*domain.LLMResponse, error) { return nil, tc.err }}
+		agent := &domain.Agent{ID: "a1", Name: "Desk", LLMs: []domain.LLM{down}, MaxIterations: 2}
+		box := &outbox{}
+		executors := domain.NewExecutorRegistry()
+		executors.Register("slack", box)
+		host := runtime.NewHost()
+		hosted := &runtime.HostedAgent{Agent: agent, Deps: slackDeps(func(d *runtime.AgentDeps) { d.Executors = executors })}
+		host.Register(hosted)
+		log := &activityLog{}
+		host.SetActivityRecorder(log)
+
+		conv := domain.ConversationRef{Provider: "slack", ChatID: "C1", IdentityID: "id_slack", UserID: "u1", SenderID: "C1"}
+		start := time.Now()
+		if _, err := host.HandleTurn(context.Background(), hosted, conv, "hello there"); err == nil {
+			t.Fatal("the service is down: the turn fails")
+		}
+		if ev := log.waitEvents(1); len(ev) != 1 || ev[0] != tc.detail {
+			t.Errorf("counted with its reason: %q, want %q", ev, tc.detail)
+		}
+		got := box.texts()
+		if len(got) != 1 || got[0] != "I'm temporarily unavailable right now. Please try again in a little while." {
+			t.Errorf("told plainly: %q", got)
+		}
+		lower := strings.ToLower(strings.Join(got, " "))
+		for _, banned := range []string{"credit", "error", "402", "openrouter", "provider", "sorry"} {
+			if strings.Contains(lower, banned) {
+				t.Errorf("%q must not reach the person: %q", banned, got)
+			}
+		}
+		if tc.detail == "a1|failed|credit" && time.Since(start) > 900*time.Millisecond {
+			t.Errorf("out of credit fails at once, not after retries: %v", time.Since(start))
+		}
 	}
 }
