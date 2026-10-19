@@ -201,3 +201,44 @@ func TestMaybeLearn_OnlyForRealMessagesFromKnownPeople(t *testing.T) {
 	h2 := NewHost() // no learner set: nothing happens, nothing breaks
 	h2.maybeLearn(ctx, conv, hosted, "I live in Wolfsburg now", "Nice!")
 }
+
+type failingMigrator struct{ n atomic.Int32 }
+
+func (f *failingMigrator) Migrate(context.Context, string, string, string) error {
+	f.n.Add(1)
+	return context.DeadlineExceeded
+}
+
+func TestStartMigration_AFailedMoveWaitsBeforeTryingAgain(t *testing.T) {
+	now := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
+	old := clockNow
+	clockNow = func() time.Time { return now }
+	defer func() { clockNow = old }()
+
+	h := NewHost()
+	f := &failingMigrator{}
+	h.SetProfileDetails(newMemStore(), nil)
+	h.SetProfileMigrator(f)
+	wait := func(n int32) {
+		for i := 0; i < 400; i++ {
+			if _, running := h.profileDetails.migrating.Load("u1|personal"); !running && f.n.Load() >= n {
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		t.Fatal("the move did not finish")
+	}
+	h.startMigration("u1", "personal", "note")
+	wait(1)
+	h.startMigration("u1", "personal", "note") // the next message, a moment later
+	time.Sleep(30 * time.Millisecond)
+	if f.n.Load() != 1 {
+		t.Fatalf("not retried straight away: %d", f.n.Load())
+	}
+	now = now.Add(migrationRetry + time.Second)
+	h.startMigration("u1", "personal", "note")
+	wait(2)
+	if f.n.Load() != 2 {
+		t.Errorf("retried after the wait: %d", f.n.Load())
+	}
+}

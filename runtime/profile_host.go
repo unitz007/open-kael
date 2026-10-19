@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/unitz007/open-kael/domain"
 )
@@ -18,7 +19,11 @@ type profileSetup struct {
 	migrate ProfileMigrating
 
 	migrating sync.Map // "userID|scope" while an older note is being moved
+	retryAt   sync.Map // "userID|scope" → when a failed move may be tried again
 }
+
+// migrationRetry is how long to wait before trying again to move a note that could not be moved.
+const migrationRetry = 10 * time.Minute
 
 // ProfileMigrating moves a person's older free-text note into details (see profile_migrate.go).
 type ProfileMigrating interface {
@@ -149,6 +154,9 @@ func (h *Host) startMigration(userID, scope, legacy string) {
 		return
 	}
 	key := userID + "|" + scope
+	if at, ok := ps.retryAt.Load(key); ok && clockNow().Before(at.(time.Time)) {
+		return
+	}
 	if _, running := ps.migrating.LoadOrStore(key, true); running {
 		return
 	}
@@ -156,7 +164,10 @@ func (h *Host) startMigration(userID, scope, legacy string) {
 		defer ps.migrating.Delete(key)
 		if err := ps.migrate.Migrate(context.Background(), userID, scope, legacy); err != nil {
 			log.Printf("runtime: profile: move older note for user %s (%s): %v", userID, scope, err)
+			ps.retryAt.Store(key, clockNow().Add(migrationRetry))
+			return
 		}
+		ps.retryAt.Delete(key)
 	}()
 }
 
