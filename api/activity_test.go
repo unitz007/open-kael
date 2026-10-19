@@ -40,10 +40,10 @@ func TestActivity_ACreatorSeesOnlyTheirOwnAgents(t *testing.T) {
 
 	users := []string{"act_a", "act_b"}
 	for _, u := range users {
-		if err := store.SaveUser(ctx, &domain.User{ID: u, Email: u + "@example.com"}); err != nil {
+		if err := store.SaveAccount(ctx, &domain.Account{ID: u, Email: u + "@example.com"}); err != nil {
 			t.Fatal(err)
 		}
-		if err := store.SaveSession(ctx, &domain.Session{Token: "tok_" + u, UserID: u, ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+		if err := store.SaveSession(ctx, &domain.Session{Token: "tok_" + u, AccountID: u, ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -51,7 +51,7 @@ func TestActivity_ACreatorSeesOnlyTheirOwnAgents(t *testing.T) {
 		_, _ = pool.Exec(ctx, `TRUNCATE agents CASCADE`)
 		for _, u := range users {
 			_ = store.DeleteSession(ctx, "tok_"+u)
-			_ = store.DeleteUser(ctx, u)
+			_ = store.DeleteAccount(ctx, u)
 		}
 	})
 	for _, a := range []*domain.Agent{

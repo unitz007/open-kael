@@ -42,17 +42,18 @@ func TestTimezoneHint(t *testing.T) {
 
 	users := []string{"tzh_a", "tzh_b"}
 	for _, u := range users {
-		if err := store.SaveUser(ctx, &domain.User{ID: u, Email: u + "@example.com"}); err != nil {
+		if _, err := seedLogin(ctx, store, u, u+"@example.com"); err != nil {
 			t.Fatal(err)
 		}
-		if err := store.SaveSession(ctx, &domain.Session{Token: "tok_" + u, UserID: u, ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+		if err := store.SaveSession(ctx, &domain.Session{Token: "tok_" + u, AccountID: u, ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	t.Cleanup(func() {
 		for _, u := range users {
 			_ = store.DeleteSession(ctx, "tok_"+u)
-			_ = store.DeleteUser(ctx, u)
+			_ = store.DeleteAccount(ctx, u)
+			_ = store.DeletePerson(ctx, u)
 		}
 	})
 

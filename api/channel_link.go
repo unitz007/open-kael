@@ -17,7 +17,7 @@ type redeemChannelCodeRequest struct {
 // to find the (identity_id, channel_ref) the bot embedded, creates the
 // MessengerChannel binding, and deletes the code (single use).
 func (s *Server) redeemChannelByCode(w http.ResponseWriter, r *http.Request) {
-	user, _ := UserFromContext(r.Context())
+	user, _ := PersonFromContext(r.Context())
 
 	var req redeemChannelCodeRequest
 	if err := decodeJSON(r, &req); err != nil {

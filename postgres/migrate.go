@@ -33,6 +33,8 @@ type Store struct {
 	pool *pgxpool.Pool
 	act  activityState
 	hub  activityHub
+	// extra is what other packages keep per person, so a merge or delete reaches it too.
+	extra personTables
 }
 
 func New(pool *pgxpool.Pool) *Store {

@@ -19,7 +19,7 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	agent.ID = domain.NewID()
-	if user, ok := UserFromContext(r.Context()); ok {
+	if user, ok := AccountFromContext(r.Context()); ok {
 		agent.CreatedBy = user.ID
 	}
 
@@ -35,7 +35,7 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) listAgents(w http.ResponseWriter, r *http.Request) {
 	var ownerID string
-	if user, ok := UserFromContext(r.Context()); ok {
+	if user, ok := AccountFromContext(r.Context()); ok {
 		ownerID = user.ID
 	}
 	list, err := s.store.ListAgents(r.Context(), ownerID)
@@ -329,7 +329,7 @@ func (s *Server) accessibleAgent(w http.ResponseWriter, r *http.Request) (*domai
 // When no session is in context (static-token or unauthenticated dev mode),
 // all agents are accessible.
 func agentAccessible(ctx context.Context, agent *domain.Agent) bool {
-	user, ok := UserFromContext(ctx)
+	user, ok := AccountFromContext(ctx)
 	if !ok {
 		return true
 	}

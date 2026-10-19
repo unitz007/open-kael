@@ -28,9 +28,9 @@ func activityRig(t *testing.T) (*postgres.Store, context.Context) {
 	must(s.SaveAgent(ctx, &domain.Agent{ID: "ag_a", Name: "A", MaxIterations: 5, IdentityIDs: []string{"id_tg", "id_sl"}}))
 	must(s.SaveAgent(ctx, &domain.Agent{ID: "ag_b", Name: "B", MaxIterations: 5, IdentityIDs: []string{"id_sl"}}))
 	for _, u := range []string{"u1", "u2", "u3"} {
-		must(s.SaveUser(ctx, &domain.User{ID: "u_act_" + u}))
+		must(s.SavePerson(ctx, &domain.Person{ID: "u_act_" + u}))
 		u := u
-		t.Cleanup(func() { _ = s.DeleteUser(ctx, "u_act_"+u) })
+		t.Cleanup(func() { _ = s.DeletePerson(ctx, "u_act_"+u) })
 	}
 	_, err := s.ActivitySummary(ctx, []string{"ag_a"}, 7, time.Now()) // makes sure the secret exists
 	must(err)

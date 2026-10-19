@@ -34,7 +34,7 @@ func (s *Server) activityScope(w http.ResponseWriter, r *http.Request) (ids []st
 		}
 		days = n
 	}
-	user, signedIn := UserFromContext(r.Context())
+	user, signedIn := AccountFromContext(r.Context())
 	if !signedIn && s.authToken == "" {
 		// Other creator routes run open when no key is configured (a dev default); how people are
 		// doing is never open to anyone who asks.
@@ -146,7 +146,7 @@ func (s *Server) streamActivity(w http.ResponseWriter, r *http.Request) {
 	}
 	rc := http.NewResponseController(w)
 	key := "server"
-	if user, signedIn := UserFromContext(r.Context()); signedIn {
+	if user, signedIn := AccountFromContext(r.Context()); signedIn {
 		key = user.ID
 	}
 	if !s.streams.take(key) {

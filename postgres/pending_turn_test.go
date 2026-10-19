@@ -12,10 +12,10 @@ import (
 func TestPendingTurn_SavedReplacedTakenOnceAndExpired(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
-	if err := s.SaveUser(ctx, &domain.User{ID: "u_pt"}); err != nil {
+	if err := s.SavePerson(ctx, &domain.Person{ID: "u_pt"}); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = s.DeleteUser(ctx, "u_pt") })
+	t.Cleanup(func() { _ = s.DeletePerson(ctx, "u_pt") })
 
 	conv := domain.ConversationRef{Provider: "telegram", ChatID: "123", IdentityID: "id_tg", ThreadID: "9"}
 	save := func(msg string) {
@@ -52,10 +52,10 @@ func TestPendingTurn_SavedReplacedTakenOnceAndExpired(t *testing.T) {
 func TestUserSettings_TimezoneAndName(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
-	if err := s.SaveUser(ctx, &domain.User{ID: "u_tz", FirstName: "Old"}); err != nil {
+	if err := s.SavePerson(ctx, &domain.Person{ID: "u_tz", FirstName: "Old"}); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = s.DeleteUser(ctx, "u_tz") })
+	t.Cleanup(func() { _ = s.DeletePerson(ctx, "u_tz") })
 
 	if tz, err := s.UserTimezone(ctx, "u_tz"); err != nil || tz != "" {
 		t.Fatalf("unset time zone is empty: %q %v", tz, err)
@@ -69,12 +69,12 @@ func TestUserSettings_TimezoneAndName(t *testing.T) {
 	if tz, _ := s.UserTimezone(ctx, "u_tz"); tz != "Africa/Lagos" {
 		t.Errorf("time zone: %q", tz)
 	}
-	u, err := s.GetUser(ctx, "u_tz")
+	u, err := s.GetPerson(ctx, "u_tz")
 	if err != nil || u.FirstName != "Ada" || u.LastName != "Obi" {
 		t.Errorf("name: %+v %v", u, err)
 	}
 	// Saving the user again (as other flows do) must not wipe the time zone.
-	if err := s.SaveUser(ctx, u); err != nil {
+	if err := s.SavePerson(ctx, u); err != nil {
 		t.Fatal(err)
 	}
 	if tz, _ := s.UserTimezone(ctx, "u_tz"); tz != "Africa/Lagos" {
@@ -91,7 +91,7 @@ func TestUserSettings_TimezoneAndName(t *testing.T) {
 func TestWelcomeMessage_RememberedThenTakenOnce(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
-	if err := s.SaveUser(ctx, &domain.User{ID: "u_wm"}); err != nil {
+	if err := s.SavePerson(ctx, &domain.Person{ID: "u_wm"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SaveIntegration(ctx, &domain.Integration{ID: "int_wm", Name: "Telegram", Service: "telegram"}); err != nil {
@@ -103,7 +103,7 @@ func TestWelcomeMessage_RememberedThenTakenOnce(t *testing.T) {
 	if err := s.SaveMessengerChannel(ctx, &domain.MessengerChannel{ID: "mc_wm", IdentityID: "id_wm", UserID: "u_wm", ChannelRef: "555"}); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = s.DeleteUser(ctx, "u_wm") })
+	t.Cleanup(func() { _ = s.DeletePerson(ctx, "u_wm") })
 
 	if id, err := s.TakeWelcomeMessage(ctx, "id_wm", "555"); err != nil || id != "" {
 		t.Fatalf("nothing remembered yet: %q %v", id, err)
@@ -131,10 +131,10 @@ func TestWelcomeMessage_RememberedThenTakenOnce(t *testing.T) {
 func TestUserDetails_LanguageResidenceAndNameAreKept(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
-	if err := s.SaveUser(ctx, &domain.User{ID: "u_ud", FirstName: "Ada"}); err != nil {
+	if err := s.SavePerson(ctx, &domain.Person{ID: "u_ud", FirstName: "Ada"}); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = s.DeleteUser(ctx, "u_ud") })
+	t.Cleanup(func() { _ = s.DeletePerson(ctx, "u_ud") })
 
 	if d, err := s.UserDetails(ctx, "u_ud"); err != nil || d != (domain.UserDetails{Name: "Ada"}) {
 		t.Fatalf("only the name so far: %+v %v", d, err)
@@ -153,8 +153,8 @@ func TestUserDetails_LanguageResidenceAndNameAreKept(t *testing.T) {
 		t.Fatalf("all of it: %+v %v", d, err)
 	}
 	// Another flow saving the user must not wipe any of it.
-	u, _ := s.GetUser(ctx, "u_ud")
-	if err := s.SaveUser(ctx, u); err != nil {
+	u, _ := s.GetPerson(ctx, "u_ud")
+	if err := s.SavePerson(ctx, u); err != nil {
 		t.Fatal(err)
 	}
 	if d, _ := s.UserDetails(ctx, "u_ud"); d != want {

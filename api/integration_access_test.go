@@ -13,7 +13,7 @@ func TestIntegrationAccessible(t *testing.T) {
 	mine := &domain.Integration{ID: "m", CreatedBy: "u1"}
 	theirs := &domain.Integration{ID: "t", CreatedBy: "u2"}
 
-	u1 := api.ContextWithUser(context.Background(), &domain.User{ID: "u1"})
+	u1 := api.ContextWithAccount(context.Background(), &domain.Account{ID: "u1"})
 	for _, tc := range []struct {
 		name string
 		i    *domain.Integration

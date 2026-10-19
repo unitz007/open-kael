@@ -68,16 +68,22 @@ func (s *Server) registerUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	emailVerified := s.mailer == nil // auto-verify when no mailer is configured
-	user := &domain.User{
+	// A new login comes with the person it is for, who carries the name.
+	person := &domain.Person{ID: newID(), FirstName: req.FirstName, LastName: req.LastName}
+	account := &domain.Account{
 		ID:                newID(),
 		Email:             req.Email,
-		FirstName:         req.FirstName,
-		LastName:          req.LastName,
 		PasswordHash:      string(hash),
 		EmailVerified:     emailVerified,
 		VerificationToken: verificationToken,
+		PersonID:          person.ID,
 	}
-	if err := s.store.SaveUser(r.Context(), user); err != nil {
+	if err := s.store.SavePerson(r.Context(), person); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if err := s.store.SaveAccount(r.Context(), account); err != nil {
+		_ = s.store.DeletePerson(r.Context(), person.ID) // nobody is left behind by a refused sign-up
 		if isUniqueViolation(err) {
 			writeError(w, http.StatusConflict, errors.New("an account with this email already exists"))
 			return
@@ -94,7 +100,7 @@ func (s *Server) registerUser(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeJSON(w, http.StatusCreated, user)
+	writeJSON(w, http.StatusCreated, meResponse(account, person))
 }
 
 func (s *Server) verifyEmail(w http.ResponseWriter, r *http.Request) {
@@ -104,19 +110,19 @@ func (s *Server) verifyEmail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := s.store.GetUserByVerificationToken(r.Context(), token)
+	account, err := s.store.GetAccountByVerificationToken(r.Context(), token)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, errors.New("invalid or expired token"))
 		return
 	}
-	if user.EmailVerified {
+	if account.EmailVerified {
 		writeJSON(w, http.StatusOK, map[string]string{"message": "email already verified"})
 		return
 	}
 
-	user.EmailVerified = true
-	user.VerificationToken = ""
-	if err := s.store.SaveUser(r.Context(), user); err != nil {
+	account.EmailVerified = true
+	account.VerificationToken = ""
+	if err := s.store.SaveAccount(r.Context(), account); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -143,18 +149,18 @@ func (s *Server) loginUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := s.store.GetUserByEmail(r.Context(), req.Email)
+	account, err := s.store.GetAccountByEmail(r.Context(), req.Email)
 	if err != nil {
 		// Return the same error for wrong email or wrong password to prevent
 		// user enumeration.
 		writeError(w, http.StatusUnauthorized, errors.New("invalid credentials"))
 		return
 	}
-	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
+	if err := bcrypt.CompareHashAndPassword([]byte(account.PasswordHash), []byte(req.Password)); err != nil {
 		writeError(w, http.StatusUnauthorized, errors.New("invalid credentials"))
 		return
 	}
-	if !user.EmailVerified {
+	if !account.EmailVerified {
 		writeError(w, http.StatusForbidden, errors.New("email address not verified — check your inbox"))
 		return
 	}
@@ -166,7 +172,7 @@ func (s *Server) loginUser(w http.ResponseWriter, r *http.Request) {
 	}
 	sess := &domain.Session{
 		Token:     token,
-		UserID:    user.ID,
+		AccountID: account.ID,
 		ExpiresAt: time.Now().Add(30 * 24 * time.Hour),
 	}
 	if err := s.store.SaveSession(r.Context(), sess); err != nil {
@@ -176,9 +182,28 @@ func (s *Server) loginUser(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, sessionResponse{Token: sess.Token, ExpiresAt: sess.ExpiresAt})
 }
 
+// me is how the signed-in person is described to the web app: the login and the person it is for.
+type me struct {
+	ID            string `json:"id"` // the login's id
+	PersonID      string `json:"person_id,omitempty"`
+	Email         string `json:"email"`
+	EmailVerified bool   `json:"email_verified"`
+	FirstName     string `json:"first_name,omitempty"`
+	LastName      string `json:"last_name,omitempty"`
+}
+
+func meResponse(a *domain.Account, p *domain.Person) me {
+	m := me{ID: a.ID, PersonID: a.PersonID, Email: a.Email, EmailVerified: a.EmailVerified}
+	if p != nil {
+		m.PersonID, m.FirstName, m.LastName = p.ID, p.FirstName, p.LastName
+	}
+	return m
+}
+
 func (s *Server) getMe(w http.ResponseWriter, r *http.Request) {
-	user, _ := UserFromContext(r.Context())
-	writeJSON(w, http.StatusOK, user)
+	account, _ := AccountFromContext(r.Context())
+	person, _ := PersonFromContext(r.Context())
+	writeJSON(w, http.StatusOK, meResponse(account, person))
 }
 
 func (s *Server) logoutUser(w http.ResponseWriter, r *http.Request) {

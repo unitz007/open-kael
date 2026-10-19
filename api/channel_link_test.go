@@ -17,17 +17,27 @@ import (
 	"github.com/unitz007/open-kael/postgres"
 )
 
-// seedUser creates a User + Session in the database and returns a bearer token
+// seedLogin makes a login and the person it is for, both with the given id (as an upgraded database
+// has them), so a test can speak of "the user" by one id.
+func seedLogin(ctx context.Context, store *postgres.Store, id, email string) (*domain.Account, error) {
+	if err := store.SavePerson(ctx, &domain.Person{ID: id}); err != nil {
+		return nil, err
+	}
+	a := &domain.Account{ID: id, Email: email, PersonID: id}
+	return a, store.SaveAccount(ctx, a)
+}
+
+// seedUser creates a login (and its person) + Session in the database and returns a bearer token
 // the test can use in the Authorization header.
-func seedUser(t *testing.T, store *postgres.Store) (user *domain.User, token string) {
+func seedUser(t *testing.T, store *postgres.Store) (user *domain.Account, token string) {
 	t.Helper()
-	user = &domain.User{ID: "u-test-1", Email: "test@example.com"}
-	if err := store.SaveUser(context.Background(), user); err != nil {
+	user, err := seedLogin(context.Background(), store, "u-test-1", "test@example.com")
+	if err != nil {
 		t.Fatalf("seed user: %v", err)
 	}
 	sess := &domain.Session{
 		Token:     "test-session-token",
-		UserID:    user.ID,
+		AccountID: user.ID,
 		ExpiresAt: time.Now().Add(1 * time.Hour),
 	}
 	if err := store.SaveSession(context.Background(), sess); err != nil {
@@ -258,12 +268,10 @@ func TestDeleteMyChannel_OtherUserChannel_Returns404(t *testing.T) {
 	srv := api.NewServer(store)
 	ctx := context.Background()
 
-	alice := &domain.User{ID: "u-alice", Email: "alice@example.com"}
-	bob := &domain.User{ID: "u-bob", Email: "bob@example.com"}
-	store.SaveUser(ctx, alice) //nolint:errcheck
-	store.SaveUser(ctx, bob)   //nolint:errcheck
+	alice, _ := seedLogin(ctx, store, "u-alice", "alice@example.com")
+	bob, _ := seedLogin(ctx, store, "u-bob", "bob@example.com")
 
-	sess := &domain.Session{Token: "alice-token", UserID: alice.ID, ExpiresAt: time.Now().Add(time.Hour)}
+	sess := &domain.Session{Token: "alice-token", AccountID: alice.ID, ExpiresAt: time.Now().Add(time.Hour)}
 	store.SaveSession(ctx, sess) //nolint:errcheck
 
 	ch := &domain.MessengerChannel{ID: "ch-bob", UserID: bob.ID, IdentityID: "id-tg", ChannelRef: "chat-bob"}

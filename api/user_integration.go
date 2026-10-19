@@ -23,7 +23,7 @@ type setupResponse struct {
 // channels) and, for each of that agent's identities, the matching
 // integration and any existing AppAuthorization the user has granted.
 func (s *Server) getMySetup(w http.ResponseWriter, r *http.Request) {
-	user, _ := UserFromContext(r.Context())
+	user, _ := PersonFromContext(r.Context())
 
 	channels, err := s.store.ListMessengerChannelsByUser(r.Context(), user.ID)
 	if err != nil {
@@ -103,7 +103,7 @@ type createAuthorizationRequest struct {
 // ExternalUserID) and credential-based integrations (e.g. FPL refresh token
 // stored encrypted in CredentialRef).
 func (s *Server) createMyAppAuthorization(w http.ResponseWriter, r *http.Request) {
-	user, _ := UserFromContext(r.Context())
+	user, _ := PersonFromContext(r.Context())
 
 	var req createAuthorizationRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -163,7 +163,7 @@ func (s *Server) createMyAppAuthorization(w http.ResponseWriter, r *http.Request
 }
 
 func (s *Server) listMyAppAuthorizations(w http.ResponseWriter, r *http.Request) {
-	user, _ := UserFromContext(r.Context())
+	user, _ := PersonFromContext(r.Context())
 	list, err := s.store.ListAppAuthorizationsByUser(r.Context(), user.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -173,7 +173,7 @@ func (s *Server) listMyAppAuthorizations(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) deleteMyAppAuthorization(w http.ResponseWriter, r *http.Request) {
-	user, _ := UserFromContext(r.Context())
+	user, _ := PersonFromContext(r.Context())
 	id := r.PathValue("id")
 
 	existing, err := s.store.GetAppAuthorization(r.Context(), id)

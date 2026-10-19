@@ -16,7 +16,7 @@ type userAgentConfigRequest struct {
 // returns the authenticated user's personal instructions for the given agent.
 // Returns 404 when no config has been set yet.
 func (s *Server) getMyAgentConfig(w http.ResponseWriter, r *http.Request) {
-	user, ok := UserFromContext(r.Context())
+	user, ok := PersonFromContext(r.Context())
 	if !ok {
 		writeError(w, http.StatusUnauthorized, errors.New("not authenticated"))
 		return
@@ -44,7 +44,7 @@ func (s *Server) getMyAgentConfig(w http.ResponseWriter, r *http.Request) {
 // putMyAgentConfig handles PUT /users/me/agents/{agentID}/config —
 // sets or replaces the authenticated user's personal instructions for the agent.
 func (s *Server) putMyAgentConfig(w http.ResponseWriter, r *http.Request) {
-	user, ok := UserFromContext(r.Context())
+	user, ok := PersonFromContext(r.Context())
 	if !ok {
 		writeError(w, http.StatusUnauthorized, errors.New("not authenticated"))
 		return

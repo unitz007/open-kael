@@ -210,10 +210,10 @@ var errUnauthorized = errors.New("unauthorized")
 // token is configured the handler runs freely (dev default).
 func (s *Server) creatorAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Always try to resolve a session user and inject into context — this
-		// enables per-user agent scoping even when no static token is configured.
-		if user, err := s.userFromRequest(r); err == nil {
-			next(w, r.WithContext(context.WithValue(r.Context(), ctxKeyUser{}, user)))
+		// Always try to resolve a session account and inject into context — this
+		// enables per-creator agent scoping even when no static token is configured.
+		if account, err := s.accountFromRequest(r); err == nil {
+			next(w, r.WithContext(ContextWithAccount(r.Context(), account)))
 			return
 		}
 		if s.authToken == "" || bearerMatches(r, s.authToken) {
@@ -224,40 +224,64 @@ func (s *Server) creatorAuth(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// userAuth wraps a handler with session-based auth — used on routes that
-// end-users call once they are logged in. Stores the resolved *domain.User
-// in the request context under ctxKeyUser so handlers can retrieve it via
-// UserFromContext.
+// userAuth wraps a handler with session-based auth — used on routes that a
+// signed-in person calls to manage their own things (connections, approvals,
+// settings). It resolves the session's Account and the Person that account is for (made the
+// first time), and puts both in the request context: AccountFromContext and PersonFromContext.
 func (s *Server) userAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		user, err := s.userFromRequest(r)
+		account, err := s.accountFromRequest(r)
 		if err != nil {
 			writeError(w, http.StatusUnauthorized, errUnauthorized)
 			return
 		}
-		next(w, r.WithContext(context.WithValue(r.Context(), ctxKeyUser{}, user)))
+		var person *domain.Person
+		if account.PersonID != "" {
+			person, err = s.store.GetPerson(r.Context(), account.PersonID)
+		} else {
+			person, err = s.store.EnsurePersonForAccount(r.Context(), account.ID)
+		}
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		ctx := ContextWithPerson(ContextWithAccount(r.Context(), account), person)
+		next(w, r.WithContext(ctx))
 	}
 }
 
-type ctxKeyUser struct{}
+type ctxKeyAccount struct{}
+type ctxKeyPerson struct{}
 
-// ContextWithUser returns ctx carrying u as the authenticated user — what the
-// session middleware does per request. For route plugins' tests.
-func ContextWithUser(ctx context.Context, u *domain.User) context.Context {
-	return context.WithValue(ctx, ctxKeyUser{}, u)
+// ContextWithAccount returns ctx carrying a as the signed-in login — what the session middleware
+// does per request. For route plugins' tests.
+func ContextWithAccount(ctx context.Context, a *domain.Account) context.Context {
+	return context.WithValue(ctx, ctxKeyAccount{}, a)
 }
 
-// UserFromContext retrieves the authenticated *domain.User from the request
-// context. Returns ok=false when no session is present (static-token or
-// unauthenticated dev mode).
-func UserFromContext(ctx context.Context) (*domain.User, bool) {
-	u, ok := ctx.Value(ctxKeyUser{}).(*domain.User)
-	return u, ok
+// ContextWithPerson returns ctx carrying p as the person the signed-in login is for.
+func ContextWithPerson(ctx context.Context, p *domain.Person) context.Context {
+	return context.WithValue(ctx, ctxKeyPerson{}, p)
 }
 
-// userFromRequest resolves the bearer token in the Authorization header to a
-// live, non-expired session and returns the owning User.
-func (s *Server) userFromRequest(r *http.Request) (*domain.User, error) {
+// AccountFromContext retrieves the signed-in login from the request context. Use it where the login
+// itself matters: what a creator owns (CreatedBy). Returns ok=false when no session is present
+// (static-token or unauthenticated dev mode).
+func AccountFromContext(ctx context.Context) (*domain.Account, bool) {
+	a, ok := ctx.Value(ctxKeyAccount{}).(*domain.Account)
+	return a, ok
+}
+
+// PersonFromContext retrieves the person the signed-in login is for. Use it where the human matters:
+// their connections, approvals, agent settings and channels. Only routes behind userAuth have one.
+func PersonFromContext(ctx context.Context) (*domain.Person, bool) {
+	p, ok := ctx.Value(ctxKeyPerson{}).(*domain.Person)
+	return p, ok
+}
+
+// accountFromRequest resolves the bearer token in the Authorization header to a
+// live, non-expired session and returns the owning Account.
+func (s *Server) accountFromRequest(r *http.Request) (*domain.Account, error) {
 	const prefix = "Bearer "
 	auth := r.Header.Get("Authorization")
 	if !strings.HasPrefix(auth, prefix) {
@@ -269,7 +293,7 @@ func (s *Server) userFromRequest(r *http.Request) (*domain.User, error) {
 	if err != nil || sess.Expired() {
 		return nil, errUnauthorized
 	}
-	return s.store.GetUser(r.Context(), sess.UserID)
+	return s.store.GetAccount(r.Context(), sess.AccountID)
 }
 
 func bearerMatches(r *http.Request, token string) bool {

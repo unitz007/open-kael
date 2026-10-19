@@ -14,11 +14,11 @@ func TestProfileDetails_SavedReplacedConfirmedRemoved(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 	for _, id := range []string{"u_pd", "u_pd2"} {
-		if err := s.SaveUser(ctx, &domain.User{ID: id}); err != nil {
+		if err := s.SavePerson(ctx, &domain.Person{ID: id}); err != nil {
 			t.Fatal(err)
 		}
 		id := id
-		t.Cleanup(func() { _ = s.DeleteUser(ctx, id) })
+		t.Cleanup(func() { _ = s.DeletePerson(ctx, id) })
 	}
 	set := func(user, scope, key, val, src string) {
 		t.Helper()
@@ -77,10 +77,10 @@ func TestProfileDetails_SavedReplacedConfirmedRemoved(t *testing.T) {
 func TestProfileDetails_CapAndDeclinedAndMigrated(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
-	if err := s.SaveUser(ctx, &domain.User{ID: "u_pc"}); err != nil {
+	if err := s.SavePerson(ctx, &domain.Person{ID: "u_pc"}); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = s.DeleteUser(ctx, "u_pc") })
+	t.Cleanup(func() { _ = s.DeletePerson(ctx, "u_pc") })
 
 	for i := 0; i < domain.MaxDetailsPerScope; i++ {
 		if err := s.SetProfileDetail(ctx, "u_pc", domain.ProfileDetail{Scope: "personal", Key: fmt.Sprintf("k%02d", i), Value: "v"}); err != nil {
@@ -139,13 +139,13 @@ func TestProfileDetails_CapAndDeclinedAndMigrated(t *testing.T) {
 func TestProfileDetails_GoWithThePerson(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
-	if err := s.SaveUser(ctx, &domain.User{ID: "u_pg"}); err != nil {
+	if err := s.SavePerson(ctx, &domain.Person{ID: "u_pg"}); err != nil {
 		t.Fatal(err)
 	}
 	_ = s.SetProfileDetail(ctx, "u_pg", domain.ProfileDetail{Scope: "personal", Key: "name", Value: "X"})
 	_ = s.DeclineProfileValue(ctx, "u_pg", "personal", "name", "Y")
 	_ = s.MarkProfileMigrated(ctx, "u_pg", "personal")
-	if err := s.DeleteUser(ctx, "u_pg"); err != nil {
+	if err := s.DeletePerson(ctx, "u_pg"); err != nil {
 		t.Fatal(err)
 	}
 	if d, _ := s.ProfileDetails(ctx, "u_pg"); len(d) != 0 {

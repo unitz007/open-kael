@@ -23,7 +23,7 @@ func TestMigrate_RestartsNeverMarkAPersonWelcomed(t *testing.T) {
 	}
 	defer pool.Close()
 
-	if err := s.SaveUser(ctx, &domain.User{ID: "u_mig"}); err != nil {
+	if err := s.SavePerson(ctx, &domain.Person{ID: "u_mig"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SaveIntegration(ctx, &domain.Integration{ID: "int_mig", Name: "Telegram", Service: "telegram"}); err != nil {
@@ -35,7 +35,7 @@ func TestMigrate_RestartsNeverMarkAPersonWelcomed(t *testing.T) {
 	if err := s.SaveMessengerChannel(ctx, &domain.MessengerChannel{ID: "mc_mig", IdentityID: "id_mig", UserID: "u_mig", ChannelRef: "42"}); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = s.DeleteUser(ctx, "u_mig") })
+	t.Cleanup(func() { _ = s.DeletePerson(ctx, "u_mig") })
 
 	welcomed := func() bool {
 		ch, err := s.GetMessengerChannelByIdentityAndRef(ctx, "id_mig", "42")

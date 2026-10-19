@@ -13,7 +13,7 @@ type toolApprovalResponse struct {
 }
 
 func (s *Server) listMyToolApprovals(w http.ResponseWriter, r *http.Request) {
-	user, ok := UserFromContext(r.Context())
+	user, ok := PersonFromContext(r.Context())
 	if !ok {
 		writeError(w, http.StatusUnauthorized, errors.New("not authenticated"))
 		return
@@ -31,7 +31,7 @@ func (s *Server) listMyToolApprovals(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) setMyToolApproval(w http.ResponseWriter, r *http.Request) {
-	user, ok := UserFromContext(r.Context())
+	user, ok := PersonFromContext(r.Context())
 	if !ok {
 		writeError(w, http.StatusUnauthorized, errors.New("not authenticated"))
 		return
@@ -52,7 +52,7 @@ func (s *Server) setMyToolApproval(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) deleteMyToolApproval(w http.ResponseWriter, r *http.Request) {
-	user, ok := UserFromContext(r.Context())
+	user, ok := PersonFromContext(r.Context())
 	if !ok {
 		writeError(w, http.StatusUnauthorized, errors.New("not authenticated"))
 		return

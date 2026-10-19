@@ -7,7 +7,7 @@ import (
 )
 
 func (s *Server) listMyChannels(w http.ResponseWriter, r *http.Request) {
-	user, _ := UserFromContext(r.Context())
+	user, _ := PersonFromContext(r.Context())
 	list, err := s.store.ListMessengerChannelsByUser(r.Context(), user.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -17,7 +17,7 @@ func (s *Server) listMyChannels(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) deleteMyChannel(w http.ResponseWriter, r *http.Request) {
-	user, _ := UserFromContext(r.Context())
+	user, _ := PersonFromContext(r.Context())
 	id := r.PathValue("id")
 
 	channels, err := s.store.ListMessengerChannelsByUser(r.Context(), user.ID)

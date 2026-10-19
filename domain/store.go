@@ -50,12 +50,35 @@ type Store interface {
 	ListSkillsByAgent(ctx context.Context, agentID string) ([]*Skill, error)
 	DeleteSkill(ctx context.Context, id string) error
 
-	// User CRUD
-	SaveUser(ctx context.Context, u *User) error
-	GetUser(ctx context.Context, id string) (*User, error)
-	GetUserByEmail(ctx context.Context, email string) (*User, error)
-	GetUserByVerificationToken(ctx context.Context, token string) (*User, error)
-	DeleteUser(ctx context.Context, id string) error
+	// Account CRUD — a login (see Account). Deleting one removes its sessions.
+	SaveAccount(ctx context.Context, a *Account) error
+	GetAccount(ctx context.Context, id string) (*Account, error)
+	GetAccountByEmail(ctx context.Context, email string) (*Account, error)
+	GetAccountByVerificationToken(ctx context.Context, token string) (*Account, error)
+	DeleteAccount(ctx context.Context, id string) error
+	ListAccountsByPerson(ctx context.Context, personID string) ([]*Account, error)
+
+	// Person CRUD — a human who talks to agents (see Person). Deleting one removes everything
+	// that hangs on it (channels, learned details, connections, settings).
+	SavePerson(ctx context.Context, p *Person) error
+	GetPerson(ctx context.Context, id string) (*Person, error)
+	DeletePerson(ctx context.Context, id string) error
+	// EnsurePersonForAccount returns the person an account is for, creating and linking a new one
+	// the first time.
+	EnsurePersonForAccount(ctx context.Context, accountID string) (*Person, error)
+	// LinkEmail attaches a verified email to a person: the person gets (or already has) a login for
+	// it. When the email already belongs to a login for a different person, the two are the same
+	// human, so the person is merged into that one. It returns the person that remains.
+	LinkEmail(ctx context.Context, personID, email string) (survivorID string, err error)
+	// UnlinkEmail detaches every login from a person; a login that was only a link (no password) is
+	// deleted. What the person has learned and set up stays with them.
+	UnlinkEmail(ctx context.Context, personID string) error
+	// PersonHasVerifiedEmail reports whether a person has a login with a verified email.
+	PersonHasVerifiedEmail(ctx context.Context, personID string) (bool, error)
+	// MergePersons folds one person into another that is the same human: their channels, history,
+	// learned details, connections, settings and tasks move to the survivor (which wins when both
+	// have a value), and the merged person is left as a marker pointing at the survivor.
+	MergePersons(ctx context.Context, fromID, toID string) error
 
 	// Session CRUD
 	SaveSession(ctx context.Context, s *Session) error

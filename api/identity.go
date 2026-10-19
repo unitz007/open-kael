@@ -61,7 +61,7 @@ func (s *Server) createTelegramIdentity(w http.ResponseWriter, r *http.Request) 
 		Kind:          domain.IdentityKindBot,
 		CredentialRef: ref,
 	}
-	if user, ok := UserFromContext(r.Context()); ok {
+	if user, ok := AccountFromContext(r.Context()); ok {
 		identity.CreatedBy = user.ID
 	}
 	if err := s.store.SaveIdentity(r.Context(), identity); err != nil {
@@ -92,7 +92,7 @@ func (s *Server) createSlackIdentity(w http.ResponseWriter, r *http.Request) {
 		Kind:          domain.IdentityKindBot,
 		CredentialRef: ref,
 	}
-	if user, ok := UserFromContext(r.Context()); ok {
+	if user, ok := AccountFromContext(r.Context()); ok {
 		identity.CreatedBy = user.ID
 	}
 	if err := s.store.SaveIdentity(r.Context(), identity); err != nil {
@@ -124,7 +124,7 @@ func (s *Server) createGitHubAppIdentity(w http.ResponseWriter, r *http.Request)
 		AppID:         req.AppID,
 		CredentialRef: ref,
 	}
-	if user, ok := UserFromContext(r.Context()); ok {
+	if user, ok := AccountFromContext(r.Context()); ok {
 		identity.CreatedBy = user.ID
 	}
 	if err := s.store.SaveIdentity(r.Context(), identity); err != nil {
@@ -136,7 +136,7 @@ func (s *Server) createGitHubAppIdentity(w http.ResponseWriter, r *http.Request)
 
 func (s *Server) listIdentities(w http.ResponseWriter, r *http.Request) {
 	var ownerID string
-	if user, ok := UserFromContext(r.Context()); ok {
+	if user, ok := AccountFromContext(r.Context()); ok {
 		ownerID = user.ID
 	}
 	list, err := s.store.ListIdentities(r.Context(), ownerID)
@@ -205,7 +205,7 @@ func (s *Server) createOAuthIdentity(w http.ResponseWriter, r *http.Request) {
 		IntegrationID: req.IntegrationID,
 		Kind:          domain.IdentityKindOAuth,
 	}
-	if user, ok := UserFromContext(r.Context()); ok {
+	if user, ok := AccountFromContext(r.Context()); ok {
 		identity.CreatedBy = user.ID
 	}
 	if err := s.store.SaveIdentity(r.Context(), identity); err != nil {
@@ -220,7 +220,7 @@ func (s *Server) createOAuthIdentity(w http.ResponseWriter, r *http.Request) {
 // Creator-owned identities are only accessible to their creator.
 // When no session is present (static-token or dev mode) all identities are accessible.
 func identityAccessible(ctx context.Context, identity *domain.Identity) bool {
-	user, ok := UserFromContext(ctx)
+	user, ok := AccountFromContext(ctx)
 	if !ok {
 		return true
 	}

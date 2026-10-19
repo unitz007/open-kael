@@ -22,7 +22,7 @@ func (s *Store) CreateEmailVerification(ctx context.Context, ev *domain.EmailVer
 		INSERT INTO email_verifications (token, user_id, identity_id, channel_ref, email, expires_at)
 		VALUES ($1, $2, $3, $4, $5, $6)
 		ON CONFLICT (token) DO NOTHING
-	`, ev.Token, ev.UserID, ev.IdentityID, ev.ChannelRef, ev.Email, ev.ExpiresAt)
+	`, ev.Token, ev.PersonID, ev.IdentityID, ev.ChannelRef, ev.Email, ev.ExpiresAt)
 	return err
 }
 
@@ -31,7 +31,7 @@ func (s *Store) GetEmailVerificationByToken(ctx context.Context, token string) (
 	err := s.pool.QueryRow(ctx, `
 		SELECT token, user_id, identity_id, channel_ref, email, expires_at
 		FROM email_verifications WHERE token = $1
-	`, token).Scan(&ev.Token, &ev.UserID, &ev.IdentityID, &ev.ChannelRef, &ev.Email, &ev.ExpiresAt)
+	`, token).Scan(&ev.Token, &ev.PersonID, &ev.IdentityID, &ev.ChannelRef, &ev.Email, &ev.ExpiresAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, domain.ErrNotFound
 	}

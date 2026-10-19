@@ -12,10 +12,33 @@ import (
 // the interface to exercise a specific behavior (e.g. auth middleware).
 type noopStore struct{}
 
-func (noopStore) SaveUser(_ context.Context, _ *domain.User) error                { return nil }
-func (noopStore) GetUser(_ context.Context, _ string) (*domain.User, error)       { return nil, domain.ErrNotFound }
-func (noopStore) GetUserByEmail(_ context.Context, _ string) (*domain.User, error) { return nil, domain.ErrNotFound }
-func (noopStore) DeleteUser(_ context.Context, _ string) error                    { return nil }
+func (noopStore) SaveAccount(_ context.Context, _ *domain.Account) error { return nil }
+func (noopStore) GetAccount(_ context.Context, _ string) (*domain.Account, error) {
+	return nil, domain.ErrNotFound
+}
+func (noopStore) GetAccountByEmail(_ context.Context, _ string) (*domain.Account, error) {
+	return nil, domain.ErrNotFound
+}
+func (noopStore) DeleteAccount(_ context.Context, _ string) error { return nil }
+func (noopStore) ListAccountsByPerson(_ context.Context, _ string) ([]*domain.Account, error) {
+	return nil, nil
+}
+func (noopStore) SavePerson(_ context.Context, _ *domain.Person) error { return nil }
+func (noopStore) GetPerson(_ context.Context, _ string) (*domain.Person, error) {
+	return nil, domain.ErrNotFound
+}
+func (noopStore) DeletePerson(_ context.Context, _ string) error { return nil }
+func (noopStore) EnsurePersonForAccount(_ context.Context, _ string) (*domain.Person, error) {
+	return nil, domain.ErrNotFound
+}
+func (noopStore) LinkEmail(_ context.Context, personID, _ string) (string, error) {
+	return personID, nil
+}
+func (noopStore) UnlinkEmail(_ context.Context, _ string) error { return nil }
+func (noopStore) PersonHasVerifiedEmail(_ context.Context, _ string) (bool, error) {
+	return false, nil
+}
+func (noopStore) MergePersons(_ context.Context, _, _ string) error { return nil }
 
 func (noopStore) SaveSession(_ context.Context, _ *domain.Session) error { return nil }
 func (noopStore) GetSession(_ context.Context, _ string) (*domain.Session, error) {
@@ -23,7 +46,9 @@ func (noopStore) GetSession(_ context.Context, _ string) (*domain.Session, error
 }
 func (noopStore) DeleteSession(_ context.Context, _ string) error { return nil }
 
-func (noopStore) SaveAppAuthorization(_ context.Context, _ *domain.AppAuthorization) error { return nil }
+func (noopStore) SaveAppAuthorization(_ context.Context, _ *domain.AppAuthorization) error {
+	return nil
+}
 func (noopStore) GetAppAuthorization(_ context.Context, _ string) (*domain.AppAuthorization, error) {
 	return nil, domain.ErrNotFound
 }
@@ -41,7 +66,9 @@ func (noopStore) GetAppAuthorizationByCredentialRef(_ context.Context, _ string)
 }
 func (noopStore) DeleteAppAuthorization(_ context.Context, _ string) error { return nil }
 
-func (noopStore) SaveMessengerChannel(_ context.Context, _ *domain.MessengerChannel) error { return nil }
+func (noopStore) SaveMessengerChannel(_ context.Context, _ *domain.MessengerChannel) error {
+	return nil
+}
 func (noopStore) GetMessengerChannelByIdentityAndRef(_ context.Context, _, _ string) (*domain.MessengerChannel, error) {
 	return nil, domain.ErrNotFound
 }
@@ -130,7 +157,7 @@ func (noopStore) GetMessengerChannelByIdentityAndSender(_ context.Context, _, _ 
 	return nil, domain.ErrNotFound
 }
 
-func (noopStore) GetUserByVerificationToken(_ context.Context, _ string) (*domain.User, error) {
+func (noopStore) GetAccountByVerificationToken(_ context.Context, _ string) (*domain.Account, error) {
 	return nil, domain.ErrNotFound
 }
 
@@ -164,14 +191,21 @@ type stubStoreWithUser struct{ noopStore }
 
 func (s *stubStoreWithUser) GetSession(_ context.Context, token string) (*domain.Session, error) {
 	if token == "valid-token" {
-		return &domain.Session{Token: token, UserID: "u-stub-1", ExpiresAt: time.Now().Add(time.Hour)}, nil
+		return &domain.Session{Token: token, AccountID: "u-stub-1", ExpiresAt: time.Now().Add(time.Hour)}, nil
 	}
 	return nil, domain.ErrNotFound
 }
 
-func (s *stubStoreWithUser) GetUser(_ context.Context, id string) (*domain.User, error) {
+func (s *stubStoreWithUser) GetAccount(_ context.Context, id string) (*domain.Account, error) {
 	if id == "u-stub-1" {
-		return &domain.User{ID: id, Email: "stub@example.com"}, nil
+		return &domain.Account{ID: id, Email: "stub@example.com", PersonID: "u-stub-1"}, nil
+	}
+	return nil, domain.ErrNotFound
+}
+
+func (s *stubStoreWithUser) GetPerson(_ context.Context, id string) (*domain.Person, error) {
+	if id == "u-stub-1" {
+		return &domain.Person{ID: id}, nil
 	}
 	return nil, domain.ErrNotFound
 }

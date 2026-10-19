@@ -25,7 +25,7 @@ func (s *Server) rememberMyTimezone(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotImplemented, errors.New("time zones are not available"))
 		return
 	}
-	user, ok := UserFromContext(r.Context())
+	user, ok := PersonFromContext(r.Context())
 	if !ok {
 		writeError(w, http.StatusUnauthorized, errUnauthorized)
 		return

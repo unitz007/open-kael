@@ -13,10 +13,10 @@ func TestCustomIntegrationRoundTrip(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
 
-	if err := store.SaveUser(ctx, &domain.User{ID: "u_creator", Email: "c@example.com"}); err != nil {
+	if err := store.SaveAccount(ctx, &domain.Account{ID: "u_creator", Email: "c@example.com"}); err != nil {
 		t.Fatalf("save user: %v", err)
 	}
-	t.Cleanup(func() { _ = store.DeleteUser(context.Background(), "u_creator") })
+	t.Cleanup(func() { _ = store.DeleteAccount(context.Background(), "u_creator") })
 
 	in := &domain.Integration{
 		ID: "custom_1", Name: "Pet shop", Service: "custom_1", Kind: domain.IntegrationKindUser,

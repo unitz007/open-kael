@@ -109,10 +109,10 @@ func streamRig(t *testing.T, refresh time.Duration) (*postgres.Store, *httptest.
 
 	users := []string{"stm_a", "stm_b"}
 	for _, u := range users {
-		if err := store.SaveUser(ctx, &domain.User{ID: u, Email: u + "@example.com"}); err != nil {
+		if err := store.SaveAccount(ctx, &domain.Account{ID: u, Email: u + "@example.com"}); err != nil {
 			t.Fatal(err)
 		}
-		if err := store.SaveSession(ctx, &domain.Session{Token: "tok_" + u, UserID: u, ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+		if err := store.SaveSession(ctx, &domain.Session{Token: "tok_" + u, AccountID: u, ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -129,13 +129,13 @@ func streamRig(t *testing.T, refresh time.Duration) (*postgres.Store, *httptest.
 		_, _ = pool.Exec(ctx, `TRUNCATE agents CASCADE`)
 		for _, u := range users {
 			_ = store.DeleteSession(ctx, "tok_"+u)
-			_ = store.DeleteUser(ctx, u)
+			_ = store.DeleteAccount(ctx, u)
 		}
 	}
 	cleanup()
 	for _, u := range users { // the cleanup above removed them; make them again
-		_ = store.SaveUser(ctx, &domain.User{ID: u, Email: u + "@example.com"})
-		_ = store.SaveSession(ctx, &domain.Session{Token: "tok_" + u, UserID: u, ExpiresAt: time.Now().Add(time.Hour)})
+		_ = store.SaveAccount(ctx, &domain.Account{ID: u, Email: u + "@example.com"})
+		_ = store.SaveSession(ctx, &domain.Session{Token: "tok_" + u, AccountID: u, ExpiresAt: time.Now().Add(time.Hour)})
 	}
 	for _, a := range []*domain.Agent{
 		{ID: "stm_ag_a", Name: "A's", CreatedBy: "stm_a", MaxIterations: 5},

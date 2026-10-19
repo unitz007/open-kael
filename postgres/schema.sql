@@ -10,25 +10,43 @@
 -- hierarchy is a real, foreign-keyed relational table, since Tools must be
 -- reusable across many Skills by reference, not embedded.
 
-CREATE TABLE IF NOT EXISTS users (
-    id            TEXT PRIMARY KEY,
-    -- NULL for messenger-provisioned users who haven't set a password yet.
-    email         TEXT UNIQUE,
-    password_hash TEXT NOT NULL DEFAULT ''
+-- persons: a human who talks to agents. Everything about someone being talked to hangs on a
+-- person: their messenger accounts (messenger_channels), what agents have learned about them,
+-- their app connections, tasks and settings. Created the first time someone writes to a bot.
+-- merged_into marks a person who was found to be someone already known (see MergePersons).
+CREATE TABLE IF NOT EXISTS persons (
+    id          TEXT PRIMARY KEY,
+    first_name  TEXT NOT NULL DEFAULT '',
+    last_name   TEXT NOT NULL DEFAULT '',
+    -- The person's own time zone (an IANA name such as Africa/Lagos), so agents can speak in their
+    -- local time. Empty until they say. Likewise where they live and the language to speak to them in.
+    timezone    TEXT NOT NULL DEFAULT '',
+    language    TEXT NOT NULL DEFAULT '',
+    country     TEXT NOT NULL DEFAULT '',
+    city        TEXT NOT NULL DEFAULT '',
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    merged_into TEXT REFERENCES persons (id) ON DELETE CASCADE
 );
 
--- Idempotent for databases that already had these columns as NOT NULL.
-ALTER TABLE users ALTER COLUMN email DROP NOT NULL;
-ALTER TABLE users ALTER COLUMN password_hash SET DEFAULT '';
-ALTER TABLE users ADD COLUMN IF NOT EXISTS first_name         TEXT NOT NULL DEFAULT '';
-ALTER TABLE users ADD COLUMN IF NOT EXISTS last_name          TEXT NOT NULL DEFAULT '';
-ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified     BOOLEAN NOT NULL DEFAULT FALSE;
-ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_token TEXT NOT NULL DEFAULT '';
+-- accounts: a login to the web app, and the owner of what a creator builds (created_by on agents,
+-- integrations and identities). person_id is the person a login is for; several logins may point at
+-- one person, and a login may have no person yet.
+CREATE TABLE IF NOT EXISTS accounts (
+    id                 TEXT PRIMARY KEY,
+    -- NULL for a login that is only a link between a messenger and the web, until set otherwise.
+    email              TEXT UNIQUE,
+    password_hash      TEXT NOT NULL DEFAULT '',
+    email_verified     BOOLEAN NOT NULL DEFAULT FALSE,
+    verification_token TEXT NOT NULL DEFAULT '',
+    person_id          TEXT REFERENCES persons (id) ON DELETE SET NULL,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_accounts_person_id ON accounts (person_id);
 
 -- Replaced by messenger_channels; kept so existing DBs don't error on startup.
 CREATE TABLE IF NOT EXISTS user_channels (
     id         TEXT PRIMARY KEY,
-    user_id    TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    user_id    TEXT NOT NULL REFERENCES persons (id) ON DELETE CASCADE,
     provider   TEXT NOT NULL,
     channel_id TEXT NOT NULL,
     UNIQUE (provider, channel_id)
@@ -36,7 +54,7 @@ CREATE TABLE IF NOT EXISTS user_channels (
 
 CREATE TABLE IF NOT EXISTS user_sessions (
     token      TEXT PRIMARY KEY,
-    user_id    TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    account_id TEXT NOT NULL REFERENCES accounts (id) ON DELETE CASCADE,
     expires_at TIMESTAMPTZ NOT NULL
 );
 
@@ -52,7 +70,7 @@ CREATE TABLE IF NOT EXISTS integrations (
 -- Idempotent migration: add service for DBs that had the old provider column.
 ALTER TABLE integrations ADD COLUMN IF NOT EXISTS service TEXT NOT NULL DEFAULT '';
 ALTER TABLE integrations ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'user';
-ALTER TABLE integrations ADD COLUMN IF NOT EXISTS created_by TEXT REFERENCES users(id);
+ALTER TABLE integrations ADD COLUMN IF NOT EXISTS created_by TEXT REFERENCES accounts (id);
 ALTER TABLE integrations ADD COLUMN IF NOT EXISTS source JSONB;
 
 -- identities: per-integration app/bot credential.
@@ -72,7 +90,7 @@ ALTER TABLE identities ADD COLUMN IF NOT EXISTS kind               TEXT NOT NULL
 ALTER TABLE identities ADD COLUMN IF NOT EXISTS app_id             TEXT NOT NULL DEFAULT '';
 ALTER TABLE identities ADD COLUMN IF NOT EXISTS credential_ref     TEXT NOT NULL DEFAULT '';
 ALTER TABLE identities ADD COLUMN IF NOT EXISTS webhook_secret_ref TEXT NOT NULL DEFAULT '';
-ALTER TABLE identities ADD COLUMN IF NOT EXISTS created_by         TEXT REFERENCES users(id);
+ALTER TABLE identities ADD COLUMN IF NOT EXISTS created_by         TEXT REFERENCES accounts (id);
 
 CREATE INDEX IF NOT EXISTS idx_identities_integration_id ON identities (integration_id);
 
@@ -80,7 +98,7 @@ CREATE INDEX IF NOT EXISTS idx_identities_integration_id ON identities (integrat
 CREATE TABLE IF NOT EXISTS app_authorizations (
     id               TEXT PRIMARY KEY,
     identity_id      TEXT NOT NULL REFERENCES identities (id) ON DELETE CASCADE,
-    user_id          TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    user_id          TEXT NOT NULL REFERENCES persons (id) ON DELETE CASCADE,
     scope            TEXT NOT NULL DEFAULT '',
     name             TEXT NOT NULL DEFAULT '',
     credential_ref   TEXT NOT NULL DEFAULT '',
@@ -97,7 +115,7 @@ CREATE INDEX IF NOT EXISTS idx_app_authorizations_user_id ON app_authorizations 
 CREATE TABLE IF NOT EXISTS messenger_channels (
     id          TEXT PRIMARY KEY,
     identity_id TEXT NOT NULL REFERENCES identities (id) ON DELETE CASCADE,
-    user_id     TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    user_id     TEXT NOT NULL REFERENCES persons (id) ON DELETE CASCADE,
     channel_ref TEXT NOT NULL DEFAULT '',
     UNIQUE (identity_id, channel_ref)
 );
@@ -175,7 +193,7 @@ CREATE TABLE IF NOT EXISTS agents (
 
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS llm_model    TEXT NOT NULL DEFAULT '';
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS llm_base_url TEXT NOT NULL DEFAULT '';
-ALTER TABLE agents ADD COLUMN IF NOT EXISTS created_by   TEXT REFERENCES users(id);
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS created_by   TEXT REFERENCES accounts (id);
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS commands     JSONB NOT NULL DEFAULT '[]'::jsonb;
 -- rules: what the creator has said about how this agent may use its tools (see domain.ToolRule).
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS rules        JSONB NOT NULL DEFAULT '[]'::jsonb;
@@ -306,14 +324,14 @@ CREATE INDEX IF NOT EXISTS idx_conv_messages_user
 -- user_profiles: general facts about a user, learned by the agent over time.
 -- Shared across all agents — keyed only by user_id.
 CREATE TABLE IF NOT EXISTS user_profiles (
-    user_id TEXT PRIMARY KEY REFERENCES users (id) ON DELETE CASCADE,
+    user_id TEXT PRIMARY KEY REFERENCES persons (id) ON DELETE CASCADE,
     notes   TEXT NOT NULL DEFAULT ''
 );
 
 -- user_integration_notes: integration-specific facts about a user.
 -- Shared across all agents that have access to the same integration.
 CREATE TABLE IF NOT EXISTS user_integration_notes (
-    user_id        TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    user_id        TEXT NOT NULL REFERENCES persons (id) ON DELETE CASCADE,
     integration_id TEXT NOT NULL,
     notes          TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (user_id, integration_id)
@@ -322,7 +340,7 @@ CREATE TABLE IF NOT EXISTS user_integration_notes (
 -- profile_details: what an agent has learned about a person, one named detail per row, so changing
 -- one never touches another. scope is 'personal' or an integration ID (the map for one connected app).
 CREATE TABLE IF NOT EXISTS profile_details (
-    user_id      TEXT        NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    user_id      TEXT        NOT NULL REFERENCES persons (id) ON DELETE CASCADE,
     scope        TEXT        NOT NULL,
     key          TEXT        NOT NULL,
     value        TEXT        NOT NULL,
@@ -336,7 +354,7 @@ CREATE TABLE IF NOT EXISTS profile_details (
 -- profile_declined: values a person refused for a detail, so the same value is not asked again in other words.
 -- value_norm is the value with case, accents, punctuation and spacing set aside.
 CREATE TABLE IF NOT EXISTS profile_declined (
-    user_id     TEXT        NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    user_id     TEXT        NOT NULL REFERENCES persons (id) ON DELETE CASCADE,
     scope       TEXT        NOT NULL,
     key         TEXT        NOT NULL,
     value_norm  TEXT        NOT NULL,
@@ -346,7 +364,7 @@ CREATE TABLE IF NOT EXISTS profile_declined (
 
 -- profile_migrations: a person's older free-text note for a scope has been moved into details.
 CREATE TABLE IF NOT EXISTS profile_migrations (
-    user_id     TEXT        NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    user_id     TEXT        NOT NULL REFERENCES persons (id) ON DELETE CASCADE,
     scope       TEXT        NOT NULL,
     migrated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (user_id, scope)
@@ -355,7 +373,7 @@ CREATE TABLE IF NOT EXISTS profile_migrations (
 -- user_agent_configs: per-user personal instructions for one Agent. Injected
 -- into the system prompt so the agent can personalise responses to each user.
 CREATE TABLE IF NOT EXISTS user_agent_configs (
-    user_id      TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    user_id      TEXT NOT NULL REFERENCES persons (id) ON DELETE CASCADE,
     agent_id     TEXT NOT NULL REFERENCES agents (id) ON DELETE CASCADE,
     instructions TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (user_id, agent_id)
@@ -373,7 +391,7 @@ CREATE TABLE IF NOT EXISTS platform_config (
 -- Presence of a row means the user wants a human-approval gate on that tool
 -- even when ToolDefinition.RequiresApproval is false.
 CREATE TABLE IF NOT EXISTS user_tool_approvals (
-    user_id TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES persons (id) ON DELETE CASCADE,
     tool_id TEXT NOT NULL REFERENCES tools (id) ON DELETE CASCADE,
     PRIMARY KEY (user_id, tool_id)
 );
@@ -381,7 +399,7 @@ CREATE TABLE IF NOT EXISTS user_tool_approvals (
 -- user_app_instructions: per-user per-integration instructions injected as
 -- additional context when tools from that integration are being used.
 CREATE TABLE IF NOT EXISTS user_app_instructions (
-    user_id        TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    user_id        TEXT NOT NULL REFERENCES persons (id) ON DELETE CASCADE,
     integration_id TEXT NOT NULL REFERENCES integrations (id) ON DELETE CASCADE,
     instructions   TEXT NOT NULL DEFAULT '',
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -394,27 +412,18 @@ CREATE TABLE IF NOT EXISTS user_app_instructions (
 -- confirmation message once the link is clicked.
 CREATE TABLE IF NOT EXISTS email_verifications (
     token       TEXT PRIMARY KEY,
-    user_id     TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    user_id     TEXT NOT NULL REFERENCES persons (id) ON DELETE CASCADE,
     identity_id TEXT NOT NULL DEFAULT '',
     channel_ref TEXT NOT NULL DEFAULT '',
     email       TEXT NOT NULL DEFAULT '',
     expires_at  TIMESTAMPTZ NOT NULL
 );
 
--- The person's own time zone (an IANA name such as Africa/Lagos), so agents can speak
--- in their local time. Empty until they say.
-ALTER TABLE users ADD COLUMN IF NOT EXISTS timezone TEXT NOT NULL DEFAULT '';
-
--- Where they live and what language to speak to them in. Empty until they say.
-ALTER TABLE users ADD COLUMN IF NOT EXISTS language TEXT NOT NULL DEFAULT '';
-ALTER TABLE users ADD COLUMN IF NOT EXISTS country  TEXT NOT NULL DEFAULT '';
-ALTER TABLE users ADD COLUMN IF NOT EXISTS city     TEXT NOT NULL DEFAULT '';
-
 -- pending_turns: what a person asked for while something (a connection) stood in the
 -- way, kept so it can be carried out once it is sorted. One per person per connection;
 -- a newer one replaces the older. Kept in the database so a restart doesn't lose it.
 CREATE TABLE IF NOT EXISTS pending_turns (
-    user_id     TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    user_id     TEXT NOT NULL REFERENCES persons (id) ON DELETE CASCADE,
     identity_id TEXT NOT NULL,
     agent_id    TEXT NOT NULL,
     conv        JSONB NOT NULL,
@@ -465,3 +474,65 @@ CREATE TABLE IF NOT EXISTS agent_activity_minutes (
     messages INT NOT NULL DEFAULT 0,
     PRIMARY KEY (agent_id, minute)
 );
+
+-- One-time split of the old users table into persons and accounts. Every old user becomes a person
+-- with the same id. One that acts as a login (it has an email or password, a session, or owns something
+-- a creator built) also becomes an account with that same id, linked to the person, so created_by and
+-- sessions keep pointing at the right row. Foreign keys are moved to the new tables, and the old table
+-- is kept under another name as a backup. It runs once: after it, there is no users table.
+DO $$
+DECLARE
+    r record;
+BEGIN
+    IF to_regclass('public.users') IS NULL THEN
+        RETURN;
+    END IF;
+
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS first_name         TEXT NOT NULL DEFAULT '';
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS last_name          TEXT NOT NULL DEFAULT '';
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified     BOOLEAN NOT NULL DEFAULT FALSE;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_token TEXT NOT NULL DEFAULT '';
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS timezone           TEXT NOT NULL DEFAULT '';
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS language           TEXT NOT NULL DEFAULT '';
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS country            TEXT NOT NULL DEFAULT '';
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS city               TEXT NOT NULL DEFAULT '';
+
+    INSERT INTO persons (id, first_name, last_name, timezone, language, country, city)
+    SELECT id, first_name, last_name, timezone, language, country, city FROM users
+    ON CONFLICT (id) DO NOTHING;
+
+    INSERT INTO accounts (id, email, password_hash, email_verified, verification_token, person_id)
+    SELECT u.id, NULLIF(u.email, ''), u.password_hash, u.email_verified, u.verification_token, u.id
+    FROM users u
+    WHERE COALESCE(u.email, '') <> ''
+       OR u.password_hash <> ''
+       OR EXISTS (SELECT 1 FROM user_sessions s WHERE s.user_id = u.id)
+       OR EXISTS (SELECT 1 FROM agents a WHERE a.created_by = u.id)
+       OR EXISTS (SELECT 1 FROM integrations i WHERE i.created_by = u.id)
+       OR EXISTS (SELECT 1 FROM identities i WHERE i.created_by = u.id)
+    ON CONFLICT (id) DO NOTHING;
+
+    FOR r IN
+        SELECT c.conrelid::regclass::text AS tbl, c.conname AS con, a.attname AS col
+        FROM pg_constraint c
+        JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)
+        WHERE c.contype = 'f' AND c.confrelid = 'public.users'::regclass
+    LOOP
+        EXECUTE format('ALTER TABLE %s DROP CONSTRAINT %I', r.tbl, r.con);
+        IF r.col = 'created_by' THEN
+            EXECUTE format('ALTER TABLE %s ADD CONSTRAINT %I FOREIGN KEY (%I) REFERENCES accounts (id)', r.tbl, r.con, r.col);
+        ELSIF r.tbl = 'user_sessions' THEN
+            EXECUTE format('ALTER TABLE %s ADD CONSTRAINT %I FOREIGN KEY (%I) REFERENCES accounts (id) ON DELETE CASCADE', r.tbl, r.con, r.col);
+        ELSE
+            EXECUTE format('ALTER TABLE %s ADD CONSTRAINT %I FOREIGN KEY (%I) REFERENCES persons (id) ON DELETE CASCADE', r.tbl, r.con, r.col);
+        END IF;
+    END LOOP;
+
+    IF EXISTS (SELECT 1 FROM information_schema.columns
+               WHERE table_schema = 'public' AND table_name = 'user_sessions' AND column_name = 'user_id') THEN
+        ALTER TABLE user_sessions RENAME COLUMN user_id TO account_id;
+    END IF;
+
+    ALTER TABLE users RENAME TO users_before_split;
+END
+$$;

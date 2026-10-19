@@ -64,7 +64,7 @@ func (s *Server) getIntegration(w http.ResponseWriter, r *http.Request) {
 // creator: platform-seeded (CreatedBy=="") plus those owned by them. When no
 // session is present (static-token or dev mode) all identities are returned.
 func scopedIdentities(ctx context.Context, identities []*domain.Identity) []*domain.Identity {
-	user, ok := UserFromContext(ctx)
+	user, ok := AccountFromContext(ctx)
 	if !ok {
 		return identities
 	}
@@ -85,7 +85,7 @@ func integrationAccessible(ctx context.Context, i *domain.Integration) bool {
 	if i.CreatedBy == "" {
 		return true
 	}
-	user, ok := UserFromContext(ctx)
+	user, ok := AccountFromContext(ctx)
 	if !ok {
 		return true
 	}
