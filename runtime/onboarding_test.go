@@ -250,7 +250,8 @@ func (f *funcLLMCount) Call(context.Context, []domain.Message, []domain.ActionSp
 }
 
 func waitTexts(box *outbox, n int) []string {
-	deadline := time.Now().Add(3 * time.Second)
+	// Long enough for a model that fails to be retried with its back-off (1s, then 2s) first.
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) && len(box.texts()) < n {
 		time.Sleep(20 * time.Millisecond)
 	}
