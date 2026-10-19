@@ -21,6 +21,13 @@ import (
 // postgres/store_test.go: skip rather than fail when no database is
 // available.
 func newTestServer(t *testing.T) *api.Server {
+	srv, _ := newTestServerWithStore(t)
+	return srv
+}
+
+// newTestServerWithStore is newTestServer that also gives the store, for what the platform seeds
+// (integrations and tools) and creators cannot create through the API.
+func newTestServerWithStore(t *testing.T) (*api.Server, *postgres.Store) {
 	t.Helper()
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
@@ -50,7 +57,36 @@ func newTestServer(t *testing.T) *api.Server {
 	truncate()
 	t.Cleanup(truncate)
 
-	return api.NewServer(postgres.New(pool))
+	store := postgres.New(pool)
+	return api.NewServer(store), store
+}
+
+// seedIntegration puts in an integration (and tool) the way the platform does at start-up.
+func seedIntegration(t *testing.T, store *postgres.Store, withTool bool) {
+	t.Helper()
+	ctx := context.Background()
+	if err := store.SaveIntegration(ctx, &domain.Integration{ID: "int_1", Name: "GitHub", Service: "github"}); err != nil {
+		t.Fatalf("seed integration: %v", err)
+	}
+	if withTool {
+		if err := store.SaveTool(ctx, &domain.ToolDefinition{ID: "tool_1", IntegrationID: "int_1", Name: "create_pull_request", Action: "github.create_pull_request"}); err != nil {
+			t.Fatalf("seed tool: %v", err)
+		}
+	}
+}
+
+// makeAgent creates an agent through the API. The server chooses its id, whatever the caller sends.
+func makeAgent(t *testing.T, srv http.Handler, name string) string {
+	t.Helper()
+	rec := doJSON(t, srv, http.MethodPost, "/agents", domain.Agent{Name: name})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create agent: %d: %s", rec.Code, rec.Body.String())
+	}
+	var agent domain.Agent
+	if err := json.Unmarshal(rec.Body.Bytes(), &agent); err != nil || agent.ID == "" {
+		t.Fatalf("decode agent: %v %+v", err, agent)
+	}
+	return agent.ID
 }
 
 func doJSON(t *testing.T, srv http.Handler, method, path string, body any) *httptest.ResponseRecorder {
@@ -73,17 +109,13 @@ func doJSON(t *testing.T, srv http.Handler, method, path string, body any) *http
 	return rec
 }
 
+// Integrations and tools belong to the platform: creators can read them to choose what to connect,
+// and cannot create or delete them.
 func TestIntegrationEndpoints(t *testing.T) {
-	srv := newTestServer(t)
+	srv, store := newTestServerWithStore(t)
+	seedIntegration(t, store, true)
 
-	rec := doJSON(t, srv, http.MethodPost, "/integrations", domain.Integration{
-		ID: "int_1", Name: "GitHub", Service: "github",
-	})
-	if rec.Code != http.StatusOK {
-		t.Fatalf("create: expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-
-	rec = doJSON(t, srv, http.MethodGet, "/integrations/int_1", nil)
+	rec := doJSON(t, srv, http.MethodGet, "/integrations/int_1", nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("get: expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -91,8 +123,8 @@ func TestIntegrationEndpoints(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if got.Name != "GitHub" {
-		t.Fatalf("unexpected integration: %+v", got)
+	if got.Name != "GitHub" || len(got.Tools) != 1 || got.Tools[0].ID != "tool_1" {
+		t.Fatalf("unexpected integration (its tools are loaded with it): %+v", got)
 	}
 
 	rec = doJSON(t, srv, http.MethodGet, "/integrations", nil)
@@ -104,56 +136,42 @@ func TestIntegrationEndpoints(t *testing.T) {
 		t.Fatalf("unexpected list: %+v, err=%v", list, err)
 	}
 
-	rec = doJSON(t, srv, http.MethodGet, "/integrations/does_not_exist", nil)
-	if rec.Code != http.StatusNotFound {
+	if rec = doJSON(t, srv, http.MethodGet, "/integrations/does_not_exist", nil); rec.Code != http.StatusNotFound {
 		t.Fatalf("get missing: expected 404, got %d", rec.Code)
 	}
-
-	rec = doJSON(t, srv, http.MethodDelete, "/integrations/int_1", nil)
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("delete: expected 204, got %d", rec.Code)
+	if rec = doJSON(t, srv, http.MethodGet, "/integrations/int_1/tools", nil); rec.Code != http.StatusOK {
+		t.Fatalf("list its tools: expected 200, got %d", rec.Code)
 	}
-	rec = doJSON(t, srv, http.MethodGet, "/integrations/int_1", nil)
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("get after delete: expected 404, got %d", rec.Code)
+	if rec = doJSON(t, srv, http.MethodGet, "/tools/tool_1", nil); rec.Code != http.StatusOK {
+		t.Fatalf("get a tool: expected 200, got %d", rec.Code)
+	}
+
+	for name, req := range map[string]struct {
+		method, path string
+		body         any
+	}{
+		"create an integration": {http.MethodPost, "/integrations", domain.Integration{ID: "mine", Name: "Mine", Service: "x"}},
+		"delete an integration": {http.MethodDelete, "/integrations/int_1", nil},
+		"create a tool":         {http.MethodPost, "/integrations/int_1/tools", domain.ToolDefinition{ID: "t2", Name: "t"}},
+	} {
+		if rec := doJSON(t, srv, req.method, req.path, req.body); rec.Code != http.StatusMethodNotAllowed {
+			t.Errorf("a creator cannot %s: expected 405, got %d", name, rec.Code)
+		}
+	}
+	if rec = doJSON(t, srv, http.MethodGet, "/integrations/int_1", nil); rec.Code != http.StatusOK {
+		t.Fatalf("and it is still there: %d", rec.Code)
 	}
 }
 
-// TestNestedResourceEndpoints proves the full pipeline through HTTP: create
-// an Integration, a Tool nested under it, an Agent, and a Skill nested
-// under that Agent binding the Tool — then confirm the parent GETs show
-// the populated children (LoadIntegration/LoadAgent).
+// TestNestedResourceEndpoints proves the pipeline through HTTP: a platform Integration with a Tool, an
+// Agent a creator makes, and a Skill nested under that Agent binding the Tool — then confirms the
+// parent GET shows the populated children (LoadAgent).
 func TestNestedResourceEndpoints(t *testing.T) {
-	srv := newTestServer(t)
+	srv, store := newTestServerWithStore(t)
+	seedIntegration(t, store, true)
+	agentID := makeAgent(t, srv, "Kael Dev")
 
-	if rec := doJSON(t, srv, http.MethodPost, "/integrations", domain.Integration{ID: "int_1", Name: "GitHub", Service: "github"}); rec.Code != http.StatusOK {
-		t.Fatalf("create integration: %d: %s", rec.Code, rec.Body.String())
-	}
-
-	rec := doJSON(t, srv, http.MethodPost, "/integrations/int_1/tools", domain.ToolDefinition{
-		ID: "tool_1", Name: "create_pull_request", Action: "github.create_pull_request",
-	})
-	if rec.Code != http.StatusOK {
-		t.Fatalf("create tool: %d: %s", rec.Code, rec.Body.String())
-	}
-	var tool domain.ToolDefinition
-	_ = json.Unmarshal(rec.Body.Bytes(), &tool)
-	if tool.IntegrationID != "int_1" {
-		t.Fatalf("expected tool's IntegrationID to be set from the URL, got %q", tool.IntegrationID)
-	}
-
-	rec = doJSON(t, srv, http.MethodGet, "/integrations/int_1", nil)
-	var integration domain.Integration
-	_ = json.Unmarshal(rec.Body.Bytes(), &integration)
-	if len(integration.Tools) != 1 || integration.Tools[0].ID != "tool_1" {
-		t.Fatalf("expected integration.Tools populated, got %+v", integration.Tools)
-	}
-
-	if rec := doJSON(t, srv, http.MethodPost, "/agents", domain.Agent{ID: "agent_1", Name: "Kael Dev"}); rec.Code != http.StatusOK {
-		t.Fatalf("create agent: %d: %s", rec.Code, rec.Body.String())
-	}
-
-	rec = doJSON(t, srv, http.MethodPost, "/agents/agent_1/skills", domain.Skill{
+	rec := doJSON(t, srv, http.MethodPost, "/agents/"+agentID+"/skills", domain.Skill{
 		ID: "skill_1", Name: "ship_pr", Visibility: domain.SkillPublic,
 		Tools: []domain.ToolBinding{{ToolID: "tool_1"}},
 	})
@@ -162,11 +180,11 @@ func TestNestedResourceEndpoints(t *testing.T) {
 	}
 	var skill domain.Skill
 	_ = json.Unmarshal(rec.Body.Bytes(), &skill)
-	if skill.AgentID != "agent_1" {
+	if skill.AgentID != agentID {
 		t.Fatalf("expected skill's AgentID to be set from the URL, got %q", skill.AgentID)
 	}
 
-	rec = doJSON(t, srv, http.MethodGet, "/agents/agent_1", nil)
+	rec = doJSON(t, srv, http.MethodGet, "/agents/"+agentID, nil)
 	var agent domain.Agent
 	_ = json.Unmarshal(rec.Body.Bytes(), &agent)
 	if len(agent.Skills) != 1 || agent.Skills[0].ID != "skill_1" || len(agent.Skills[0].Tools) != 1 {
@@ -174,12 +192,27 @@ func TestNestedResourceEndpoints(t *testing.T) {
 	}
 }
 
+// A skill needs an id; an agent's id is the server's to make, whatever the caller sends.
 func TestCreateWithoutID(t *testing.T) {
 	srv := newTestServer(t)
+	agentID := makeAgent(t, srv, "Kael Dev")
 
-	rec := doJSON(t, srv, http.MethodPost, "/integrations", domain.Integration{Name: "no id"})
+	rec := doJSON(t, srv, http.MethodPost, "/agents/"+agentID+"/skills", domain.Skill{Name: "no id"})
 	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 for missing id, got %d", rec.Code)
+		t.Fatalf("expected 400 for a skill with no id, got %d", rec.Code)
+	}
+
+	rec = doJSON(t, srv, http.MethodPost, "/agents", domain.Agent{ID: "chosen_by_caller", Name: "Mine"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create agent: %d: %s", rec.Code, rec.Body.String())
+	}
+	var made domain.Agent
+	_ = json.Unmarshal(rec.Body.Bytes(), &made)
+	if made.ID == "" || made.ID == "chosen_by_caller" {
+		t.Fatalf("the server makes the agent's id: %q", made.ID)
+	}
+	if rec = doJSON(t, srv, http.MethodGet, "/agents/chosen_by_caller", nil); rec.Code != http.StatusNotFound {
+		t.Fatalf("the id the caller sent is not used: %d", rec.Code)
 	}
 }
 
@@ -187,16 +220,11 @@ func TestCreateWithoutID(t *testing.T) {
 // slice encoding as JSON null instead of [] — a client shouldn't have to
 // special-case "no results" as a different JSON type from "some results".
 func TestEmptyListsReturnEmptyArray(t *testing.T) {
-	srv := newTestServer(t)
+	srv, store := newTestServerWithStore(t)
+	seedIntegration(t, store, false)
+	agentID := makeAgent(t, srv, "Kael Dev")
 
-	if rec := doJSON(t, srv, http.MethodPost, "/integrations", domain.Integration{ID: "int_1", Name: "GitHub", Service: "github"}); rec.Code != http.StatusOK {
-		t.Fatalf("create integration: %d: %s", rec.Code, rec.Body.String())
-	}
-	if rec := doJSON(t, srv, http.MethodPost, "/agents", domain.Agent{ID: "agent_1", Name: "Kael Dev"}); rec.Code != http.StatusOK {
-		t.Fatalf("create agent: %d: %s", rec.Code, rec.Body.String())
-	}
-
-	for _, path := range []string{"/integrations/int_1/tools", "/agents/agent_1/skills"} {
+	for _, path := range []string{"/integrations/int_1/tools", "/agents/" + agentID + "/skills"} {
 		rec := doJSON(t, srv, http.MethodGet, path, nil)
 		if got := rec.Body.String(); got != "[]\n" {
 			t.Fatalf("%s: expected empty-array body \"[]\", got %q", path, got)

@@ -17,6 +17,18 @@ import (
 	"github.com/unitz007/open-kael/postgres"
 )
 
+// seedBot makes a Telegram bot the channels can belong to: a channel must be for a bot that exists.
+func seedBot(t *testing.T, store *postgres.Store, identityID string) {
+	t.Helper()
+	ctx := context.Background()
+	if err := store.SaveIntegration(ctx, &domain.Integration{ID: "int-tg", Name: "Telegram", Service: "telegram"}); err != nil {
+		t.Fatalf("seed integration: %v", err)
+	}
+	if err := store.SaveIdentity(ctx, &domain.Identity{ID: identityID, IntegrationID: "int-tg", Kind: domain.IdentityKindBot, Name: "bot"}); err != nil {
+		t.Fatalf("seed bot: %v", err)
+	}
+}
+
 // seedLogin makes a login and the person it is for, both with the given id (as an upgraded database
 // has them), so a test can speak of "the user" by one id.
 func seedLogin(ctx context.Context, store *postgres.Store, id, email string) (*domain.Account, error) {
@@ -138,6 +150,7 @@ func TestRedeemChannelByCode_ValidCode_CreatesChannel(t *testing.T) {
 	store, _ := openDB(t)
 	srv := api.NewServer(store)
 	user, token := seedUser(t, store)
+	seedBot(t, store, "id-tg-bot")
 
 	// Seed a link code directly — the bot generates this in production.
 	lc := &domain.ChannelLinkCode{
@@ -189,6 +202,7 @@ func TestRedeemChannelByCode_CodeIsOneTime_SecondRedeemReturns401(t *testing.T) 
 	store, _ := openDB(t)
 	srv := api.NewServer(store)
 	_, token := seedUser(t, store)
+	seedBot(t, store, "id-tg")
 
 	lc := &domain.ChannelLinkCode{
 		Code:       "onetime-code-001",
@@ -236,6 +250,7 @@ func TestDeleteMyChannel_RemovesChannel(t *testing.T) {
 	store, _ := openDB(t)
 	srv := api.NewServer(store)
 	user, token := seedUser(t, store)
+	seedBot(t, store, "id-tg")
 
 	ch := &domain.MessengerChannel{
 		ID:         "ch-001",
@@ -274,12 +289,18 @@ func TestDeleteMyChannel_OtherUserChannel_Returns404(t *testing.T) {
 	sess := &domain.Session{Token: "alice-token", AccountID: alice.ID, ExpiresAt: time.Now().Add(time.Hour)}
 	store.SaveSession(ctx, sess) //nolint:errcheck
 
+	seedBot(t, store, "id-tg")
 	ch := &domain.MessengerChannel{ID: "ch-bob", UserID: bob.ID, IdentityID: "id-tg", ChannelRef: "chat-bob"}
-	store.SaveMessengerChannel(ctx, ch) //nolint:errcheck
+	if err := store.SaveMessengerChannel(ctx, ch); err != nil {
+		t.Fatalf("seed bob's channel: %v", err) // it used to fail here unseen, and the test passed for the wrong reason
+	}
 
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, authedRequest(http.MethodDelete, "/users/me/channels/ch-bob", nil, "alice-token"))
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", rec.Code)
+	}
+	if got, err := store.ListMessengerChannelsByUser(ctx, bob.ID); err != nil || len(got) != 1 {
+		t.Fatalf("and bob's channel is still there: %+v %v", got, err)
 	}
 }
