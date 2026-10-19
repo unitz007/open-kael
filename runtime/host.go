@@ -377,6 +377,11 @@ type Host struct {
 	// Details a person has shared, learned one at a time (see profile_host.go).
 	profileDetails profileSetup
 
+	// proposals keeps the choices an agent offers as buttons (see proposal_host.go); proposalDispatch hands a
+	// tapped choice to the conversation as if it had been typed.
+	proposals        domain.ProposalStore
+	proposalDispatch func(ctx context.Context, hosted *HostedAgent, msg domain.InboundMessage)
+
 	// intentHandlers maps a domain.Intent to a handler that intercepts turns
 	// before the skill loop. The handler receives the matched skill name (empty
 	// when no skill was matched) and returns a reply to deliver. When the
@@ -460,13 +465,15 @@ type ToolFilter interface {
 }
 
 func NewHost() *Host {
-	return &Host{
+	h := &Host{
 		agents:         make(map[string]*HostedAgent),
 		bus:            newEventBus(),
 		intentHandlers: make(map[domain.Intent]IntentHandler),
 		carry:          newCarryOver(),
 		convQueues:     make(map[string]*convQueue),
 	}
+	h.proposalDispatch = h.dispatchInbound
+	return h
 }
 
 // SetSkillRouter registers a skill router. When set, HandleTurn uses it to
@@ -919,6 +926,14 @@ func (h *Host) ReloadAgentSkills(ctx context.Context, agentID string, loader fun
 // clockNow is the time source for prompts; tests replace it.
 var clockNow = time.Now
 
+// proposeGuidance is how an agent moves a conversation forward: it does the harmless looking-up itself,
+// and when a change is right it comes with the specific thing, not an open offer.
+const proposeGuidance = "Moving things forward: when the next useful step is only to look something up or check something (it changes nothing), " +
+	"do it now and tell them what you found; do not offer to. When the next step would change something, do the looking-up first so that " +
+	"what you propose is specific (the real time, the real name, the real amount), then propose exactly that. Never end with a vague " +
+	"\"want me to help with that?\" or \"let me know if you'd like...\". If there are a few good ways forward, give them as choices when " +
+	"your finish action allows it, otherwise ask one short, specific question. Never go ahead with a change without their agreement."
+
 // buildSystemPrompt constructs the agent's system prompt dynamically from its
 // name, description, and current skill list. Three layers of user context are
 // injected when present:
@@ -949,6 +964,7 @@ func buildSystemPrompt(agent *domain.Agent, userProfile, userInstructions string
 	// a profile exists yet. This prevents agents from incorrectly telling users
 	// they cannot remember personal information.
 	b.WriteString("\n\nThe platform passively learns facts about the user from your conversations and surfaces them to you in <user_profile>, one per line as \"name: value\". When the user shares personal information, acknowledge it naturally — never tell them you cannot remember or store it.")
+	b.WriteString("\n\n" + proposeGuidance)
 	if userProfile != "" {
 		fmt.Fprintf(&b, "\n\n<user_profile>\n%s\n</user_profile>", userProfile)
 	}
@@ -1162,7 +1178,7 @@ func (h *Host) configureToolApprovalAction(hosted *HostedAgent) *domain.BoundAct
 // When a SkillRouter is configured, query_skill is injected into each
 // multi-tool skill so its nested LLM loop can delegate sub-tasks mid-turn.
 func (h *Host) actionsFor(ctx context.Context, hosted *HostedAgent) ([]*domain.BoundAction, error) {
-	actions := []*domain.BoundAction{buildFinishAction(false), buildGetCurrentTimeAction()}
+	actions := []*domain.BoundAction{h.finishFor(ctx, hosted, false), buildGetCurrentTimeAction()}
 
 	// Inject configure_tool_approval when a user is in context and a setter is
 	// registered — only user turns, never cron/event runs without a human.
@@ -1389,16 +1405,25 @@ func (h *Host) HandleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 		hosted.Deps.Memory.Append(ctx, convKey, domain.Message{Role: domain.RoleAssistant, Content: content})
 	}
 
+	// Choices the agent finished with: buttons where they can work, otherwise a plain list.
+	choices := choicesOf(result, unattended)
+	if len(choices) > 0 && !h.canOfferChoices(ctx, hosted) {
+		content = withNumberedChoices(content, choices)
+		choices = nil
+	}
+
 	// Deliver via streaming if the executor supports it, else fall back
 	// to a single atomic send.
 	if executor != nil {
 		if sm, ok := executor.(domain.StreamingMessenger); ok {
 			log.Printf("runtime: agent %q: streaming reply (%d runes)", hosted.Agent.ID, len([]rune(content)))
 			chunks := chunkContent(ctx, content)
-			if _, _, serr := sm.StreamReply(ctx, identity, connRef, conv.ChatID, conv.ThreadID, chunks); serr != nil {
+			messageID, _, serr := sm.StreamReply(ctx, identity, connRef, conv.ChatID, conv.ThreadID, chunks)
+			if serr != nil {
 				log.Printf("runtime: agent %q: stream reply failed, falling back: %v", hosted.Agent.ID, serr)
-				h.deliverBestEffort(ctx, hosted, conv, content)
+				messageID = h.deliverBestEffortID(ctx, hosted, conv, content)
 			}
+			h.attachChoices(ctx, hosted, conv, identity, connRef, executor, messageID, content, choices)
 			if !unattended {
 				h.maybeLearn(ctx, conv, hosted, userText, content)
 			}
@@ -1406,7 +1431,8 @@ func (h *Host) HandleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 		}
 		log.Printf("runtime: agent %q: executor does not implement StreamingMessenger, using atomic send", hosted.Agent.ID)
 	}
-	h.deliverBestEffort(ctx, hosted, conv, content)
+	messageID := h.deliverBestEffortID(ctx, hosted, conv, content)
+	h.attachChoices(ctx, hosted, conv, identity, connRef, executor, messageID, content, choices)
 	if !unattended {
 		h.maybeLearn(ctx, conv, hosted, userText, content)
 	}
@@ -1714,7 +1740,7 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 	loopActions := make([]*domain.BoundAction, 0, len(mergedTools)+len(convActions)+1)
 	loopActions = append(loopActions, mergedTools...)
 	loopActions = append(loopActions, convActions...)
-	loopActions = append(loopActions, buildFinishAction(reqs != nil))
+	loopActions = append(loopActions, h.finishFor(ctx, hosted, reqs != nil))
 	if reqs != nil {
 		ctx = domain.WithRequirements(ctx, reqs)
 	}

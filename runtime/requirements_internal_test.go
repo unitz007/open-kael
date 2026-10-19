@@ -230,3 +230,12 @@ func TestDeclineText_IsFixedAndListsWhatTheAgentDoes(t *testing.T) {
 		t.Errorf("decline:\n got %q\nwant %q", got, want)
 	}
 }
+
+func TestBuildSystemPrompt_TellsTheAgentToDoLookUpsAndProposeSpecifics(t *testing.T) {
+	p := buildSystemPrompt(&domain.Agent{Name: "Bot"}, "", "", nil, nil, nil, domain.UserDetails{})
+	for _, want := range []string{"do it now", "changes nothing", "specific", "Never go ahead with a change without their agreement"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("the prompt must say %q:\n%s", want, p)
+		}
+	}
+}

@@ -545,3 +545,23 @@ ALTER TABLE messenger_channels ADD COLUMN IF NOT EXISTS email_link_state_at TIME
 UPDATE accounts SET email = lower(btrim(email))
 WHERE email IS NOT NULL AND email <> lower(btrim(email))
   AND (SELECT count(*) FROM accounts b WHERE lower(btrim(b.email)) = lower(btrim(accounts.email))) = 1;
+
+-- proposals: messages an agent sent with choices the person can tap (see domain.Proposal). Saved, so a tap
+-- works later and after a restart. chosen is the button tapped, once one was.
+CREATE TABLE IF NOT EXISTS proposals (
+    id          TEXT PRIMARY KEY,
+    person_id   TEXT NOT NULL REFERENCES persons (id) ON DELETE CASCADE,
+    agent_id    TEXT NOT NULL DEFAULT '',
+    identity_id TEXT NOT NULL DEFAULT '',
+    chat_id     TEXT NOT NULL DEFAULT '',
+    thread_id   TEXT NOT NULL DEFAULT '',
+    message_id  TEXT NOT NULL DEFAULT '',
+    text        TEXT NOT NULL DEFAULT '',
+    choices     JSONB NOT NULL DEFAULT '[]',
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at  TIMESTAMPTZ NOT NULL,
+    chosen      INT,
+    chosen_at   TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_proposals_person ON proposals (person_id);
+CREATE INDEX IF NOT EXISTS idx_proposals_expires ON proposals (expires_at);

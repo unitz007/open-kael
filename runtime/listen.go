@@ -574,6 +574,12 @@ func (h *Host) handleCallbackQuery(ctx context.Context, hosted *HostedAgent, msg
 		}
 	}
 
+	// A tap on the buttons under an agent's message: handled as if they had typed what the button says.
+	if strings.HasPrefix(cq.Data, domain.ProposalCallbackPrefix) {
+		h.handleProposalTap(ctx, hosted, msg)
+		return
+	}
+
 	if strings.HasPrefix(cq.Data, "kael_sm:") {
 		executor, ok := h.executorForMessage(hosted, msg)
 		if !ok {
