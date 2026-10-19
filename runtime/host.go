@@ -388,6 +388,9 @@ type Host struct {
 	// activity, when set, is told how each agent is doing (see activity.go): counts only.
 	activity     domain.ActivityRecorder
 	topicLabeler TopicLabeler
+
+	// routeByTools lets a ToolAwareSkillRouter pick abilities by what their tools do.
+	routeByTools bool
 }
 
 // ProfileExtractInput groups the inputs passed to the profile extractor hook.
@@ -435,6 +438,14 @@ type SkillRouter interface {
 // message and the agent's reply to it. Without it (or with nothing earlier) PickSkills is used.
 type ContextualSkillRouter interface {
 	PickSkillsInContext(ctx context.Context, userText string, earlier domain.Earlier, skills []*domain.Skill) (skillNames []string, intent domain.Intent, err error)
+}
+
+// ToolAwareSkillRouter is an optional extension of SkillRouter. A router that implements it is
+// shown what each ability's tools do and may pick an ability because one of its tools fits the
+// request, not only because the ability's own description does. It is used only when the host's
+// routing by tools is switched on (SetRouteByTools); otherwise PickSkills is used as before.
+type ToolAwareSkillRouter interface {
+	PickSkillsWithTools(ctx context.Context, userText string, earlier domain.Earlier, skills []domain.RoutedSkill) (skillNames []string, intent domain.Intent, err error)
 }
 
 // ScopeChecker is an optional extension of SkillRouter. When the configured
@@ -1594,7 +1605,9 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 	}
 
 	var pickedIntent domain.Intent
-	if cr, ok := h.skillRouter.(ContextualSkillRouter); ok && !earlier.IsZero() {
+	if tr, ok := h.skillRouter.(ToolAwareSkillRouter); ok && h.routeByTools {
+		skillNames, pickedIntent, err = tr.PickSkillsWithTools(ctx, userText, earlier, h.routedSkills(hosted))
+	} else if cr, ok := h.skillRouter.(ContextualSkillRouter); ok && !earlier.IsZero() {
 		log.Printf("skill-router: reading the message next to the one before it")
 		skillNames, pickedIntent, err = cr.PickSkillsInContext(ctx, userText, earlier, hosted.Agent.Skills)
 	} else {
