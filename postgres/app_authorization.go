@@ -10,6 +10,11 @@ import (
 )
 
 func (s *Store) SaveAppAuthorization(ctx context.Context, a *domain.AppAuthorization) error {
+	// A connection started before two people were merged finishes under the id it began with. It
+	// belongs to the person who remains, not to the marker left behind.
+	if live, err := resolveLive(ctx, s, a.UserID); err == nil {
+		a.UserID = live
+	}
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO app_authorizations (id, identity_id, user_id, scope, name, credential_ref, external_user_id)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)

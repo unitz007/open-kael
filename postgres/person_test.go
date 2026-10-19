@@ -419,3 +419,27 @@ func TestLinkEmail_AnEmailRegisteredByAStrangerDoesNotHandThemTheOwner(t *testin
 		t.Errorf("%+v", p)
 	}
 }
+
+func TestSaveAppAuthorization_AConnectionStartedBeforeAMergeLandsOnTheSurvivor(t *testing.T) {
+	s, pool := world(t)
+	ctx := context.Background()
+	person(t, s, "gone")
+	person(t, s, "stays")
+	if err := s.MergePersons(ctx, "gone", "stays"); err != nil {
+		t.Fatal(err)
+	}
+	// The sign-in began while "gone" was still a person, and comes back after the merge.
+	if err := s.SaveAppAuthorization(ctx, &domain.AppAuthorization{ID: "au1", IdentityID: "id2", UserID: "gone", CredentialRef: "ref"}); err != nil {
+		t.Fatal(err)
+	}
+	if count(t, pool, `SELECT count(*) FROM app_authorizations WHERE id = 'au1' AND user_id = 'stays'`) != 1 {
+		t.Error("the connection is the surviving person's, where they will see it")
+	}
+	// A person who was never merged is untouched, and an unknown one is still refused.
+	if err := s.SaveAppAuthorization(ctx, &domain.AppAuthorization{ID: "au2", IdentityID: "id1", UserID: "stays"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveAppAuthorization(ctx, &domain.AppAuthorization{ID: "au3", IdentityID: "id1", UserID: "nobody"}); err == nil {
+		t.Error("a connection for no one is refused")
+	}
+}
