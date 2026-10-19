@@ -161,7 +161,7 @@ func TestLinkEmail(t *testing.T) {
 		t.Errorf("%q %v", got, err)
 	}
 	// A login that exists but is for nobody yet is taken up.
-	exec(t, pool, `INSERT INTO accounts (id, email, password_hash) VALUES ('web', 'w@example.com', 'h')`)
+	exec(t, pool, `INSERT INTO accounts (id, email, password_hash, email_verified) VALUES ('web', 'w@example.com', 'h', TRUE)`)
 	if got, err := s.LinkEmail(ctx, "pb", "w@example.com"); err != nil || got != "pb" {
 		t.Fatalf("%q %v", got, err)
 	}
@@ -371,5 +371,51 @@ func TestRegisterPersonTable_RejectsOddNames(t *testing.T) {
 		if err := s.RegisterPersonTable(bad[0], bad[1]); err == nil {
 			t.Errorf("%v should be refused", bad)
 		}
+	}
+}
+
+// Someone who registers with another person's email must not gain that person by waiting for them to
+// prove they own it. Registering proves nothing: only the verification link does.
+func TestLinkEmail_AnEmailRegisteredByAStrangerDoesNotHandThemTheOwner(t *testing.T) {
+	s, pool := world(t)
+	ctx := context.Background()
+	person(t, s, "attacker_person")
+	person(t, s, "victim")
+	exec(t, pool, `INSERT INTO accounts (id, email, password_hash, email_verified, verification_token, person_id)
+		VALUES ('evil', 'victim@example.com', 'attackers-password', FALSE, 'tok', 'attacker_person')`)
+	exec(t, pool, `INSERT INTO user_sessions (token, account_id, expires_at) VALUES ('evil_session', 'evil', now() + interval '1 day')`)
+	exec(t, pool, `INSERT INTO messenger_channels (id, identity_id, user_id, channel_ref) VALUES ('cv', 'id1', 'victim', '1')`)
+	exec(t, pool, `INSERT INTO conversation_messages (agent_id, user_id, role, content) VALUES ('a1', 'victim', 'user', 'private')`)
+	exec(t, pool, `INSERT INTO app_authorizations (id, identity_id, user_id, credential_ref) VALUES ('au', 'id2', 'victim', 'victims-token')`)
+
+	got, err := s.LinkEmail(ctx, "victim", "victim@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "victim" {
+		t.Errorf("the person who proved the email stays themself, not folded into the stranger's: %q", got)
+	}
+	acc, err := s.GetAccount(ctx, "evil")
+	if err != nil || acc.PersonID != "victim" || !acc.EmailVerified {
+		t.Fatalf("the login now belongs to the person who proved the email: %+v %v", acc, err)
+	}
+	if acc.PasswordHash != "" || acc.VerificationToken != "" {
+		t.Errorf("what the stranger set is wiped: password %q, token %q", acc.PasswordHash, acc.VerificationToken)
+	}
+	if _, err := s.GetSession(ctx, "evil_session"); !errors.Is(err, domain.ErrNotFound) {
+		t.Error("and their sessions are ended")
+	}
+	for what, sql := range map[string]string{
+		"the victim's chat stays theirs":       `SELECT count(*) FROM messenger_channels WHERE user_id = 'victim'`,
+		"the victim's history stays theirs":    `SELECT count(*) FROM conversation_messages WHERE user_id = 'victim'`,
+		"the victim's connection stays theirs": `SELECT count(*) FROM app_authorizations WHERE user_id = 'victim'`,
+		"the stranger's person is untouched":   `SELECT count(*) FROM persons WHERE id = 'attacker_person' AND merged_into IS NULL`,
+	} {
+		if count(t, pool, sql) != 1 {
+			t.Errorf("%s", what)
+		}
+	}
+	if p, _ := s.GetPerson(ctx, "victim"); p.ID != "victim" {
+		t.Errorf("%+v", p)
 	}
 }

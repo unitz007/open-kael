@@ -140,7 +140,8 @@ func (s *Store) LinkEmail(ctx context.Context, personID, email string) (string, 
 	for attempt := 0; ; attempt++ {
 		var id string
 		var person *string
-		err := tx.QueryRow(ctx, `SELECT id, person_id FROM accounts WHERE email = $1 FOR UPDATE`, email).Scan(&id, &person)
+		var verified bool
+		err := tx.QueryRow(ctx, `SELECT id, person_id, email_verified FROM accounts WHERE email = $1 FOR UPDATE`, email).Scan(&id, &person, &verified)
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
 			tag, ierr := tx.Exec(ctx, `
@@ -155,6 +156,17 @@ func (s *Store) LinkEmail(ctx context.Context, personID, email string) (string, 
 			survivor = personID
 		case err != nil:
 			return "", err
+		case !verified:
+			// Whoever registered this login never proved the email is theirs; only the person who just
+			// did has. So the login is theirs now, and what the registrant set (a password, a pending
+			// token, signed-in sessions) is wiped, and nobody is merged into the registrant's person.
+			if _, err := tx.Exec(ctx, `UPDATE accounts SET person_id = $2, email_verified = TRUE, password_hash = '', verification_token = '' WHERE id = $1`, id, personID); err != nil {
+				return "", err
+			}
+			if _, err := tx.Exec(ctx, `DELETE FROM user_sessions WHERE account_id = $1`, id); err != nil {
+				return "", err
+			}
+			survivor = personID
 		case person == nil || *person == personID:
 			if _, err := tx.Exec(ctx, `UPDATE accounts SET person_id = $2, email_verified = TRUE WHERE id = $1`, id, personID); err != nil {
 				return "", err
