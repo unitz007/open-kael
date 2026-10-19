@@ -2,18 +2,22 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"log"
 
 	"github.com/unitz007/open-kael/domain"
 )
 
 // SetTimezoneLink turns on asking for a time zone. link makes the address of a page that sets it with
-// one tap (the person's own device knows it); where it returns an address, a turn whose person has no
-// time zone yet can ask for it the moment something depends on their clock. Without it nothing asks,
-// and times fall back to UTC as before.
-func (h *Host) SetTimezoneLink(link func(ctx context.Context, userID, agentID string) (string, error)) {
+// one tap (the person's own device knows it), for the messenger the person is on (provider, e.g.
+// "telegram"). Where it returns an address, a turn whose person has no time zone yet can ask for it
+// the moment something depends on their clock; where it returns "" (a messenger that can't show the
+// button) nothing asks, and times fall back to UTC as before.
+func (h *Host) SetTimezoneLink(link func(ctx context.Context, userID, agentID, provider string) (string, error)) {
 	h.timezoneLink = link
 }
+
+var errNoTimezonePrompt = errors.New("no way to ask for a time zone here")
 
 const timezonePrompt = "To get the times right I need to know your time zone. Tap the button below: it takes one tap, and then I'll carry on with what you asked."
 
@@ -23,7 +27,14 @@ const timezonePrompt = "To get the times right I need to know your time zone. Ta
 func (h *Host) timezoneRequester(hosted *HostedAgent) domain.TimezoneRequester {
 	return timezoneRequesterFunc(func(ctx context.Context, conv domain.ConversationRef, userID string) error {
 		if userID == "" {
-			return nil
+			return errNoTimezonePrompt
+		}
+		link, err := h.timezoneLink(ctx, userID, hosted.Agent.ID, conv.Provider)
+		if err != nil {
+			return err
+		}
+		if link == "" {
+			return errNoTimezonePrompt // this messenger can't show the one-tap prompt: nothing waits for it
 		}
 		// What they asked is kept every time, even when the prompt itself is not repeated.
 		if msg := domain.OriginalMessageFromContext(ctx); msg != "" {
@@ -33,10 +44,6 @@ func (h *Host) timezoneRequester(hosted *HostedAgent) domain.TimezoneRequester {
 		}
 		if !h.shouldSendConnectPrompt("timezone:" + userID) {
 			return nil
-		}
-		link, err := h.timezoneLink(ctx, userID, hosted.Agent.ID)
-		if err != nil || link == "" {
-			return err
 		}
 		text := timezonePrompt
 		var extra map[string]any

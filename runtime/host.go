@@ -393,7 +393,7 @@ type Host struct {
 	routeByTools bool
 
 	// timezoneLink makes the link a person follows to set their time zone (see SetTimezoneLink).
-	timezoneLink func(ctx context.Context, userID, agentID string) (string, error)
+	timezoneLink func(ctx context.Context, userID, agentID, provider string) (string, error)
 }
 
 // ProfileExtractInput groups the inputs passed to the profile extractor hook.

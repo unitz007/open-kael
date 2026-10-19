@@ -96,10 +96,13 @@ func newZoneRig(t *testing.T, needsLocalTime bool, zone string, withLink bool) *
 		return domain.UserDetails{Timezone: r.zone}, nil
 	})
 	if withLink {
-		r.host.SetTimezoneLink(func(_ context.Context, userID, agentID string) (string, error) {
+		r.host.SetTimezoneLink(func(_ context.Context, userID, agentID, provider string) (string, error) {
 			r.mu.Lock()
 			r.links++
 			r.mu.Unlock()
+			if provider != "slack" { // the test conversation is on "slack": stands for a messenger that can show the button
+				return "", nil
+			}
 			return "https://app.example/miniapp/timezone?agent=" + agentID, nil
 		})
 	}
@@ -209,13 +212,34 @@ func TestTimezone_AskedOnceInAShortWhileAndTheLatestRequestIsKept(t *testing.T) 
 	if got := r.box.texts(); len(got) != 1 {
 		t.Fatalf("one prompt, not two: %q", got)
 	}
-	if r.links != 1 {
-		t.Errorf("one link: %d", r.links)
-	}
 	r.setZone("Europe/Berlin")
 	r.host.OnTimezoneSet(context.Background(), "u1")
 	waitUntil(t, "the last request to be carried on", func() bool { return r.calendar.count() == 1 })
 	if turns := r.llm.turns(); len(turns) != 3 || turns[2] != "actually book it for Tuesday" {
 		t.Errorf("the latest request is the one carried on: %q", turns)
+	}
+}
+
+// A messenger that cannot show the one-tap prompt is never asked on: nothing waits for an answer that
+// cannot come, and the work goes ahead as it always did.
+func TestTimezone_AMessengerThatCannotShowThePromptIsNotAsked(t *testing.T) {
+	r := newZoneRig(t, true, "", true)
+	conv := domain.ConversationRef{Provider: "discord", ChatID: "C1", IdentityID: "id_slack", UserID: "u1", SenderID: "C1"}
+	ctx := domain.WithOriginalMessage(context.Background(), "book a slot")
+	if _, err := r.host.HandleTurn(ctx, r.hosted, conv, "book a slot"); err != nil {
+		t.Fatal(err)
+	}
+	if r.calendar.count() != 1 {
+		t.Errorf("it books as before: %d", r.calendar.count())
+	}
+	for _, text := range r.box.texts() {
+		if strings.Contains(text, "time zone") {
+			t.Errorf("no prompt where it cannot be shown: %q", text)
+		}
+	}
+	r.host.OnTimezoneSet(context.Background(), "u1") // nothing was held, so nothing happens
+	time.Sleep(50 * time.Millisecond)
+	if r.calendar.count() != 1 {
+		t.Errorf("nothing to carry on: %d", r.calendar.count())
 	}
 }
