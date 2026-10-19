@@ -118,7 +118,7 @@ func (h *Host) profileForPrompt(ctx context.Context, userID string, hosted *Host
 	}
 	if ps.typed != nil {
 		if typed, err := ps.typed.Typed(ctx, userID); err == nil {
-			by[domain.ProfilePersonal] = mergeTyped(by[domain.ProfilePersonal], typed, ps.typed)
+			by[domain.ProfilePersonal] = MergeTyped(by[domain.ProfilePersonal], typed, ps.typed)
 		}
 	}
 
@@ -193,4 +193,13 @@ func (h *Host) maybeLearn(ctx context.Context, conv domain.ConversationRef, host
 			log.Printf("runtime: profile: user %s agent %s: %v", conv.UserID, hosted.Agent.ID, err)
 		}
 	}()
+}
+
+// UsedIntegrations is the integrations this agent really works with (see usedIntegrations).
+func (h *HostedAgent) UsedIntegrations() map[string]*domain.Integration { return h.usedIntegrations() }
+
+// StartProfileMigration moves an older free-text note into details in the background, unless that
+// is already going on or has just failed.
+func (h *Host) StartProfileMigration(userID, scope, legacy string) {
+	h.startMigration(userID, scope, legacy)
 }

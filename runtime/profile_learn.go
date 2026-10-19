@@ -215,7 +215,7 @@ func (l *DetailLearner) Learn(ctx context.Context, req LearnRequest) error {
 		if err != nil {
 			return fmt.Errorf("profile: load typed: %w", err)
 		}
-		st.held[domain.ProfilePersonal] = mergeTyped(st.held[domain.ProfilePersonal], typed, l.Typed)
+		st.held[domain.ProfilePersonal] = MergeTyped(st.held[domain.ProfilePersonal], typed, l.Typed)
 	}
 
 	pr := ProposeRequest{UserMessage: req.UserMessage, AgentResponse: req.AgentResponse, Personal: append([]domain.ProfileDetail(nil), st.held[domain.ProfilePersonal]...)}
@@ -235,9 +235,9 @@ func (l *DetailLearner) Learn(ctx context.Context, req LearnRequest) error {
 	return nil
 }
 
-// mergeTyped shows the typed details in the personal map: an owned key always comes from the typed
+// MergeTyped shows the typed details in the personal map: an owned key always comes from the typed
 // field; any other key from the typed side only fills a gap the map has.
-func mergeTyped(stored, typed []domain.ProfileDetail, t TypedDetails) []domain.ProfileDetail {
+func MergeTyped(stored, typed []domain.ProfileDetail, t TypedDetails) []domain.ProfileDetail {
 	out := make([]domain.ProfileDetail, 0, len(stored)+len(typed))
 	have := map[string]bool{}
 	for _, d := range typed {
