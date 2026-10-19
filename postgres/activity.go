@@ -101,9 +101,13 @@ func (s *Store) PersonActive(ctx context.Context, agentID, person string) {
 	}
 	s.act.mu.Unlock()
 
-	if _, err := s.pool.Exec(ctx, `INSERT INTO agent_activity_people (agent_id, day, person) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`, agentID, day, code); err != nil {
+	tag, err := s.pool.Exec(ctx, `INSERT INTO agent_activity_people (agent_id, day, person) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`, agentID, day, code)
+	if err != nil {
 		log.Printf("activity: note a person: %v", err)
 		return
+	}
+	if tag.RowsAffected() > 0 {
+		s.notifyActivity(agentID) // a person newly active today
 	}
 	s.act.mu.Lock()
 	s.act.seen[key] = struct{}{}
@@ -123,6 +127,7 @@ func (s *Store) MessageHandled(ctx context.Context, agentID string) {
 		log.Printf("activity: count a message: %v", err)
 		return
 	}
+	s.notifyActivity(agentID)
 	s.pruneActivity(ctx, minute)
 }
 
@@ -133,7 +138,9 @@ func (s *Store) ActivityEvent(ctx context.Context, agentID string, kind domain.A
 	}
 	if _, err := s.pool.Exec(ctx, `INSERT INTO agent_activity_events (agent_id, kind, detail) VALUES ($1, $2, $3)`, agentID, string(kind), domain.CleanActivityDetail(detail)); err != nil {
 		log.Printf("activity: note an event: %v", err)
+		return
 	}
+	s.notifyActivity(agentID)
 }
 
 // pruneActivity removes what is older than the keep period, and an agent's oldest events beyond a

@@ -97,6 +97,14 @@ type ActivityReader interface {
 	ActivitySummary(ctx context.Context, agentIDs []string, days int, now time.Time) (ActivitySummary, error)
 }
 
+// ActivityWatcher tells when something changed for some agents, so a screen can be pushed an update
+// the moment it happens instead of asking over and over. It says only THAT something changed.
+type ActivityWatcher interface {
+	// WatchActivity returns a channel that receives (at most one pending signal, never blocking the
+	// sender) when anything is recorded for any of these agents, and a function that stops watching.
+	WatchActivity(agentIDs []string) (changed <-chan struct{}, stop func())
+}
+
 const maxActivityDetail = 40
 
 // CleanActivityDetail makes a detail safe to keep and to show: lower-case words only (letters,

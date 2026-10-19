@@ -32,6 +32,7 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 type Store struct {
 	pool *pgxpool.Pool
 	act  activityState
+	hub  activityHub
 }
 
 func New(pool *pgxpool.Pool) *Store {

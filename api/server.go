@@ -14,6 +14,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/unitz007/open-kael/domain"
 )
@@ -24,6 +25,9 @@ type Server struct {
 
 	// activity, when set, serves GET /activity: how a creator's agents are doing (counts only).
 	activity domain.ActivityReader
+	// activityRefresh is how often a live stream asks again when nothing changed; zero means the default.
+	activityRefresh time.Duration
+	streams         streamSlots
 
 	// authToken, when non-empty, requires every request to carry
 	// "Authorization: Bearer <authToken>". Set via WithBearerAuth.
@@ -298,6 +302,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /tools/{id}", ca(s.getTool))
 
 	s.mux.HandleFunc("GET /activity", ca(s.getActivity))
+	s.mux.HandleFunc("GET /activity/stream", ca(s.streamActivity))
 
 	s.mux.HandleFunc("POST /agents", ca(s.createAgent))
 	s.mux.HandleFunc("GET /agents", ca(s.listAgents))
