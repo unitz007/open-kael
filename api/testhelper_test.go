@@ -39,6 +39,13 @@ func (noopStore) PersonHasVerifiedEmail(_ context.Context, _ string) (bool, erro
 	return false, nil
 }
 func (noopStore) MergePersons(_ context.Context, _, _ string) error { return nil }
+func (noopStore) FindPersonBySender(_ context.Context, _, _ string) (string, error) {
+	return "", domain.ErrNotFound
+}
+func (noopStore) DuplicatePeople(_ context.Context) ([]domain.DuplicatePeople, error) {
+	return nil, nil
+}
+func (noopStore) MergeDuplicates(_ context.Context, _ domain.DuplicatePeople) error { return nil }
 
 func (noopStore) SaveSession(_ context.Context, _ *domain.Session) error { return nil }
 func (noopStore) GetSession(_ context.Context, _ string) (*domain.Session, error) {

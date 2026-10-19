@@ -134,7 +134,11 @@ func mergePersonsTx(ctx context.Context, tx pgx.Tx, s *Store, fromID, toID strin
 			return fmt.Errorf("postgres: merge persons: move %s: %w", t.table, err)
 		}
 	}
-	for _, t := range append(append([]personTable(nil), keyedPersonTables...), s.extraPersonTables()...) {
+	extras, err := existingTables(ctx, tx, s.extraPersonTables())
+	if err != nil {
+		return err
+	}
+	for _, t := range append(append([]personTable(nil), keyedPersonTables...), extras...) {
 		if err := moveKeyedRows(ctx, tx, t, fromID, toID); err != nil {
 			return fmt.Errorf("postgres: merge persons: move %s: %w", t.table, err)
 		}
@@ -147,8 +151,24 @@ func mergePersonsTx(ctx context.Context, tx pgx.Tx, s *Store, fromID, toID strin
 	if _, err := tx.Exec(ctx, `UPDATE persons SET merged_into = $2 WHERE merged_into = $1`, fromID, toID); err != nil {
 		return err
 	}
-	_, err := tx.Exec(ctx, `UPDATE persons SET merged_into = $2, first_name = '', last_name = '', timezone = '', language = '', country = '', city = '' WHERE id = $1`, fromID, toID)
+	_, err = tx.Exec(ctx, `UPDATE persons SET merged_into = $2, first_name = '', last_name = '', timezone = '', language = '', country = '', city = '' WHERE id = $1`, fromID, toID)
 	return err
+}
+
+// existingTables keeps the registered tables that exist: another package may not have made its table
+// (it may be switched off), and that must not stop two people from being merged or one deleted.
+func existingTables(ctx context.Context, tx pgx.Tx, list []personTable) ([]personTable, error) {
+	var out []personTable
+	for _, t := range list {
+		var ok bool
+		if err := tx.QueryRow(ctx, `SELECT to_regclass($1) IS NOT NULL`, t.table).Scan(&ok); err != nil {
+			return nil, err
+		}
+		if ok {
+			out = append(out, t)
+		}
+	}
+	return out, nil
 }
 
 // mergeNotes joins the older free-text notes of two people.

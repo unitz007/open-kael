@@ -74,7 +74,11 @@ func (s *Store) DeletePerson(ctx context.Context, id string) error {
 	if _, err := tx.Exec(ctx, `DELETE FROM conversation_messages WHERE user_id = $1`, id); err != nil {
 		return err
 	}
-	for _, t := range s.extraPersonTables() {
+	extras, err := existingTables(ctx, tx, s.extraPersonTables())
+	if err != nil {
+		return err
+	}
+	for _, t := range extras {
 		if _, err := tx.Exec(ctx, `DELETE FROM `+t.table+` WHERE `+t.column+` = $1`, id); err != nil {
 			return err
 		}

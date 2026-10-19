@@ -349,6 +349,22 @@ func TestMergePersons_RefusesWhatItCannotDo(t *testing.T) {
 	}
 }
 
+func TestMergePersons_ATableThatDoesNotExistIsSkipped(t *testing.T) {
+	s, _ := world(t)
+	ctx := context.Background()
+	if err := s.RegisterPersonTable("not_made_yet", "user_id"); err != nil {
+		t.Fatal(err)
+	}
+	person(t, s, "a")
+	person(t, s, "b")
+	if err := s.MergePersons(ctx, "a", "b"); err != nil {
+		t.Errorf("a registered table that was never created must not stop a merge: %v", err)
+	}
+	if err := s.DeletePerson(ctx, "b"); err != nil {
+		t.Errorf("nor a delete: %v", err)
+	}
+}
+
 func TestRegisterPersonTable_RejectsOddNames(t *testing.T) {
 	s, _ := world(t)
 	for _, bad := range [][2]string{{"users; drop table persons", "user_id"}, {"t", "id) --"}, {"", "x"}} {

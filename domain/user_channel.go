@@ -29,3 +29,38 @@ type MessengerChannel struct {
 //
 // Deprecated: remove once all callers are updated.
 type UserChannel = MessengerChannel
+
+// sharedSenderServices are the messengers whose sender id names the same human on every bot of that
+// service: one Telegram user id is that person whichever Telegram bot they write to. A Slack user id
+// is only meaningful inside one workspace, so Slack is not here.
+var sharedSenderServices = []string{"telegram", "discord", "whatsapp"}
+
+// SenderSharedAcrossBots reports whether a messenger service's sender ids are the same human across
+// all of its bots (see sharedSenderServices).
+func SenderSharedAcrossBots(service string) bool {
+	for _, s := range sharedSenderServices {
+		if s == service {
+			return true
+		}
+	}
+	return false
+}
+
+// SharedSenderServices lists the services for which SenderSharedAcrossBots is true.
+func SharedSenderServices() []string { return append([]string(nil), sharedSenderServices...) }
+
+// DuplicateMember is one person in a DuplicatePeople group, with what is needed to choose who stays.
+type DuplicateMember struct {
+	PersonID      string
+	Messages      int  // how much has been said to agents
+	Channels      int  // how many chats they write from
+	VerifiedEmail bool // they have a login with a verified email
+}
+
+// DuplicatePeople is a group of persons who are one human, found because they write from the same
+// messenger account on different bots. Survivor is the one the others should be merged into.
+type DuplicatePeople struct {
+	Survivor string
+	Members  []DuplicateMember // includes the survivor
+	Via      []string          // the services that connect them, such as "telegram"
+}

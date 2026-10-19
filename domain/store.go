@@ -107,6 +107,16 @@ type Store interface {
 	// Returns ErrNotFound when no channel exists for this sender yet.
 	GetMessengerChannelByIdentityAndSender(ctx context.Context, identityID, senderID string) (*MessengerChannel, error)
 	ListMessengerChannelsByUser(ctx context.Context, userID string) ([]*MessengerChannel, error)
+	// FindPersonBySender finds the person who writes from this messenger account. On the same bot it
+	// is the one already seen there; for services whose sender ids are the same human on every bot
+	// (SenderSharedAcrossBots) it also finds them from a channel on another bot. ErrNotFound when
+	// the sender is not known.
+	FindPersonBySender(ctx context.Context, identityID, senderID string) (string, error)
+	// DuplicatePeople finds persons who are one human but were made separately, because they wrote
+	// to different bots before this was recognised.
+	DuplicatePeople(ctx context.Context) ([]DuplicatePeople, error)
+	// MergeDuplicates folds every member of a group into its survivor.
+	MergeDuplicates(ctx context.Context, g DuplicatePeople) error
 	DeleteMessengerChannel(ctx context.Context, id string) error
 
 	// ChannelLinkCode CRUD — short-lived tokens for linking a messenger

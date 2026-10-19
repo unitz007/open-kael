@@ -90,10 +90,10 @@ func openDB(t *testing.T) (*postgres.Store, func()) {
 	}
 	store := postgres.New(pool)
 	cleanup := func() {
-		_, _ = pool.Exec(ctx, `TRUNCATE messenger_channels, channel_link_codes, sessions, users CASCADE`)
+		_, _ = pool.Exec(ctx, `TRUNCATE messenger_channels, channel_link_codes, user_sessions, persons, accounts CASCADE`)
 		pool.Close()
 	}
-	_, _ = pool.Exec(ctx, `TRUNCATE messenger_channels, channel_link_codes, sessions, users CASCADE`)
+	_, _ = pool.Exec(ctx, `TRUNCATE messenger_channels, channel_link_codes, user_sessions, persons, accounts CASCADE`)
 	t.Cleanup(cleanup)
 	return store, cleanup
 }
