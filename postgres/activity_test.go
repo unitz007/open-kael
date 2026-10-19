@@ -227,3 +227,53 @@ func TestActivity_OldThingsAreRemovedAndAnAgentGoingTakesItsNumbersWithIt(t *tes
 		t.Errorf("the agent's numbers go with it: %d", n)
 	}
 }
+
+func TestActivity_MessagesAreCountedByTheMinuteAndOnlyRecentOnesShow(t *testing.T) {
+	s, ctx := activityRig(t)
+	for i := 0; i < 3; i++ {
+		s.MessageHandled(ctx, "ag_a")
+	}
+	s.MessageHandled(ctx, "ag_b")
+	s.MessageHandled(ctx, "")                                                       // nobody: ignored
+	s.MessageHandled(ctx, "nope")                                                   // an agent that doesn't exist: ignored
+	if err := s.AddOldMessagesForTest(ctx, "ag_a", 30*time.Minute, 7); err != nil { // too long ago to count as lately
+		t.Fatal(err)
+	}
+
+	now := time.Now()
+	a, err := s.ActivitySummary(ctx, []string{"ag_a"}, 7, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.RecentMessages != 3 || a.RecentWindowMinutes != 10 {
+		t.Errorf("3 in the last 10 minutes, the 7 from half an hour ago don't count: %+v", a)
+	}
+	both, _ := s.ActivitySummary(ctx, []string{"ag_a", "ag_b"}, 7, now)
+	if both.RecentMessages != 4 {
+		t.Errorf("all agents add up: %d", both.RecentMessages)
+	}
+	if later, _ := s.ActivitySummary(ctx, []string{"ag_a"}, 7, now.Add(12*time.Minute)); later.RecentMessages != 0 {
+		t.Errorf("twelve minutes later they are no longer recent: %d", later.RecentMessages)
+	}
+	none, _ := s.ActivitySummary(ctx, nil, 7, now)
+	if none.RecentMessages != 0 || none.RecentWindowMinutes != 10 {
+		t.Errorf("no agents: %+v", none)
+	}
+
+	// A day old, they are gone; the agent going takes the rest with it.
+	if err := s.AddOldMessagesForTest(ctx, "ag_a", 30*time.Hour, 5); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PruneActivityForTest(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := s.MinuteRowsForTest(ctx, "ag_a"); n != 2 { // this minute and half an hour ago; not 30 hours ago
+		t.Errorf("rows after tidying: %d", n)
+	}
+	if err := s.DeleteAgent(ctx, "ag_a"); err != nil {
+		t.Fatal(err)
+	}
+	if n := s.MinuteRowsForTest(ctx, "ag_a"); n != 0 {
+		t.Errorf("the agent's counts go with it: %d", n)
+	}
+}

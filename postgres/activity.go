@@ -111,6 +111,21 @@ func (s *Store) PersonActive(ctx context.Context, agentID, person string) {
 	s.pruneActivity(ctx, now)
 }
 
+// MessageHandled implements domain.ActivityRecorder: one more message in this minute.
+func (s *Store) MessageHandled(ctx context.Context, agentID string) {
+	if agentID == "" {
+		return
+	}
+	minute := time.Now().UTC().Truncate(time.Minute)
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO agent_activity_minutes (agent_id, minute, messages) VALUES ($1, $2, 1)
+		ON CONFLICT (agent_id, minute) DO UPDATE SET messages = agent_activity_minutes.messages + 1`, agentID, minute); err != nil {
+		log.Printf("activity: count a message: %v", err)
+		return
+	}
+	s.pruneActivity(ctx, minute)
+}
+
 // ActivityEvent implements domain.ActivityRecorder.
 func (s *Store) ActivityEvent(ctx context.Context, agentID string, kind domain.ActivityKind, detail string) {
 	if agentID == "" || kind == "" {
@@ -138,6 +153,7 @@ func (s *Store) pruneActivity(ctx context.Context, now time.Time) {
 	}{
 		{`DELETE FROM agent_activity_people WHERE day < $1`, []any{cutoff.Format("2006-01-02")}},
 		{`DELETE FROM agent_activity_events WHERE at < $1`, []any{cutoff}},
+		{`DELETE FROM agent_activity_minutes WHERE minute < $1`, []any{now.Add(-24 * time.Hour)}},
 		{`DELETE FROM agent_activity_events e USING (
 			SELECT id, ROW_NUMBER() OVER (PARTITION BY agent_id ORDER BY id DESC) AS n FROM agent_activity_events
 		) r WHERE e.id = r.id AND r.n > $1`, []any{activityMaxEvents}},
@@ -179,7 +195,7 @@ func (s *Store) ActivitySummary(ctx context.Context, agentIDs []string, days int
 	if days > 30 {
 		days = 30
 	}
-	out := domain.ActivitySummary{Daily: []domain.ActivityDay{}, ChatApps: []domain.ActivityCount{}, Topics: []domain.ActivityCount{}, Problems: []domain.ActivityProblem{}, Events: []domain.ActivityEvent{}}
+	out := domain.ActivitySummary{RecentWindowMinutes: int(domain.RecentMessagesWindow / time.Minute), Daily: []domain.ActivityDay{}, ChatApps: []domain.ActivityCount{}, Topics: []domain.ActivityCount{}, Problems: []domain.ActivityProblem{}, Events: []domain.ActivityEvent{}}
 	now = now.UTC()
 	today := now.Format("2006-01-02")
 	first := now.AddDate(0, 0, -(days - 1)).Format("2006-01-02")
@@ -292,6 +308,12 @@ func (s *Store) ActivitySummary(ctx context.Context, agentIDs []string, days int
 		out.Problems = append(out.Problems, p)
 	}
 	rows.Close()
+
+	// Messages handled lately: one number for the feed's single "messages" line.
+	out.RecentWindowMinutes = int(domain.RecentMessagesWindow / time.Minute)
+	if err := one(`SELECT COALESCE(SUM(messages), 0) FROM agent_activity_minutes WHERE agent_id = ANY($1) AND minute > $2`, &out.RecentMessages, agentIDs, now.Add(-domain.RecentMessagesWindow)); err != nil {
+		return out, err
+	}
 
 	// The latest things that happened.
 	rows, err = s.pool.Query(ctx, `SELECT id, agent_id, kind, detail, at FROM agent_activity_events WHERE agent_id = ANY($1) ORDER BY id DESC LIMIT 30`, agentIDs)

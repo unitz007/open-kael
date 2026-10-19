@@ -241,6 +241,7 @@ type recordingActivity struct {
 }
 
 func (r *recordingActivity) PersonActive(context.Context, string, string) {}
+func (r *recordingActivity) MessageHandled(context.Context, string)       {}
 func (r *recordingActivity) ActivityEvent(_ context.Context, agentID string, kind domain.ActivityKind, detail string) {
 	r.mu.Lock()
 	r.ev = append(r.ev, agentID+"|"+string(kind)+"|"+detail)

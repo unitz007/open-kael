@@ -423,3 +423,11 @@ CREATE TABLE IF NOT EXISTS agent_activity_events (
 );
 CREATE INDEX IF NOT EXISTS idx_agent_activity_events_agent ON agent_activity_events (agent_id, id DESC);
 CREATE INDEX IF NOT EXISTS idx_agent_activity_events_at ON agent_activity_events (at);
+
+-- How many messages an agent handled each minute (a count and nothing else), kept for a day.
+CREATE TABLE IF NOT EXISTS agent_activity_minutes (
+    agent_id TEXT NOT NULL REFERENCES agents (id) ON DELETE CASCADE,
+    minute   TIMESTAMPTZ NOT NULL,
+    messages INT NOT NULL DEFAULT 0,
+    PRIMARY KEY (agent_id, minute)
+);

@@ -1251,6 +1251,9 @@ func (h *Host) HandleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 	unattended := domain.IsUnattended(ctx)
 	if !unattended {
 		h.notePersonActive(hosted, conv)
+		if conv.UserID != "" {
+			h.noteMessage(hosted)
+		}
 	}
 	if !unattended {
 		// With nobody there there is no one to approve, answer a question or sign in.

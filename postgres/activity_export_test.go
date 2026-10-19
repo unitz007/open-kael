@@ -55,3 +55,16 @@ func (s *Store) AgeEventsForTest(ctx context.Context, agentID string, days int) 
 	_, err := s.pool.Exec(ctx, `UPDATE agent_activity_events SET at = NOW() - make_interval(days => $2) WHERE agent_id = $1`, agentID, days)
 	return err
 }
+
+// AddOldMessagesForTest records n messages as if they were handled a while ago.
+func (s *Store) AddOldMessagesForTest(ctx context.Context, agentID string, ago time.Duration, n int) error {
+	_, err := s.pool.Exec(ctx, `INSERT INTO agent_activity_minutes (agent_id, minute, messages) VALUES ($1, $2, $3) ON CONFLICT (agent_id, minute) DO UPDATE SET messages = EXCLUDED.messages`,
+		agentID, time.Now().UTC().Add(-ago).Truncate(time.Minute), n)
+	return err
+}
+
+func (s *Store) MinuteRowsForTest(ctx context.Context, agentID string) int {
+	var n int
+	_ = s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM agent_activity_minutes WHERE agent_id = $1`, agentID).Scan(&n)
+	return n
+}

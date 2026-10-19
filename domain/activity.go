@@ -31,6 +31,9 @@ type ActivityRecorder interface {
 	PersonActive(ctx context.Context, agentID, person string)
 	// ActivityEvent notes that something happened. detail is cleaned (see CleanActivityDetail).
 	ActivityEvent(ctx context.Context, agentID string, kind ActivityKind, detail string)
+	// MessageHandled counts one message from a person that the agent handled. Only the count, by
+	// the minute, is kept.
+	MessageHandled(ctx context.Context, agentID string)
 }
 
 // ActivityEvent is one thing that happened, with no identity in it.
@@ -77,7 +80,14 @@ type ActivitySummary struct {
 	Topics   []ActivityCount   `json:"topics"`
 	Problems []ActivityProblem `json:"problems"`
 	Events   []ActivityEvent   `json:"events"`
+	// RecentMessages is how many messages the agents handled in the last RecentWindowMinutes:
+	// shown as one line in the feed, not one line per message.
+	RecentMessages      int `json:"recent_messages"`
+	RecentWindowMinutes int `json:"recent_window_minutes"`
 }
+
+// RecentMessagesWindow is how far back "messages handled lately" looks.
+const RecentMessagesWindow = 10 * time.Minute
 
 // MinTopicCount is how often something must have been asked for before it is shown as a topic.
 const MinTopicCount = 3

@@ -14,9 +14,10 @@ import (
 
 // activityLog is a recorder that keeps what it was told.
 type activityLog struct {
-	mu     sync.Mutex
-	people []string // agent|person
-	events []string // agent|kind|detail
+	mu       sync.Mutex
+	people   []string // agent|person
+	events   []string // agent|kind|detail
+	messages []string // agent, one per message handled
 }
 
 func (a *activityLog) PersonActive(_ context.Context, agentID, person string) {
@@ -28,6 +29,26 @@ func (a *activityLog) ActivityEvent(_ context.Context, agentID string, kind doma
 	a.mu.Lock()
 	a.events = append(a.events, agentID+"|"+string(kind)+"|"+detail)
 	a.mu.Unlock()
+}
+func (a *activityLog) MessageHandled(_ context.Context, agentID string) {
+	a.mu.Lock()
+	a.messages = append(a.messages, agentID)
+	a.mu.Unlock()
+}
+func (a *activityLog) waitMessages(n int) []string {
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		a.mu.Lock()
+		got := len(a.messages)
+		a.mu.Unlock()
+		if got >= n {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]string(nil), a.messages...)
 }
 func (a *activityLog) snapshot() ([]string, []string) {
 	a.mu.Lock()
@@ -140,6 +161,7 @@ func TestActivity_WithoutALabelerItIsStillCountedAndRecordingNeverHoldsUpAReply(
 type blockingActivity struct{ release chan struct{} }
 
 func (b *blockingActivity) PersonActive(context.Context, string, string) { <-b.release }
+func (b *blockingActivity) MessageHandled(context.Context, string)       { <-b.release }
 func (b *blockingActivity) ActivityEvent(context.Context, string, domain.ActivityKind, string) {
 	<-b.release
 }
@@ -195,5 +217,36 @@ func TestActivity_ASignInRequestIsCountedByTheService(t *testing.T) {
 	time.Sleep(150 * time.Millisecond) // anything extra would arrive by now
 	if _, ev := log.snapshot(); len(ev) != 1 || ev[0] != "a1|signin|Aegis" {
 		t.Fatalf("one request, one count: %q", ev)
+	}
+}
+
+// Every message a person sends is counted for the agent, once, as a number and nothing more. What
+// repeating tasks do on their own, and people not signed in, are not messages.
+func TestActivity_EachMessageIsCountedOnceAndTasksAreNot(t *testing.T) {
+	router := &intentRouter{intents: map[string]domain.Intent{"thanks!": domain.IntentChat, "cheers!": domain.IntentChat}}
+	r := newIntentRig(t, router)
+	log := &activityLog{}
+	r.host.SetActivityRecorder(log)
+
+	r.say(t, "C1", "thanks!")
+	r.say(t, "C1", "cheers!")
+	if got := log.waitMessages(2); len(got) != 2 || got[0] != "a1" || got[1] != "a1" {
+		t.Fatalf("two messages, two counts, for the agent: %q", got)
+	}
+	// Someone who has not signed in is not a person to count.
+	anon := domain.ConversationRef{Provider: "slack", ChatID: "C9", IdentityID: "id_slack", SenderID: "C9"}
+	if _, err := r.host.HandleTurn(context.Background(), r.hosted, anon, "thanks!"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.host.RunScheduledTask(context.Background(), "a1", "u1", "id_slack", "C1", "check my calendar"); err != nil {
+		t.Fatal(err)
+	}
+	waitTexts(r.box, 4)
+	time.Sleep(100 * time.Millisecond)
+	log.mu.Lock()
+	n := len(log.messages)
+	log.mu.Unlock()
+	if n != 2 {
+		t.Errorf("a repeating task is not a message: %d", n)
 	}
 }

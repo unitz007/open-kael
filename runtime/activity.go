@@ -57,6 +57,15 @@ func (h *Host) notePersonActive(hosted *HostedAgent, conv domain.ConversationRef
 	h.record(func(ctx context.Context) { h.activity.PersonActive(ctx, agentID, person) })
 }
 
+// noteMessage counts a message the agent handled, by the minute. Only the count is kept.
+func (h *Host) noteMessage(hosted *HostedAgent) {
+	if h.activity == nil {
+		return
+	}
+	agentID := hosted.Agent.ID
+	h.record(func(ctx context.Context) { h.activity.MessageHandled(ctx, agentID) })
+}
+
 func (h *Host) noteEvent(hosted *HostedAgent, kind domain.ActivityKind, detail string) {
 	if h.activity == nil {
 		return
