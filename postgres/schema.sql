@@ -319,6 +319,39 @@ CREATE TABLE IF NOT EXISTS user_integration_notes (
     PRIMARY KEY (user_id, integration_id)
 );
 
+-- profile_details: what an agent has learned about a person, one named detail per row, so changing
+-- one never touches another. scope is 'personal' or an integration ID (the map for one connected app).
+CREATE TABLE IF NOT EXISTS profile_details (
+    user_id      TEXT        NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    scope        TEXT        NOT NULL,
+    key          TEXT        NOT NULL,
+    value        TEXT        NOT NULL,
+    source       TEXT        NOT NULL DEFAULT 'said',
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    confirmed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, scope, key)
+);
+
+-- profile_declined: values a person refused for a detail, so the same value is not asked again in other words.
+-- value_norm is the value with case, accents, punctuation and spacing set aside.
+CREATE TABLE IF NOT EXISTS profile_declined (
+    user_id     TEXT        NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    scope       TEXT        NOT NULL,
+    key         TEXT        NOT NULL,
+    value_norm  TEXT        NOT NULL,
+    declined_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, scope, key, value_norm)
+);
+
+-- profile_migrations: a person's older free-text note for a scope has been moved into details.
+CREATE TABLE IF NOT EXISTS profile_migrations (
+    user_id     TEXT        NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    scope       TEXT        NOT NULL,
+    migrated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, scope)
+);
+
 -- user_agent_configs: per-user personal instructions for one Agent. Injected
 -- into the system prompt so the agent can personalise responses to each user.
 CREATE TABLE IF NOT EXISTS user_agent_configs (
