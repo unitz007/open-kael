@@ -536,3 +536,6 @@ BEGIN
     ALTER TABLE users RENAME TO users_before_split;
 END
 $$;
+
+-- When the email-link state of a channel was last set, so that "awaiting an email" can lapse.
+ALTER TABLE messenger_channels ADD COLUMN IF NOT EXISTS email_link_state_at TIMESTAMPTZ;

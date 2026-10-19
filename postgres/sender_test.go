@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/unitz007/open-kael/domain"
 	"github.com/unitz007/open-kael/postgres"
@@ -160,4 +161,60 @@ func countRows(t *testing.T, s *postgres.Store, person string) int {
 		t.Fatal(err)
 	}
 	return len(chs)
+}
+
+func TestMessengerChannel_EmailLinkStateComesBackFromEveryLookup(t *testing.T) {
+	s, run := botWorld(t)
+	ctx := context.Background()
+	person(t, s, "ada")
+	channel(run, "c1", "tg1", "ada", "100", "sender1")
+
+	// Nothing set yet.
+	ch, err := s.GetMessengerChannelByIdentityAndRef(ctx, "tg1", "100")
+	if err != nil || ch.EmailLinkState != "" || ch.EmailLinkStateAt != nil {
+		t.Fatalf("%+v %v", ch, err)
+	}
+
+	before := time.Now().Add(-2 * time.Second)
+	if err := s.SetMessengerChannelEmailLinkState(ctx, "tg1", "100", "awaiting"); err != nil {
+		t.Fatal(err)
+	}
+	byRef, _ := s.GetMessengerChannelByIdentityAndRef(ctx, "tg1", "100")
+	bySender, _ := s.GetMessengerChannelByIdentityAndSender(ctx, "tg1", "sender1")
+	list, _ := s.ListMessengerChannelsByUser(ctx, "ada")
+	if len(list) != 1 {
+		t.Fatalf("%+v", list)
+	}
+	for name, got := range map[string]*domain.MessengerChannel{"by chat": byRef, "by sender": bySender, "in the list": list[0]} {
+		if got.EmailLinkState != "awaiting" {
+			t.Errorf("%s: the state is read back (it never was): %q", name, got.EmailLinkState)
+		}
+		if got.EmailLinkStateAt == nil || got.EmailLinkStateAt.Before(before) || got.EmailLinkStateAt.After(time.Now().Add(time.Minute)) {
+			t.Errorf("%s: and when it was set: %v", name, got.EmailLinkStateAt)
+		}
+		if got.EffectiveEmailLinkState(time.Now()) != "awaiting" {
+			t.Errorf("%s: a fresh wait counts", name)
+		}
+	}
+
+	// Saving the channel again (every message resolves it) leaves the state alone.
+	if err := s.SaveMessengerChannel(ctx, &domain.MessengerChannel{ID: "c1", IdentityID: "tg1", UserID: "ada", ChannelRef: "100", SenderID: "sender1"}); err != nil {
+		t.Fatal(err)
+	}
+	if again, _ := s.GetMessengerChannelByIdentityAndRef(ctx, "tg1", "100"); again.EmailLinkState != "awaiting" {
+		t.Errorf("saving the channel must not forget the wait: %q", again.EmailLinkState)
+	}
+
+	// An old wait, as the database would hold it after the person wandered off, no longer counts.
+	run(`UPDATE messenger_channels SET email_link_state_at = now() - interval '2 hours' WHERE id = 'c1'`)
+	old, _ := s.GetMessengerChannelByIdentityAndRef(ctx, "tg1", "100")
+	if old.EffectiveEmailLinkState(time.Now()) != "" {
+		t.Error("a wait from hours ago does not capture the next message")
+	}
+	// A row from before the time was kept.
+	run(`UPDATE messenger_channels SET email_link_state_at = NULL WHERE id = 'c1'`)
+	legacy, _ := s.GetMessengerChannelByIdentityAndRef(ctx, "tg1", "100")
+	if legacy.EmailLinkStateAt != nil || legacy.EffectiveEmailLinkState(time.Now()) != "" {
+		t.Errorf("%+v", legacy)
+	}
 }

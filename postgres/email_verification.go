@@ -11,7 +11,7 @@ import (
 
 func (s *Store) SetMessengerChannelEmailLinkState(ctx context.Context, identityID, channelRef, state string) error {
 	_, err := s.pool.Exec(ctx, `
-		UPDATE messenger_channels SET email_link_state = $1
+		UPDATE messenger_channels SET email_link_state = $1, email_link_state_at = NOW()
 		WHERE identity_id = $2 AND channel_ref = $3
 	`, state, identityID, channelRef)
 	return err

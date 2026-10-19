@@ -386,57 +386,10 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 		}
 	}
 
-	// Email-link flow: runs after onboarding so the user is introduced first.
-	// Prompts for an email address to enable cross-platform identity linking.
-	// Entirely optional — "skip" opts out permanently on this channel.
-	if h.emailLinkChecker != nil && msg.Conversation.UserID != "" {
-		emailKey := msg.Conversation.IdentityID + ":" + msg.Conversation.ChatID
-
-		_, inMemAwaiting := h.pendingEmailLinks.Load(emailKey)
-
-		// If not in memory, check DB state (handles restarts between prompt and reply).
-		if !inMemAwaiting && h.emailLinkStateGetter != nil {
-			if s, err := h.emailLinkStateGetter(ctx, msg.Conversation.IdentityID, msg.Conversation.ChatID); err == nil {
-				inMemAwaiting = s == "awaiting"
-			}
-		}
-
-		if inMemAwaiting {
-			h.pendingEmailLinks.Delete(emailKey)
-			text := strings.TrimSpace(msg.Text)
-
-			if strings.EqualFold(text, "skip") {
-				if h.emailLinkStateSetter != nil {
-					_ = h.emailLinkStateSetter(ctx, msg.Conversation.IdentityID, msg.Conversation.ChatID, "skipped")
-				}
-				h.deliverBestEffort(ctx, hosted, msg.Conversation, "No problem — you can always link your account later by sharing your email.")
-				return
-			}
-
-			email := extractEmail(text)
-			if email == "" {
-				// Re-arm the in-memory awaiting so the next message is treated as the email too.
-				h.pendingEmailLinks.Store(emailKey, true)
-				h.deliverBestEffort(ctx, hosted, msg.Conversation, "That doesn't look like a valid email address. Please try again, or type 'skip'.")
-				return
-			}
-			text = email
-
-			if h.emailLinkInitiator != nil {
-				if err := h.emailLinkInitiator(ctx, msg.Conversation.UserID, msg.Conversation.IdentityID, msg.Conversation.ChatID, text); err != nil {
-					log.Printf("runtime: agent %q: email link initiator: %v", hosted.Agent.ID, err)
-					h.deliverBestEffort(ctx, hosted, msg.Conversation, "Something went wrong sending the verification email. Please try again.")
-					return
-				}
-			}
-			if h.emailLinkStateSetter != nil {
-				_ = h.emailLinkStateSetter(ctx, msg.Conversation.IdentityID, msg.Conversation.ChatID, "sent")
-			}
-			h.deliverBestEffort(ctx, hosted, msg.Conversation, "Check your inbox and click the link to verify your email address. Once verified your account will be linked across platforms.")
-			return
-		}
-
-		// Auto-prompt removed — email linking is now user-initiated via /settings.
+	// Email-link flow: runs after onboarding so the user is introduced first. A reply to "send me your
+	// email" is taken here and never reaches the agent.
+	if h.handleEmailLinkReply(ctx, hosted, msg) {
+		return
 	}
 
 	// They wrote to the agent, so they are active, even if they have yet to connect something.
@@ -788,6 +741,69 @@ func (h *Host) handleInstructionsSubmission(ctx context.Context, hosted *HostedA
 	h.deliverBestEffort(ctx, hosted, msg.Conversation, "Got it! I've saved your personal instructions and will keep them in mind going forward.")
 }
 
+// awaitingEmail reports whether this chat was asked for an email address a moment ago (see
+// domain.EmailLinkAwaitingFor), either in this process or, if the server has restarted since, as saved
+// in the database. A wait that has lapsed is forgotten.
+func (h *Host) awaitingEmail(ctx context.Context, key string, conv domain.ConversationRef) bool {
+	if v, ok := h.pendingEmailLinks.Load(key); ok {
+		if at, isTime := v.(time.Time); isTime && time.Since(at) <= domain.EmailLinkAwaitingFor {
+			return true
+		}
+		h.pendingEmailLinks.Delete(key)
+	}
+	if h.emailLinkStateGetter != nil {
+		if s, err := h.emailLinkStateGetter(ctx, conv.IdentityID, conv.ChatID); err == nil {
+			return s == "awaiting"
+		}
+	}
+	return false
+}
+
+// handleEmailLinkReply handles a message from a chat that was asked for its email address (by
+// tapping "Link Account" in settings): "skip" cancels, an address starts the verification, anything
+// else is asked for again. It reports whether the message was taken, so it does not go on to the agent.
+// Entirely optional: a chat that was never asked is untouched.
+func (h *Host) handleEmailLinkReply(ctx context.Context, hosted *HostedAgent, msg domain.InboundMessage) bool {
+	if h.emailLinkChecker == nil || msg.Conversation.UserID == "" {
+		return false
+	}
+	emailKey := msg.Conversation.IdentityID + ":" + msg.Conversation.ChatID
+	if !h.awaitingEmail(ctx, emailKey, msg.Conversation) {
+		return false
+	}
+	h.pendingEmailLinks.Delete(emailKey)
+	text := strings.TrimSpace(msg.Text)
+
+	if strings.EqualFold(text, "skip") {
+		if h.emailLinkStateSetter != nil {
+			_ = h.emailLinkStateSetter(ctx, msg.Conversation.IdentityID, msg.Conversation.ChatID, "skipped")
+		}
+		h.deliverBestEffort(ctx, hosted, msg.Conversation, "No problem — you can always link your account later by sharing your email.")
+		return true
+	}
+
+	email := extractEmail(text)
+	if email == "" {
+		// Ask again: the next message is treated as the email too, for another while.
+		h.pendingEmailLinks.Store(emailKey, time.Now())
+		h.deliverBestEffort(ctx, hosted, msg.Conversation, "That doesn't look like a valid email address. Please try again, or type 'skip'.")
+		return true
+	}
+
+	if h.emailLinkInitiator != nil {
+		if err := h.emailLinkInitiator(ctx, msg.Conversation.UserID, msg.Conversation.IdentityID, msg.Conversation.ChatID, email); err != nil {
+			log.Printf("runtime: agent %q: email link initiator: %v", hosted.Agent.ID, err)
+			h.deliverBestEffort(ctx, hosted, msg.Conversation, "Something went wrong sending the verification email. Please try again.")
+			return true
+		}
+	}
+	if h.emailLinkStateSetter != nil {
+		_ = h.emailLinkStateSetter(ctx, msg.Conversation.IdentityID, msg.Conversation.ChatID, "sent")
+	}
+	h.deliverBestEffort(ctx, hosted, msg.Conversation, "Check your inbox and click the link to verify your email address. Once verified your account will be linked across platforms.")
+	return true
+}
+
 // handleLinkAccountCallback handles the kael_sm:link_account button tap.
 // It closes the settings menu, sets pending email link state, and prompts the
 // user to type their email address. The existing pendingEmailLinks reply handler
@@ -804,7 +820,7 @@ func (h *Host) handleLinkAccountCallback(ctx context.Context, hosted *HostedAgen
 
 	// Arm the pending email link state.
 	emailKey := msg.Conversation.IdentityID + ":" + msg.Conversation.ChatID
-	h.pendingEmailLinks.Store(emailKey, true)
+	h.pendingEmailLinks.Store(emailKey, time.Now())
 	if h.emailLinkStateSetter != nil {
 		_ = h.emailLinkStateSetter(ctx, msg.Conversation.IdentityID, msg.Conversation.ChatID, "awaiting")
 	}

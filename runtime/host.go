@@ -341,7 +341,7 @@ type Host struct {
 	// sends the verification email. Called when the user provides their email address.
 	emailLinkInitiator func(ctx context.Context, userID, identityID, channelRef, email string) error
 
-	// pendingEmailLinks tracks channels that have been prompted for an email and
+	// pendingEmailLinks (channel → the time it was asked) tracks channels that have been prompted for an email and
 	// are waiting for the user's reply. Key is "identityID:chatID".
 	pendingEmailLinks sync.Map
 

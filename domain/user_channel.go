@@ -23,6 +23,23 @@ type MessengerChannel struct {
 	// Values: "" (not started), "awaiting" (prompt sent, waiting for email),
 	// "sent" (verification email sent), "skipped" (user opted out).
 	EmailLinkState string `json:"email_link_state,omitempty"`
+	// EmailLinkStateAt is when EmailLinkState was last set.
+	EmailLinkStateAt *time.Time `json:"email_link_state_at,omitempty"`
+}
+
+// EmailLinkAwaitingFor is how long a channel waits for the person to reply with their email address
+// after tapping "Link Account". After that the next message is just a message again: without this,
+// someone who tapped the button and wandered off would have their next ordinary message treated as
+// an email address, and be asked for one again and again.
+const EmailLinkAwaitingFor = 15 * time.Minute
+
+// EffectiveEmailLinkState is EmailLinkState as it stands at now: a channel that has been "awaiting" an
+// email for longer than EmailLinkAwaitingFor (or from before the time was kept) is no longer waiting.
+func (c *MessengerChannel) EffectiveEmailLinkState(now time.Time) string {
+	if c.EmailLinkState == "awaiting" && (c.EmailLinkStateAt == nil || now.Sub(*c.EmailLinkStateAt) > EmailLinkAwaitingFor) {
+		return ""
+	}
+	return c.EmailLinkState
 }
 
 // UserChannel is a deprecated alias kept during migration. Use MessengerChannel.
