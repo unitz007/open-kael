@@ -143,25 +143,39 @@ func (h *Host) PlanWake(ctx context.Context, req WakeRequest) (WakePlan, error) 
 			"Give me a time of day instead, or connect what it depends on."}, nil
 	}
 	actions = append(actions, buildGetCurrentTimeAction(), st.setNextWake(), st.cannotPlan(), buildFinishAction(false))
+	canAct := st.mayActNow()
+	if canAct {
+		actions = append(actions, st.confirmMoment())
+	}
 
 	messages := []domain.Message{
-		{Role: domain.RoleSystem, Content: wakePrompt(req, loc)},
+		{Role: domain.RoleSystem, Content: wakePrompt(req, loc, canAct)},
 		{Role: domain.RoleUser, Content: "Work out when this should happen."},
 	}
-	res, _, err := domain.NewNativeLoop(hosted.Agent.LLMs, maxWakeIterating).Run(ctx, messages, actions)
+	loop := domain.NewNativeLoop(hosted.Agent.LLMs, maxWakeIterating)
+	res, final, err := loop.Run(ctx, messages, actions)
 	if err != nil {
 		return WakePlan{}, fmt.Errorf("PlanWake: %w", err)
 	}
-	if res != nil && res.Status == domain.LoopStatusError && st.plan == nil && st.say == "" {
-		return WakePlan{}, fmt.Errorf("PlanWake: %w (%s)", ErrNoWakePlan, res.Content)
+	if !st.decided() {
+		// It finished without saying when to wake or why it couldn't: one reminder of what is needed.
+		nudge := "You have not set the next wake-up yet. Call set_next_wake with the time and the reason (or cannot_plan if you cannot find it out), then call finish."
+		if res2, _, err2 := loop.Run(ctx, append(final, domain.Message{Role: domain.RoleUser, Content: nudge}), actions); err2 == nil {
+			res = res2
+		}
 	}
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	switch {
 	case st.plan != nil:
-		return *st.plan, nil
+		plan := *st.plan
+		plan.DoItNow = st.doNow && canAct
+		return plan, nil
 	case st.say != "":
 		return WakePlan{Say: st.say}, nil
+	}
+	if res != nil && res.Content != "" {
+		return WakePlan{}, fmt.Errorf("PlanWake: %w (%s)", ErrNoWakePlan, res.Content)
 	}
 	return WakePlan{}, ErrNoWakePlan
 }
@@ -175,9 +189,43 @@ type wakeState struct {
 	lookups int // look-ups that worked
 	plan    *WakePlan
 	say     string
+	doNow   bool // confirm_moment was called
 }
 
-func wakePrompt(req WakeRequest, loc *time.Location) string {
+func (st *wakeState) decided() bool {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.plan != nil || st.say != ""
+}
+
+// mayActNow reports whether this planning step is the wake-up of an act time that is still on
+// time: the only step in which the agent may say the job is done now.
+func (st *wakeState) mayActNow() bool {
+	r := st.req
+	return r.Due && r.Last != nil && r.Last.Kind == WakeAct && r.Now.Sub(r.Last.At) <= LateWake
+}
+
+func (st *wakeState) confirmMoment() *domain.BoundAction {
+	return &domain.BoundAction{
+		Spec: domain.ActionSpec{
+			Name: "confirm_moment",
+			Description: "Call this when the time you planned has now come and, after looking everything up again, it still holds: the job should be done right now. " +
+				"Do not call it if the time moved or is not here yet. Then still call set_next_wake for the one after this.",
+			InputSchema: domain.Schema{Type: domain.SchemaTypeObject},
+		},
+		Invoke: func(context.Context, map[string]any) (any, error) {
+			st.mu.Lock()
+			defer st.mu.Unlock()
+			if st.lookups == 0 {
+				return nil, errors.New("look it up again first: use your tools to check that the time still holds")
+			}
+			st.doNow = true
+			return map[string]any{"message": "Noted: the job will be done now. Now call set_next_wake for the one after."}, nil
+		},
+	}
+}
+
+func wakePrompt(req WakeRequest, loc *time.Location, canAct bool) string {
 	var b strings.Builder
 	b.WriteString("You decide WHEN a job should next happen. You do not do the job now.\n\n")
 	fmt.Fprintf(&b, "The job: %s\n", req.Action)
@@ -190,7 +238,11 @@ func wakePrompt(req WakeRequest, loc *time.Location) string {
 			b.WriteString("That time has now come.\n")
 		}
 	}
-	b.WriteString(strings.ReplaceAll(`
+	step4 := "This is not the wake-up of an act time, so the job is not done now: just give the next wake-up."
+	if canAct {
+		step4 = `This is the wake-up of an "act" time. Look everything up again. If the time you planned has come and still holds, call confirm_moment (the job is then done right now), and then call set_next_wake for the NEXT time (the next time the job should happen, or when to look for it). If something moved, do not call confirm_moment: just call set_next_wake with the new time.`
+	}
+	b.WriteString(strings.NewReplacer("{{zone}}", loc.String(), "{{step4}}", step4).Replace(`
 How to decide:
 1. Find out when the thing the person's words refer to really happens, using your tools. Never answer from memory: dates and times you remember are often out of date, and they move. Times your tools return are usually UTC; convert carefully.
 2. Work out the exact moment the job should happen from it (for example "2 hours before" a deadline is the deadline minus 2 hours). Check your sum. If the next one has already passed or is too close, use the one after it.
@@ -198,10 +250,10 @@ How to decide:
    - kind "act": the exact moment to do the job. You will be woken then and must confirm it still holds, with fresh facts, before it is done.
    - kind "check": a time to look again, because the moment isn't known yet or is far away. Choose it yourself: just before it might change, or soon after something is announced. Never sooner than an hour from now.
    - at: the time with its offset, like 2026-10-25T08:30:00+01:00. Never more than 7 days ahead: if the moment is further off, set a "check" before then.
-   - reason: one plain sentence the person will read, about THIS next wake-up only (never about what you are doing now), naming what you found, with times on the person's own clock (%s), for example "The deadline is Saturday 10:30, so two hours before is 8:30."
-4. If this is the wake-up of an "act" time and everything you look up still holds: set do_it_now to true, and in the same call give the NEXT wake-up (the next time the job should happen, or when to look for it). If something moved, do not set do_it_now: just give the new time.
+   - reason: one plain sentence the person will read, about THIS next wake-up only (never about what you are doing now), naming what you found, with times on the person's own clock ({{zone}}), for example "The deadline is Saturday 10:30, so two hours before is 8:30."
+4. {{step4}}
 5. If you cannot find out with the tools you have, call cannot_plan with one plain sentence for the person: what you couldn't find, and what you'd need from them.
-Then call finish. Use plain words everywhere the person might read them; never mention tools, schedules or prompts.`, "%s", loc.String()))
+Then call finish. Use plain words everywhere the person might read them; never mention tools, schedules or prompts.`))
 	return b.String()
 }
 
@@ -230,10 +282,9 @@ func (st *wakeState) setNextWake() *domain.BoundAction {
 			InputSchema: domain.Schema{
 				Type: domain.SchemaTypeObject,
 				Properties: map[string]domain.Schema{
-					"at":        {Type: domain.SchemaTypeString, Description: "The time, with its offset, like 2026-10-25T08:30:00+01:00."},
-					"kind":      {Type: domain.SchemaTypeString, Description: "act (do the job then) or check (look again then).", Enum: []string{"act", "check"}},
-					"reason":    {Type: domain.SchemaTypeString, Description: "One plain sentence for the person: what you found and how you got this time."},
-					"do_it_now": {Type: domain.SchemaTypeBoolean, Description: "Only when woken at an act time and it still holds: do the job now. Then at/kind/reason are for the NEXT one."},
+					"at":     {Type: domain.SchemaTypeString, Description: "The time, with its offset, like 2026-10-25T08:30:00+01:00."},
+					"kind":   {Type: domain.SchemaTypeString, Description: "act (do the job then) or check (look again then).", Enum: []string{"act", "check"}},
+					"reason": {Type: domain.SchemaTypeString, Description: "One plain sentence for the person about this next wake-up only: what you found and how you got this time. Never say what is being done now."},
 				},
 				Required: []string{"at", "kind", "reason"},
 			},
@@ -293,16 +344,7 @@ func (st *wakeState) validate(input map[string]any) (WakePlan, error) {
 			now.Add(MaxWakeAhead).UTC().Format(time.RFC3339))
 	}
 
-	doIt, _ := input["do_it_now"].(bool)
-	if doIt {
-		switch {
-		case !st.req.Due || st.req.Last == nil || st.req.Last.Kind != WakeAct:
-			return WakePlan{}, errors.New("it is not the moment: do_it_now is only for the wake-up of an act time")
-		case now.Sub(st.req.Last.At) > LateWake:
-			return WakePlan{}, errors.New("the moment has passed too long ago to do it now: give the next time instead, without do_it_now")
-		}
-	}
-	return WakePlan{At: at, Kind: kind, Reason: reason, DoItNow: doIt}, nil
+	return WakePlan{At: at, Kind: kind, Reason: reason}, nil
 }
 
 func parseWakeTime(s string, loc *time.Location) (time.Time, error) {

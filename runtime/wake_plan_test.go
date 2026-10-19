@@ -197,37 +197,43 @@ func TestPlanWake_BadTimesAreRefusedAndTheAgentCorrectsThem(t *testing.T) {
 	}
 }
 
-// At an act time the agent may say "do it now" only after looking again, only on time, and only for
-// an act wake-up; and then it gives the next wake-up in the same breath.
-func TestPlanWake_DoItNowOnlyAtAnActWakeUpOnTimeAfterLookingAgain(t *testing.T) {
-	last := &runtime.WakeRecord{At: time.Date(2026, 10, 21, 11, 59, 0, 0, time.UTC), Kind: runtime.WakeAct, Reason: "8:30"}
-	next := map[string]any{"at": "2026-10-28T08:30:00Z", "kind": "act", "reason": "Next deadline.", "do_it_now": true}
+func confirmMoment() func([]domain.Message) []domain.ToolCall {
+	return func([]domain.Message) []domain.ToolCall { return call("c", "confirm_moment", map[string]any{}) }
+}
 
-	r := newWakeRig(t, true, lookUp("l1"), setWake(next), finish())
+// At an act wake-up the agent may say the moment has come only after looking again and only on
+// time; and it gives the next wake-up as well.
+func TestPlanWake_ConfirmingTheMomentOnlyCountsAtAnOnTimeActWakeUpAfterLookingAgain(t *testing.T) {
+	last := &runtime.WakeRecord{At: time.Date(2026, 10, 21, 11, 59, 0, 0, time.UTC), Kind: runtime.WakeAct, Reason: "8:30"}
+	next := map[string]any{"at": "2026-10-28T08:30:00Z", "kind": "act", "reason": "Next deadline."}
+
+	r := newWakeRig(t, true, lookUp("l1"), confirmMoment(), setWake(next), finish())
 	plan, err := r.plan(true, last)
 	if err != nil || !plan.DoItNow || !plan.At.Equal(time.Date(2026, 10, 28, 8, 30, 0, 0, time.UTC)) {
 		t.Fatalf("on time after looking again: %+v %v", plan, err)
 	}
 
-	// Not at a wake-up: do_it_now is refused, and the agent's fallback (without it) is taken.
-	without := map[string]any{"at": "2026-10-28T08:30:00Z", "kind": "act", "reason": "Next deadline."}
-	r = newWakeRig(t, true, lookUp("l1"), setWake(next), setWake(without), finish())
-	if plan, err = r.plan(false, nil); err != nil || plan.DoItNow {
-		t.Fatalf("a first plan can never be 'do it now': %+v %v", plan, err)
+	// Confirming before looking is refused; once it has looked it counts.
+	r = newWakeRig(t, true, confirmMoment(), lookUp("l1"), confirmMoment(), setWake(next), finish())
+	if plan, err = r.plan(true, last); err != nil || !plan.DoItNow {
+		t.Fatalf("it must look again before the moment can be confirmed, then it can: %+v %v", plan, err)
+	}
+	r = newWakeRig(t, true, confirmMoment(), setWake(next), lookUp("l1"), setWake(next), finish())
+	if plan, err = r.plan(true, last); err != nil || plan.DoItNow {
+		t.Fatalf("a confirmation with no look-up behind it never counts: %+v %v", plan, err)
 	}
 
-	// A check wake-up never acts either.
+	// Not at a wake-up, at a look-again wake-up, or too late: the action is not even offered.
 	chk := &runtime.WakeRecord{At: last.At, Kind: runtime.WakeCheck, Reason: "look again"}
-	r = newWakeRig(t, true, lookUp("l1"), setWake(next), setWake(without), finish())
-	if plan, err = r.plan(true, chk); err != nil || plan.DoItNow {
-		t.Fatalf("a check wake-up never acts: %+v %v", plan, err)
-	}
-
-	// Too late: the moment passed two hours ago.
-	late := &runtime.WakeRecord{At: r.now.Add(-2 * time.Hour), Kind: runtime.WakeAct, Reason: "8:30"}
-	r = newWakeRig(t, true, lookUp("l1"), setWake(next), setWake(without), finish())
-	if plan, err = r.plan(true, late); err != nil || plan.DoItNow {
-		t.Fatalf("too late to act: %+v %v", plan, err)
+	late := &runtime.WakeRecord{At: time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC), Kind: runtime.WakeAct, Reason: "8:30"}
+	for name, c := range map[string]struct {
+		due  bool
+		last *runtime.WakeRecord
+	}{"a first plan": {false, nil}, "a look-again wake-up": {true, chk}, "too late": {true, late}} {
+		r = newWakeRig(t, true, lookUp("l1"), confirmMoment(), setWake(next), finish())
+		if plan, err = r.plan(c.due, c.last); err != nil || plan.DoItNow {
+			t.Errorf("%s must never be done now: %+v %v", name, plan, err)
+		}
 	}
 }
 
