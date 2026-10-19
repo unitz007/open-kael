@@ -539,3 +539,9 @@ $$;
 
 -- When the email-link state of a channel was last set, so that "awaiting an email" can lapse.
 ALTER TABLE messenger_channels ADD COLUMN IF NOT EXISTS email_link_state_at TIMESTAMPTZ;
+
+-- Emails are kept lower case and trimmed (domain.NormalizeEmail). Bring older rows in line, leaving alone
+-- any group that would then be the same address twice: those need a person to decide.
+UPDATE accounts SET email = lower(btrim(email))
+WHERE email IS NOT NULL AND email <> lower(btrim(email))
+  AND (SELECT count(*) FROM accounts b WHERE lower(btrim(b.email)) = lower(btrim(accounts.email))) = 1;

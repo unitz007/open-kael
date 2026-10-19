@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 
 	"github.com/jackc/pgx/v5"
 
@@ -126,7 +125,7 @@ func (s *Store) EnsurePersonForAccount(ctx context.Context, accountID string) (*
 
 // LinkEmail attaches a verified email to a person (see domain.Store).
 func (s *Store) LinkEmail(ctx context.Context, personID, email string) (string, error) {
-	email = strings.TrimSpace(email)
+	email = domain.NormalizeEmail(email)
 	if email == "" {
 		return "", fmt.Errorf("postgres: link email: no email")
 	}

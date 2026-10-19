@@ -14,8 +14,8 @@ const accountCols = `id, email, password_hash, email_verified, verification_toke
 func (s *Store) SaveAccount(ctx context.Context, a *domain.Account) error {
 	// An empty email is stored as NULL so the UNIQUE constraint allows several logins without one.
 	var email, person *string
-	if a.Email != "" {
-		email = &a.Email
+	if e := domain.NormalizeEmail(a.Email); e != "" {
+		email = &e
 	}
 	if a.PersonID != "" {
 		person = &a.PersonID
@@ -46,7 +46,7 @@ func (s *Store) GetAccount(ctx context.Context, id string) (*domain.Account, err
 }
 
 func (s *Store) GetAccountByEmail(ctx context.Context, email string) (*domain.Account, error) {
-	return s.getAccountWhere(ctx, `email = $1`, email)
+	return s.getAccountWhere(ctx, `email = $1`, domain.NormalizeEmail(email))
 }
 
 func (s *Store) GetAccountByVerificationToken(ctx context.Context, token string) (*domain.Account, error) {

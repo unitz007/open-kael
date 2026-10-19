@@ -46,6 +46,7 @@ func (s *Server) registerUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	req.Email = domain.NormalizeEmail(req.Email)
 	switch {
 	case req.Email == "" || req.Password == "" || req.FirstName == "" || req.LastName == "":
 		writeError(w, http.StatusBadRequest, errors.New("email, password, first_name, and last_name are required"))
@@ -149,7 +150,7 @@ func (s *Server) loginUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	account, err := s.store.GetAccountByEmail(r.Context(), req.Email)
+	account, err := s.store.GetAccountByEmail(r.Context(), domain.NormalizeEmail(req.Email))
 	if err != nil {
 		// Return the same error for wrong email or wrong password to prevent
 		// user enumeration.

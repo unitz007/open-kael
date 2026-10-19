@@ -443,3 +443,79 @@ func TestSaveAppAuthorization_AConnectionStartedBeforeAMergeLandsOnTheSurvivor(t
 		t.Error("a connection for no one is refused")
 	}
 }
+
+func TestEmails_AreOneLoginWhateverTheCase(t *testing.T) {
+	s, pool := world(t)
+	ctx := context.Background()
+	person(t, s, "p1")
+	person(t, s, "p2")
+
+	if err := s.SaveAccount(ctx, &domain.Account{ID: "acc1", Email: "  Ada@Example.COM ", PersonID: "p1"}); err != nil {
+		t.Fatal(err)
+	}
+	if count(t, pool, `SELECT count(*) FROM accounts WHERE email = 'ada@example.com'`) != 1 {
+		t.Error("kept lower case and trimmed")
+	}
+	for _, typed := range []string{"ada@example.com", "ADA@EXAMPLE.COM", " Ada@Example.com\n"} {
+		if a, err := s.GetAccountByEmail(ctx, typed); err != nil || a.ID != "acc1" {
+			t.Errorf("found by %q: %+v %v", typed, a, err)
+		}
+	}
+	// The same address in another case is the same login, so it cannot be a second one.
+	if err := s.SaveAccount(ctx, &domain.Account{ID: "acc2", Email: "ADA@example.com"}); err == nil {
+		t.Error("a second login for the same address, in another case, is refused")
+	}
+	// Linking finds the existing login whatever the case, and never makes a second.
+	exec(t, pool, `UPDATE accounts SET email_verified = TRUE WHERE id = 'acc1'`)
+	got, err := s.LinkEmail(ctx, "p2", "ADA@Example.com")
+	if err != nil || got != "p1" {
+		t.Fatalf("the verified login's person remains: %q %v", got, err)
+	}
+	if count(t, pool, `SELECT count(*) FROM accounts WHERE lower(email) = 'ada@example.com'`) != 1 {
+		t.Error("still one login for that address")
+	}
+	// A link request keeps the address the same way, so the page and the link agree.
+	if err := s.CreateEmailVerification(ctx, &domain.EmailVerification{Token: "t", PersonID: "p1", Email: " NEW@Example.com ", ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if ev, _ := s.GetEmailVerificationByToken(ctx, "t"); ev.Email != "new@example.com" {
+		t.Errorf("%q", ev.Email)
+	}
+	// An empty address is no address, and several logins without one can coexist.
+	for _, id := range []string{"n1", "n2"} {
+		if err := s.SaveAccount(ctx, &domain.Account{ID: id, Email: "   "}); err != nil {
+			t.Errorf("%s: %v", id, err)
+		}
+	}
+}
+
+func TestMigrate_OlderEmailsAreBroughtToLowerCaseAndCollisionsLeftAlone(t *testing.T) {
+	pool := scratchDB(t)
+	ctx := context.Background()
+	if err := postgres.Migrate(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	// As older versions stored them.
+	exec(t, pool, `INSERT INTO accounts (id, email) VALUES
+		('mixed', 'Mixed@Example.com'), ('spaced', ' spaced@example.com '), ('fine', 'fine@example.com'),
+		('twin1', 'Twin@Example.com'), ('twin2', 'twin@example.com'), ('twin3', 'TWIN@example.com')`)
+	if err := postgres.Migrate(ctx, pool); err != nil {
+		t.Fatalf("a collision must not stop the server starting: %v", err)
+	}
+	str := func(id string) string {
+		var e string
+		if err := pool.QueryRow(ctx, `SELECT email FROM accounts WHERE id = $1`, id).Scan(&e); err != nil {
+			t.Fatal(err)
+		}
+		return e
+	}
+	if str("mixed") != "mixed@example.com" || str("spaced") != "spaced@example.com" || str("fine") != "fine@example.com" {
+		t.Errorf("older rows are normalised: %q %q %q", str("mixed"), str("spaced"), str("fine"))
+	}
+	if str("twin1") != "Twin@Example.com" || str("twin2") != "twin@example.com" || str("twin3") != "TWIN@example.com" {
+		t.Errorf("the same address three times is left for a person to settle, not guessed: %q %q %q", str("twin1"), str("twin2"), str("twin3"))
+	}
+	if err := postgres.Migrate(ctx, pool); err != nil {
+		t.Errorf("and it is repeatable: %v", err)
+	}
+}
