@@ -1597,8 +1597,16 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 	// (a repeating task) reads and reports, whatever the stored words sound like. It is also never
 	// the place to set up another repeating task.
 	if domain.IsUnattended(ctx) && (intent == domain.IntentExecute || intent == domain.IntentSchedule) {
-		log.Printf("skill-router: unattended — %q is carried out as a look-up only", intent)
-		intent = domain.IntentRecommend
+		if len(domain.UnattendedAllowed(ctx)) > 0 {
+			// The person agreed to this task making changes, with these actions: it is a request
+			// to DO something, held to it like any other (the change really happens or it says it didn't).
+			intent = domain.IntentExecute
+		} else {
+			log.Printf("skill-router: unattended — %q is carried out as a look-up only", intent)
+			intent = domain.IntentRecommend
+		}
+	} else if domain.IsUnattended(ctx) && intent == domain.IntentRecommend && len(domain.UnattendedAllowed(ctx)) > 0 {
+		intent = domain.IntentExecute
 	}
 
 	log.Printf("skill-router: skills=%v intent=%q", skillNames, intent)
@@ -1716,6 +1724,15 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 		return h.respondDirectly(ctx, hosted, messages, actions)
 	}
 
+	// An unattended run may look things up, and change only what the person agreed to.
+	if domain.IsUnattended(ctx) {
+		mergedTools = limitUnattended(mergedTools, domain.UnattendedAllowed(ctx))
+		if len(mergedTools) == 0 {
+			log.Printf("skill-router: unattended — nothing it may use here — responding directly")
+			return h.respondDirectly(ctx, hosted, messages, actions)
+		}
+	}
+
 	// For a request to DO something: which action(s) must really run for it to be done.
 	allTools := mergedTools
 	reqs := h.requirementsFor(ctx, userText, lastAssistantText(messages), intent, mergedTools)
@@ -1762,6 +1779,22 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 		ctx = domain.WithRequirements(ctx, reqs)
 	}
 	return h.runNativeLoop(ctx, hosted, messages, loopActions)
+}
+
+// limitUnattended keeps what an unattended run may use: every look-up, and only the actions named
+// in allowed for changing things. Anything else that could change something (or is unknown) goes.
+func limitUnattended(tools []*domain.BoundAction, allowed []string) []*domain.BoundAction {
+	ok := make(map[string]bool, len(allowed))
+	for _, n := range allowed {
+		ok[n] = true
+	}
+	var out []*domain.BoundAction
+	for _, t := range tools {
+		if t.Spec.ReadOnly || ok[t.Spec.Name] {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // withRecommendHint prepends a system-level directive so the LLM knows the
@@ -2151,10 +2184,11 @@ func (h *Host) deliverBestEffortID(ctx context.Context, hosted *HostedAgent, con
 // RunScheduledTask carries out a repeating task the person set up: task is what they asked for
 // ("check my calendar and send me a summary"), run now as if they had just written it, with
 // everything a normal message gets (their details, the right capability, the agent's rules) except
-// that nobody is there: it can look things up and report, never change anything, ask a question or
-// wait for an approval (see domain.WithUnattended). The reply goes to (identityID, channelRef).
+// that nobody is there: it can look things up and report, ask no question and wait for no approval, and
+// change only what allowChanges names (what the person agreed to when they set the task up; nothing
+// by default). See domain.WithUnattendedAllowing. The reply goes to (identityID, channelRef).
 // It runs in the background and returns at once.
-func (h *Host) RunScheduledTask(ctx context.Context, agentID, userID, identityID, channelRef, task string) error {
+func (h *Host) RunScheduledTask(ctx context.Context, agentID, userID, identityID, channelRef, task string, allowChanges ...string) error {
 	h.mu.RLock()
 	hosted, ok := h.agents[agentID]
 	h.mu.RUnlock()
@@ -2169,7 +2203,7 @@ func (h *Host) RunScheduledTask(ctx context.Context, agentID, userID, identityID
 	if identity, integration := resolveIdentityAndIntegration(hosted, conv); identity != nil && integration != nil {
 		conv.Provider = integration.Service
 	}
-	ctx = domain.WithUnattended(ctx)
+	ctx = domain.WithUnattendedAllowing(ctx, allowChanges)
 
 	go func() {
 		defer recoverFromPanic(hosted.Agent.ID, "repeating task")

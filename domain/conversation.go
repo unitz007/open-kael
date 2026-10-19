@@ -61,6 +61,7 @@ const (
 	approvalRequesterCtxKey
 	choiceRequesterCtxKey
 	unattendedCtxKey
+	unattendedAllowedCtxKey
 	connectRequesterCtxKey
 	originalMessageCtxKey
 )
@@ -126,6 +127,20 @@ const ChoiceOtherLabel = "Something else"
 // ask the person anything and has no approval to wait for. The router enforces it.
 func WithUnattended(ctx context.Context) context.Context {
 	return context.WithValue(ctx, unattendedCtxKey, true)
+}
+
+// WithUnattendedAllowing marks an unattended turn and names the only actions it may use to change
+// things: what the person agreed to when they set the task up. Everything else stays look-ups only.
+// An empty list is the same as WithUnattended.
+func WithUnattendedAllowing(ctx context.Context, actions []string) context.Context {
+	ctx = WithUnattended(ctx)
+	return context.WithValue(ctx, unattendedAllowedCtxKey, append([]string(nil), actions...))
+}
+
+// UnattendedAllowed returns the actions an unattended turn may change things with (none usually).
+func UnattendedAllowed(ctx context.Context) []string {
+	v, _ := ctx.Value(unattendedAllowedCtxKey).([]string)
+	return v
 }
 
 // IsUnattended reports whether ctx belongs to an unattended turn.
