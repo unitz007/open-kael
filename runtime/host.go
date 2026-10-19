@@ -1644,6 +1644,10 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 			reply, herr := handler(ctx, conv.UserID, hosted.Agent.ID, skillName, userText, conv.IdentityID, conv.ChatID)
 			if herr != nil {
 				log.Printf("skill-router: intent handler %q: %v — falling through to skill loop", intent, herr)
+			} else if strings.TrimSpace(reply) == "" {
+				// The handler already said everything there was to say (it showed buttons, and the
+				// answer or the lack of one is on screen): nothing more is sent.
+				return &domain.LoopResult{Status: domain.LoopStatusComplete}, messages, nil
 			} else {
 				h.deliverBestEffort(ctx, hosted, conv, reply)
 				// Keep the exchange, so "change it to 9am" has something to refer to. The

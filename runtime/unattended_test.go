@@ -139,3 +139,29 @@ func hostedOf(t *testing.T, h *runtime.Host, id string) *runtime.HostedAgent {
 	}
 	return hosted
 }
+
+// A handler that already said everything on screen (it showed buttons, and the answer is there)
+// returns nothing, and then nothing more is sent: no empty message, no stray model call.
+func TestIntentHandler_AnEmptyReplySendsNothingAndAReplyIsDelivered(t *testing.T) {
+	for _, tc := range []struct {
+		reply string
+		want  []string
+	}{{"", nil}, {"   ", nil}, {"hello", []string{"hello"}}} {
+		r := newUnattendedRig(t, domain.IntentSchedule, checkTask)
+		reply := tc.reply
+		r.host.SetIntentHandler(domain.IntentSchedule, func(context.Context, string, string, string, string, string, string) (string, error) {
+			return reply, nil
+		})
+		conv := domain.ConversationRef{Provider: "slack", ChatID: "C1", IdentityID: "id_slack", UserID: "u1", SenderID: "C1"}
+		if _, err := r.host.HandleTurn(context.Background(), hostedOf(t, r.host, "a1"), conv, checkTask); err != nil {
+			t.Fatal(err)
+		}
+		got := r.box.texts()
+		if strings.Join(got, "|") != strings.Join(tc.want, "|") {
+			t.Errorf("reply %q: sent %q, want %q", tc.reply, got, tc.want)
+		}
+		if r.spy.calls() != 0 {
+			t.Errorf("reply %q: the model must not be called after a handler answered: %d", tc.reply, r.spy.calls())
+		}
+	}
+}
