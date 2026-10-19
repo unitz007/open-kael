@@ -556,3 +556,17 @@ func TestLearn_OnePersonAtATime(t *testing.T) {
 		t.Errorf("after the first yes the rest see the new value and have nothing to ask: %d questions", len(b.asked))
 	}
 }
+
+func TestNeverLearned(t *testing.T) {
+	for _, c := range []struct {
+		k, v string
+		want bool
+	}{
+		{"password", "x", true}, {"daily_limit", "5000", true}, {"permissions", "all", true}, {"note", "4111 1111 1111 1111", true},
+		{"residence", "Wolfsburg", false}, {"favourite_club", "Arsenal", false}, {"mayor", "x", false}, {"allowance", "x", false},
+	} {
+		if got := NeverLearned(c.k, c.v); got != c.want {
+			t.Errorf("%s=%s: %v", c.k, c.v, got)
+		}
+	}
+}

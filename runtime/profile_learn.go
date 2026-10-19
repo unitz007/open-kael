@@ -137,6 +137,12 @@ var _ DetailLearning = (*DetailLearner)(nil)
 // on purpose, not picked up from a remark.
 var neverLearnedKey = regexp.MustCompile(`(^|_)(permission|permissions|allow|allowed|disallow|limit|limits|consent|approval|approve|authori[sz]e|authori[sz]ation|autonomy|may|must|never|always)(_|$)`)
 
+// NeverLearned reports whether a detail must not be kept, whatever the source: a secret, or a
+// permission or limit (those are set by the person on purpose, not picked up from a remark).
+func NeverLearned(key, value string) bool {
+	return domain.LooksSensitive(key, value) || neverLearnedKey.MatchString(key)
+}
+
 func (l *DetailLearner) now() time.Time {
 	if l.Now != nil {
 		return l.Now()
@@ -274,7 +280,7 @@ func (l *DetailLearner) consider(ctx context.Context, st *learnState, p DetailPr
 	if !ok || !vok {
 		return
 	}
-	if domain.LooksSensitive(key, value) || neverLearnedKey.MatchString(key) {
+	if NeverLearned(key, value) {
 		return
 	}
 	prop := DetailProposal{Scope: scope, Key: key, Value: value}
