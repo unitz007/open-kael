@@ -158,17 +158,28 @@ func TestScheduledTask_MayChangeOnlyWhatThePersonAgreedTo(t *testing.T) {
 	}
 }
 
-// Being allowed an action that asks for approval does not get around the approval: with nobody
-// there to give it, it fails closed.
-func TestScheduledTask_AnActionThatNeedsApprovalNeverRunsWithNobodyThere(t *testing.T) {
-	r := newChangeRig(t, []string{"send_email"})
-	r.llm.callOne = "send_email"
-	if err := r.host.RunScheduledTask(context.Background(), "a1", "u1", "id_slack", "C1", gymTask, "send_email"); err != nil {
+// An action that asks for approval runs unattended only when the person named it when they set the task up: they
+// were shown it and agreed, and that agreement stands in for approving each use. Anything not named still fails
+// closed, because there is no one to approve it.
+func TestScheduledTask_AnActionThatNeedsApprovalRunsOnlyIfThePersonAgreedToItByName(t *testing.T) {
+	agreed := newChangeRig(t, []string{"send_email"})
+	agreed.llm.callOne = "send_email"
+	if err := agreed.host.RunScheduledTask(context.Background(), "a1", "u1", "id_slack", "C1", gymTask, "send_email"); err != nil {
 		t.Fatal(err)
 	}
-	waitTexts(r.box, 1)
-	if calls := r.fx.calls(); len(calls) != 0 {
-		t.Fatalf("nothing that needs approval runs unattended, even if it was named: %+v", calls)
+	waitTexts(agreed.box, 1)
+	if calls := agreed.fx.calls(); len(calls) != 1 {
+		t.Fatalf("what the person agreed to by name runs, without anyone to approve it: %+v", calls)
+	}
+
+	other := newChangeRig(t, []string{"send_email"})
+	other.llm.callOne = "send_email"
+	if err := other.host.RunScheduledTask(context.Background(), "a1", "u1", "id_slack", "C1", gymTask, "create_event"); err != nil {
+		t.Fatal(err)
+	}
+	waitTexts(other.box, 1)
+	if calls := other.fx.calls(); len(calls) != 0 {
+		t.Fatalf("an action that asks first and was not named never runs unattended: %+v", calls)
 	}
 }
 

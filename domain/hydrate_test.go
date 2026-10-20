@@ -236,3 +236,37 @@ func TestUserApproval_IsAskedForAChangeAndNeverForALookup(t *testing.T) {
 		t.Errorf("a lookup is never asked: %d", n)
 	}
 }
+
+// An unattended run has no one to ask. A change the person agreed to when they set it up runs without the per-use
+// approval; any other change that asks first is refused, never run unapproved.
+func TestUnattendedRun_AgreedChangeRunsWithoutAskingAndAnyOtherIsRefused(t *testing.T) {
+	integration := &domain.Integration{ID: "int_1", Service: "mock"}
+	registry := domain.NewExecutorRegistry()
+	registry.Register("mock", echoExecutor{})
+	tool := &domain.ToolDefinition{ID: "t", Name: "post_comment", Description: "Posts", IntegrationID: integration.ID, Action: "mock.post", RequiresApproval: true,
+		InputSchema: domain.Schema{Type: domain.SchemaTypeObject}}
+	bound, err := domain.HydrateTool(tool, nil, integration, registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attended := domain.WithConversation(context.Background(), domain.ConversationRef{ChatID: "c"})
+	unattended := func(allowed ...string) context.Context { return domain.WithUnattendedAllowing(attended, allowed) }
+	// ran reports whether the call reached the executor (the executor answers with its action).
+	ran := func(ctx context.Context) bool {
+		out, err := bound.Invoke(ctx, map[string]any{})
+		m, ok := out.(map[string]any)
+		return err == nil && ok && m["action"] == "mock.post"
+	}
+	if !ran(unattended("post_comment")) {
+		t.Error("a change the person agreed to runs")
+	}
+	if ran(unattended("something_else")) {
+		t.Error("a change that was not named is refused")
+	}
+	if ran(unattended()) {
+		t.Error("with nothing allowed it is refused")
+	}
+	if ran(attended) {
+		t.Error("an attended run is still asked (and there is no one to ask here)")
+	}
+}

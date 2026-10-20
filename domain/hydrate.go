@@ -101,11 +101,32 @@ func withInputContract(def *ToolDefinition, inner func(ctx context.Context, inpu
 	}
 }
 
+// agreedInAdvance reports whether this is an unattended run (nobody there to ask) that the person set up
+// knowing it may use this ability on its own: they were shown it, by name, and agreed when they set the
+// task or reaction up (see WithUnattendedAllowing). That agreement stands in for approving each use. Nothing
+// else does: a change that was not named is refused by the gates below because there is no one to approve it,
+// and an attended run still asks, whatever was agreed before.
+func agreedInAdvance(ctx context.Context, def *ToolDefinition) bool {
+	if !IsUnattended(ctx) {
+		return false
+	}
+	name := def.ModelName()
+	for _, allowed := range UnattendedAllowed(ctx) {
+		if allowed == name {
+			return true
+		}
+	}
+	return false
+}
+
 // withApprovalGate wraps invoke with a human-approval check. A tool marked
 // RequiresApproval must be approved before its action runs — refusing to
 // execute silently when no ApprovalRequester is attached.
 func withApprovalGate(def *ToolDefinition, inner func(ctx context.Context, input map[string]any) (any, error)) func(ctx context.Context, input map[string]any) (any, error) {
 	return func(ctx context.Context, input map[string]any) (any, error) {
+		if agreedInAdvance(ctx, def) {
+			return inner(ctx, input)
+		}
 		requester, ok := ApprovalRequesterFromContext(ctx)
 		if !ok {
 			return nil, fmt.Errorf("tool %q requires approval, but this run has no ApprovalRequester attached — refusing to run rather than executing unapproved", def.ID)
@@ -402,7 +423,7 @@ func withUserApprovalGate(def *ToolDefinition, inner func(ctx context.Context, i
 	return func(ctx context.Context, input map[string]any) (any, error) {
 		// Approval is for things that change something; a lookup never asks, whatever was set before.
 		approvals := UserToolApprovalsFromContext(ctx)
-		if def.ReadOnly || !approvals[def.ID] {
+		if def.ReadOnly || !approvals[def.ID] || agreedInAdvance(ctx, def) {
 			return inner(ctx, input)
 		}
 		requester, ok := ApprovalRequesterFromContext(ctx)
