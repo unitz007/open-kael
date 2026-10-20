@@ -117,6 +117,13 @@ func (b *EventBus) emit(ctx context.Context, h *Host, eventName, payload, source
 		sub := sub
 		go h.runEventSkill(ctx, sub.hosted, sub.skill, payload)
 	}
+
+	if h.eventDispatcher != nil {
+		go func() {
+			defer recoverFromPanic("", "dispatching event "+eventName)
+			h.eventDispatcher(ctx, eventName, payload, sourceIdentityID, actorExternalID)
+		}()
+	}
 }
 
 // RegisterEventSources does two things:

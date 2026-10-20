@@ -293,6 +293,14 @@ type Host struct {
 	// account with a single click.
 	linkCodeGenerator func(ctx context.Context, identityID, channelRef string) (code string, err error)
 
+	// extraActions, when set, adds actions to a person's turn (never to an unattended run). The application
+	// uses it for things the framework knows nothing about, such as setting up a reaction to an event.
+	extraActions func(ctx context.Context, hosted *HostedAgent) []*domain.BoundAction
+
+	// eventDispatcher, when set, is told of every event that arrives, whether or not a capability listens
+	// for it, with the person it is about as the provider names them (a login, a customer id).
+	eventDispatcher func(ctx context.Context, eventName, payload, sourceIdentityID, actorExternalID string)
+
 	// readiness, when set, says why an agent cannot answer people yet ("" when it can).
 	readiness func(ctx context.Context, agent *domain.Agent) string
 
@@ -562,6 +570,16 @@ func (h *Host) SetFrontendURL(url string) { h.frontendURL = url }
 // When set, the /settings command sends a web_app button to the mini app instead
 // of falling back to the inline-keyboard SettingsFlow.
 func (h *Host) SetMiniAppBaseURL(url string) { h.miniAppBaseURL = url }
+
+// SetExtraActions registers a function that supplies extra actions for a person's turn with an agent.
+func (h *Host) SetExtraActions(f func(ctx context.Context, hosted *HostedAgent) []*domain.BoundAction) {
+	h.extraActions = f
+}
+
+// SetEventDispatcher registers a function told of every event that arrives. It runs in its own goroutine.
+func (h *Host) SetEventDispatcher(f func(ctx context.Context, eventName, payload, sourceIdentityID, actorExternalID string)) {
+	h.eventDispatcher = f
+}
 
 // SetReadinessCheck registers the check that decides whether an agent may answer people. An agent that is not ready
 // does not run: whoever writes to it is told, in plain words, that it is not ready yet. The reason the check returns
@@ -1336,6 +1354,14 @@ func (h *Host) HandleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 		ask := askOptionsAction(cr)
 		actions = append(actions, ask)
 		messengerSkillActions = append(messengerSkillActions, ask)
+	}
+
+	// What the application adds for a person's turn (never an unattended one) is offered like the other
+	// conversation actions, so it is there whichever way the message is routed.
+	if h.extraActions != nil && conv.UserID != "" && !unattended {
+		extra := h.extraActions(ctx, hosted)
+		actions = append(actions, extra...)
+		messengerSkillActions = append(messengerSkillActions, extra...)
 	}
 
 	promptIntegrations := hosted.integrations()

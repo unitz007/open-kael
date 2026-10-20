@@ -1,6 +1,7 @@
 package runtime_test
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -272,5 +273,35 @@ func TestRegisterEventSources_DropsAPayloadThatBreaksTheEventsSchema(t *testing.
 	time.Sleep(150 * time.Millisecond)
 	if n := len(toolExec.calls()); n != 0 {
 		t.Fatalf("the skill ran %d time(s) for a payload that breaks the schema", n)
+	}
+}
+
+// Every event that arrives is also told to the dispatcher the application registered, whether or not a
+// capability listens for it, with the person as the provider names them.
+func TestRegisterEventSources_TellsTheDispatcherOfEveryEvent(t *testing.T) {
+	host := runtime.NewHost()
+	got := make(chan [4]string, 1)
+	host.SetEventDispatcher(func(_ context.Context, name, payload, source, actor string) {
+		got <- [4]string{name, payload, source, actor}
+	})
+	src := &fakeEventSource{path: "/webhooks/github", eventName: "github.push", payload: `{"number":3}`}
+	sources := domain.NewEventSourceRegistry()
+	events := src.events()
+	handler := events[0].Handler
+	events[0].Handler = func(b []byte, h http.Header) (string, string, bool, error) {
+		p, _, ok, err := handler(b, h)
+		return p, "octocat", ok, err
+	}
+	sources.Register("id-gh", src, events)
+	mux := http.NewServeMux()
+	host.RegisterEventSources(mux, sources)
+	mux.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/webhooks/github", strings.NewReader("{}")))
+	select {
+	case v := <-got:
+		if v != [4]string{"github.push", `{"number":3}`, "id-gh", "octocat"} {
+			t.Fatalf("%v", v)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the dispatcher was not told")
 	}
 }

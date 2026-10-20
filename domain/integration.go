@@ -110,6 +110,27 @@ func (r *IntegrationEventRegistry) EventsFor(service string) []*IntegrationEvent
 	return r.events[service]
 }
 
+// ServiceOf says which integration's service an event belongs to.
+func (r *IntegrationEventRegistry) ServiceOf(name string) (string, bool) {
+	for svc, evs := range r.events {
+		for _, e := range evs {
+			if e.Name == name {
+				return svc, true
+			}
+		}
+	}
+	return "", false
+}
+
+// Services lists the services that have events, with their events, for whoever has to offer them.
+func (r *IntegrationEventRegistry) Services() map[string][]*IntegrationEvent {
+	out := make(map[string][]*IntegrationEvent, len(r.events))
+	for svc, evs := range r.events {
+		out[svc] = append([]*IntegrationEvent(nil), evs...)
+	}
+	return out
+}
+
 // Event finds a registered event by name.
 func (r *IntegrationEventRegistry) Event(name string) (*IntegrationEvent, bool) {
 	for _, evs := range r.events {
