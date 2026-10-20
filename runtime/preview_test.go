@@ -12,6 +12,7 @@ import (
 
 // previewLLM answers with the calls it is given and keeps what it was shown.
 type previewLLM struct {
+	content string
 	calls   []domain.ToolCall
 	err     error
 	msgs    []domain.Message
@@ -20,7 +21,7 @@ type previewLLM struct {
 
 func (r *previewLLM) Call(_ context.Context, m []domain.Message, a []domain.ActionSpec) (*domain.LLMResponse, error) {
 	r.msgs, r.actions = m, a
-	return &domain.LLMResponse{ToolCalls: r.calls}, r.err
+	return &domain.LLMResponse{Content: r.content, ToolCalls: r.calls}, r.err
 }
 
 func defs() []*domain.ToolDefinition {
@@ -105,5 +106,32 @@ func TestPreviewToolUse_AFailureIsReported(t *testing.T) {
 	agent, skill := previewAgent()
 	if _, err := runtime.PreviewToolUse(context.Background(), &previewLLM{err: errors.New("down")}, agent, skill, defs(), "x"); err == nil {
 		t.Error("the model failing is an error, not 'it would use nothing'")
+	}
+}
+
+func TestPreviewToolUse_SaysWhatItWouldReplyWhenItAnswersInsteadOfUsingAnAbility(t *testing.T) {
+	agent, skill := previewAgent()
+	run := func(content string, calls ...domain.ToolCall) runtime.ToolUse {
+		got, err := runtime.PreviewToolUse(context.Background(), &previewLLM{calls: calls, content: content}, agent, skill, defs(), "x")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	finish := domain.ToolCall{ID: "f", Name: domain.FinishActionName, Arguments: map[string]any{"content": "  Which league   is that?  "}}
+	if got := run("", finish); got.Reply != "Which league is that?" || len(got.Uses) != 0 {
+		t.Errorf("what it says when it finishes straight away, tidied: %+v", got)
+	}
+	if got := run("Just text, no calls."); got.Reply != "Just text, no calls." {
+		t.Errorf("or plain text: %+v", got)
+	}
+	if got := run("", aCall("check_trades")); got.Reply != "" || len(got.Uses) != 1 {
+		t.Errorf("nothing to say when it only reaches for an ability: %+v", got)
+	}
+	if got := run("", domain.ToolCall{ID: "f", Name: domain.FinishActionName, Arguments: map[string]any{"content": strings.Repeat("a", 500)}}); len([]rune(got.Reply)) != 161 || !strings.HasSuffix(got.Reply, "…") {
+		t.Errorf("shortened: %d", len([]rune(got.Reply)))
+	}
+	if got := run("", domain.ToolCall{ID: "f", Name: domain.FinishActionName, Arguments: map[string]any{"content": 42}}); got.Reply != "" {
+		t.Errorf("a finish with no text says nothing: %+v", got)
 	}
 }

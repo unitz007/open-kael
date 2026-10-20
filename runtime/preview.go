@@ -13,7 +13,12 @@ type ToolUse struct {
 	Uses []string
 	// Changes is true when any of them changes something rather than only looking it up.
 	Changes bool
+	// Reply is what it would say instead of, or besides, reaching for an ability, shortened: often a question it
+	// needs answered first. "" when it only calls abilities.
+	Reply string
 }
+
+const maxPreviewReply = 160
 
 // PreviewToolUse tries a capability without running it: it builds what the model would be shown for this message
 // the way a real turn does (the agent's own prompt, then the creator's instructions for the capability, then the
@@ -47,11 +52,18 @@ func PreviewToolUse(ctx context.Context, llm domain.LLM, agent *domain.Agent, sk
 		return ToolUse{}, err
 	}
 	var out ToolUse
+	reply := strings.TrimSpace(resp.Content)
 	seen := map[string]bool{}
 	for _, c := range resp.ToolCalls {
+		if c.Name == domain.FinishActionName {
+			if text, ok := c.Arguments["content"].(string); ok && strings.TrimSpace(text) != "" {
+				reply = strings.TrimSpace(text)
+			}
+			continue
+		}
 		d, ok := byName[c.Name]
 		if !ok || seen[c.Name] {
-			continue // the finish action, or something that is not on offer
+			continue // something that is not on offer
 		}
 		seen[c.Name] = true
 		out.Uses = append(out.Uses, plainAbilityName(d))
@@ -59,6 +71,11 @@ func PreviewToolUse(ctx context.Context, llm domain.LLM, agent *domain.Agent, sk
 			out.Changes = true
 		}
 	}
+	reply = strings.Join(strings.Fields(reply), " ")
+	if r := []rune(reply); len(r) > maxPreviewReply {
+		reply = string(r[:maxPreviewReply]) + "…"
+	}
+	out.Reply = reply
 	return out, nil
 }
 
