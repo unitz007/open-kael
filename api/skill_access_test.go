@@ -77,3 +77,18 @@ func TestSkillEndpoints_StillWorkForAccessibleAgents(t *testing.T) {
 		t.Errorf("PUT got %d saved=%d", got, st.saved)
 	}
 }
+
+// A limit to some of a connection's abilities only means something on a connection the capability uses.
+func TestSkillEndpoints_ALimitMustBeOnAConnectionTheCapabilityUses(t *testing.T) {
+	st := &skillStore{}
+	post := func(body string) int { return do(t, st, http.MethodPost, "/agents/a1/skills", body) }
+	if got := post(`{"id":"s1","name":"x","limited_integrations":["gmail"]}`); got != http.StatusBadRequest || st.saved != 0 {
+		t.Errorf("a limit on a connection it does not list: %d saved=%d", got, st.saved)
+	}
+	if got := post(`{"id":"s1","name":"x","integrations":["calendar"],"limited_integrations":["gmail"]}`); got != http.StatusBadRequest || st.saved != 0 {
+		t.Errorf("a limit on a different connection: %d saved=%d", got, st.saved)
+	}
+	if got := do(t, st, http.MethodPut, "/skills/s1", `{"name":"x","limited_integrations":["gmail"]}`); got != http.StatusBadRequest || st.saved != 0 {
+		t.Errorf("the same on an update: %d saved=%d", got, st.saved)
+	}
+}

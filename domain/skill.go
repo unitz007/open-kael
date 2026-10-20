@@ -50,6 +50,12 @@ type Skill struct {
 	// Creators set this via the UI; Tools is then populated at runtime only.
 	Integrations []string `json:"integrations,omitempty"`
 
+	// LimitedIntegrations are the connections in Integrations the capability is limited on: for each, only the
+	// abilities named in Tools are granted, not the whole connection. Anything not listed here is granted whole,
+	// and abilities named in Tools for it are added on top, as they always were. Limiting is explicit so that a
+	// connection's later abilities are never granted by surprise and a limit can never quietly widen.
+	LimitedIntegrations []string `json:"limited_integrations,omitempty"`
+
 	Visibility SkillVisibility `json:"visibility"`
 
 	// Schedulable declares that users may configure a personal schedule for

@@ -174,12 +174,11 @@ func WrapOneShotGuard(action *BoundAction) *BoundAction {
 // explicit skill.Tools bindings are still honoured when present, so old and
 // new skills both work through this single call site.
 //
-// A capability can be limited to some of a connection's abilities: when skill.Tools names
-// at least one ability of an integration the skill also lists in skill.Integrations, that
-// integration is NOT granted whole; only the named abilities are bound. Abilities the
-// connection gains later are therefore never granted by surprise. An integration with no
-// named abilities is granted whole, as before. A named ability that no longer exists is an
-// error, so a narrowed capability can never quietly widen.
+// A capability can be limited to some of a connection's abilities: for each integration listed in
+// skill.LimitedIntegrations (and in skill.Integrations), only the abilities named in skill.Tools are bound, not the
+// whole connection, so abilities the connection gains later are never granted by surprise. A named ability that no
+// longer exists is an error, so a limited capability can never quietly widen. Integrations not listed as limited are
+// granted whole, with any named abilities added on top, exactly as before.
 func HydrateSkillTools(skill *Skill, agent *Agent, toolsByID map[string]*ToolDefinition, identitiesByID map[string]*Identity, integrationsByID map[string]*Integration, registry *ExecutorRegistry) ([]*BoundAction, error) {
 	bound := make([]*BoundAction, 0, len(skill.Tools)+len(skill.Integrations)*4)
 
@@ -209,11 +208,9 @@ func HydrateSkillTools(skill *Skill, agent *Agent, toolsByID map[string]*ToolDef
 	for _, a := range bound {
 		seen[a.Spec.Name] = true
 	}
-	narrowed := make(map[string]bool) // integrations the capability is limited to named abilities of
-	for _, binding := range skill.Tools {
-		if def, ok := toolsByID[binding.ToolID]; ok {
-			narrowed[def.IntegrationID] = true
-		}
+	narrowed := make(map[string]bool, len(skill.LimitedIntegrations)) // limited to the abilities named in skill.Tools
+	for _, id := range skill.LimitedIntegrations {
+		narrowed[id] = true
 	}
 	for _, integrationID := range skill.Integrations {
 		if narrowed[integrationID] {

@@ -217,6 +217,7 @@ CREATE INDEX IF NOT EXISTS idx_skills_agent_id ON skills (agent_id);
 
 ALTER TABLE skills ADD COLUMN IF NOT EXISTS schedulable BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE skills ADD COLUMN IF NOT EXISTS integrations TEXT[] NOT NULL DEFAULT '{}';
+ALTER TABLE skills ADD COLUMN IF NOT EXISTS limited_integrations TEXT[] NOT NULL DEFAULT '{}';
 
 -- The many-to-many join between Skill and Tool (ToolBinding) — a Tool is
 -- defined once and referenced by any number of Skills. ON DELETE RESTRICT

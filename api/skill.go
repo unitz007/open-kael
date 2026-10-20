@@ -175,6 +175,17 @@ func (s *Server) skillAgentAllowed(w http.ResponseWriter, r *http.Request, agent
 // key. Unknown references are reported the same way as inaccessible ones so
 // the response never confirms that someone else's connection exists.
 func (s *Server) skillRefsAccessible(w http.ResponseWriter, r *http.Request, skill *domain.Skill) bool {
+	// A limit only means something on a connection the capability actually uses.
+	listed := make(map[string]bool, len(skill.Integrations))
+	for _, id := range skill.Integrations {
+		listed[id] = true
+	}
+	for _, id := range skill.LimitedIntegrations {
+		if !listed[id] {
+			writeError(w, http.StatusBadRequest, errors.New("a limit refers to a connection this capability doesn't use"))
+			return false
+		}
+	}
 	ok, err := s.refsAccessible(r.Context(), skill)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)

@@ -16,6 +16,7 @@ func TestLimitedCapability_TheModelIsOfferedOnlyTheAbilitiesNamed(t *testing.T) 
 			IntegrationID: "int-fx", Description: "Places an order.", ReadOnly: true, InputSchema: domain.Schema{Type: domain.SchemaTypeObject}}
 		if limit {
 			r.hosted.Agent.Skills[0].Tools = []domain.ToolBinding{{ToolID: "q"}}
+			r.hosted.Agent.Skills[0].LimitedIntegrations = []string{"int-fx"}
 		}
 		r.host.Register(r.hosted) // so the connection's abilities are read again with the second one in it
 		r.say(t, "C1", "what is the price")

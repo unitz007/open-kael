@@ -124,7 +124,7 @@ func namesOf(bound []*domain.BoundAction) map[string]bool {
 
 func TestHydrateSkillTools_ALimitedConnectionGivesOnlyTheNamedAbilities(t *testing.T) {
 	tools, ints, reg := narrowFixture()
-	skill := &domain.Skill{ID: "s", Integrations: []string{"gmail", "cal"}, Tools: []domain.ToolBinding{{ToolID: "g_list"}}}
+	skill := &domain.Skill{ID: "s", Integrations: []string{"gmail", "cal"}, LimitedIntegrations: []string{"gmail"}, Tools: []domain.ToolBinding{{ToolID: "g_list"}}}
 	bound, err := domain.HydrateSkillTools(skill, nil, tools, nil, ints, reg)
 	if err != nil {
 		t.Fatal(err)
@@ -143,7 +143,7 @@ func TestHydrateSkillTools_ALimitedConnectionGivesOnlyTheNamedAbilities(t *testi
 
 func TestHydrateSkillTools_LimitingOneConnectionDoesNotLimitAnother(t *testing.T) {
 	tools, ints, reg := narrowFixture()
-	skill := &domain.Skill{ID: "s", Integrations: []string{"gmail", "cal"}, Tools: []domain.ToolBinding{{ToolID: "c_list"}, {ToolID: "g_send"}}}
+	skill := &domain.Skill{ID: "s", Integrations: []string{"gmail", "cal"}, LimitedIntegrations: []string{"gmail", "cal"}, Tools: []domain.ToolBinding{{ToolID: "c_list"}, {ToolID: "g_send"}}}
 	bound, _ := domain.HydrateSkillTools(skill, nil, tools, nil, ints, reg)
 	got := namesOf(bound)
 	if len(got) != 2 || !got["list_events"] || !got["send_email"] {
@@ -162,7 +162,7 @@ func TestHydrateSkillTools_AnAbilityNamedWithoutItsConnectionStillBindsAsBefore(
 
 func TestHydrateSkillTools_ALimitedCapabilityNeverQuietlyWidens(t *testing.T) {
 	tools, ints, reg := narrowFixture()
-	skill := &domain.Skill{ID: "s", Integrations: []string{"gmail"}, Tools: []domain.ToolBinding{{ToolID: "g_list"}, {ToolID: "g_gone"}}}
+	skill := &domain.Skill{ID: "s", Integrations: []string{"gmail"}, LimitedIntegrations: []string{"gmail"}, Tools: []domain.ToolBinding{{ToolID: "g_list"}, {ToolID: "g_gone"}}}
 	if _, err := domain.HydrateSkillTools(skill, nil, tools, nil, ints, reg); err == nil {
 		t.Error("a named ability that no longer exists is an error, not a reason to grant the whole connection")
 	}
@@ -170,9 +170,32 @@ func TestHydrateSkillTools_ALimitedCapabilityNeverQuietlyWidens(t *testing.T) {
 	disabled := *tools["g_list"]
 	disabled.Disabled = true
 	tools["g_list"] = &disabled
-	skill = &domain.Skill{ID: "s", Integrations: []string{"gmail"}, Tools: []domain.ToolBinding{{ToolID: "g_list"}}}
+	skill = &domain.Skill{ID: "s", Integrations: []string{"gmail"}, LimitedIntegrations: []string{"gmail"}, Tools: []domain.ToolBinding{{ToolID: "g_list"}}}
 	bound, err := domain.HydrateSkillTools(skill, nil, tools, nil, ints, reg)
 	if err != nil || len(bound) != 0 {
 		t.Errorf("switched off means nothing, not everything: %v %v", namesOf(bound), err)
+	}
+}
+
+// How it always worked, and must keep working: naming an ability on top of a connection that is not limited adds it.
+func TestHydrateSkillTools_NamedAbilitiesWithoutALimitAreAddedOnTopOfTheWholeConnection(t *testing.T) {
+	tools, ints, reg := narrowFixture()
+	skill := &domain.Skill{ID: "s", Integrations: []string{"gmail"}, Tools: []domain.ToolBinding{{ToolID: "g_list"}, {ToolID: "c_del"}}}
+	bound, err := domain.HydrateSkillTools(skill, nil, tools, nil, ints, reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := namesOf(bound)
+	if len(got) != 4 || !got["list_messages"] || !got["send_email"] || !got["trash_message"] || !got["delete_event"] {
+		t.Errorf("the whole of Gmail, plus the one named from Calendar: %v", got)
+	}
+}
+
+func TestHydrateSkillTools_ALimitOnAConnectionNotListedGrantsNothing(t *testing.T) {
+	tools, ints, reg := narrowFixture()
+	skill := &domain.Skill{ID: "s", Integrations: []string{"gmail"}, LimitedIntegrations: []string{"cal"}}
+	bound, _ := domain.HydrateSkillTools(skill, nil, tools, nil, ints, reg)
+	if got := namesOf(bound); len(got) != 3 || got["list_events"] {
+		t.Errorf("a limit does not add a connection, and does not narrow the one that is listed: %v", got)
 	}
 }
