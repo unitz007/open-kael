@@ -165,6 +165,11 @@ func (h *Host) RegisterEventSources(mux *http.ServeMux, sources *domain.EventSou
 					return
 				}
 				if ok {
+					// What reacts to an event only ever sees a payload that matches what the event promised.
+					if _, err := ev.CheckPayload(payload); err != nil {
+						log.Printf("runtime: dropping %q: %v", ev.Name, err)
+						return
+					}
 					h.bus.emit(context.Background(), h, ev.Name, payload, entry.IdentityID, actorExternalID)
 					return
 				}

@@ -28,7 +28,15 @@ func (s *fakeEventSource) Verify(_ []byte, _ http.Header) bool { return true }
 func (s *fakeEventSource) events() []*domain.IntegrationEvent {
 	name, payload := s.eventName, s.payload
 	return []*domain.IntegrationEvent{{
-		Name: name,
+		Name:        name,
+		Description: "Something happened",
+		Arrival:     domain.ArrivalPushed,
+		Subject:     domain.EventSubject{Kind: domain.SubjectNobody},
+		Payload: domain.Schema{Type: domain.SchemaTypeObject, Required: []string{"number"}, Properties: map[string]domain.Schema{
+			"number": {Type: domain.SchemaTypeInteger, Description: "Its number."},
+		}},
+		RepeatKey: "number",
+		Sample:    map[string]any{"number": 1},
 		Handler: func(_ []byte, _ http.Header) (string, string, bool, error) {
 			return payload, "", true, nil
 		},
@@ -152,7 +160,7 @@ func TestRegisterEventSources_NoNotifyConversation_NeverCallsDelivery(t *testing
 	host.Register(hosted)
 
 	sources := domain.NewEventSourceRegistry()
-	fakeGH := &fakeEventSource{path: "/webhooks/github", eventName: "github.push", payload: "{}"}
+	fakeGH := &fakeEventSource{path: "/webhooks/github", eventName: "github.push", payload: `{"number":2}`}
 	sources.Register("id-gh", fakeGH, fakeGH.events())
 
 	mux := http.NewServeMux()
@@ -201,7 +209,7 @@ func TestEmit_InternalEvent_TriggersSubscribedSkill(t *testing.T) {
 }
 
 func TestRegisterEventSources_VerificationFailure_Returns401(t *testing.T) {
-	source := &fakeEventSource{path: "/webhooks/github", eventName: "github.push", payload: "{}"}
+	source := &fakeEventSource{path: "/webhooks/github", eventName: "github.push", payload: `{"number":2}`}
 
 	// Override Verify to reject
 	type rejectingSource struct{ fakeEventSource }
@@ -234,4 +242,35 @@ func (s *verifyFailSource) Path() string                        { return s.path 
 func (s *verifyFailSource) Verify(_ []byte, _ http.Header) bool { return false }
 func (s *verifyFailSource) Ingest(_ []byte, _ http.Header) (string, string, string, bool, error) {
 	return "", "", "", false, nil
+}
+
+// A delivery whose payload doesn't match what its event promised is dropped: nothing reacts to it.
+func TestRegisterEventSources_DropsAPayloadThatBreaksTheEventsSchema(t *testing.T) {
+	skill, tool, toolIntegration := singleToolSkill("github.push", nil)
+	toolExec := &fakeExecutor{}
+	executors := domain.NewExecutorRegistry()
+	executors.Register("tool", toolExec)
+	hosted := &runtime.HostedAgent{
+		Agent: &domain.Agent{ID: "a1", Skills: []*domain.Skill{skill}},
+		Deps: runtime.AgentDeps{
+			ToolsByID:        map[string]*domain.ToolDefinition{tool.ID: tool},
+			IntegrationsByID: map[string]*domain.Integration{toolIntegration.ID: toolIntegration},
+			Executors:        executors,
+		},
+	}
+	host := runtime.NewHost()
+	host.Register(hosted)
+
+	src := &fakeEventSource{path: "/webhooks/github", eventName: "github.push", payload: `{"nonsense":true}`}
+	sources := domain.NewEventSourceRegistry()
+	sources.Register("id-gh", src, src.events())
+	mux := http.NewServeMux()
+	host.RegisterEventSources(mux, sources)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/webhooks/github", strings.NewReader("{}")))
+	time.Sleep(150 * time.Millisecond)
+	if n := len(toolExec.calls()); n != 0 {
+		t.Fatalf("the skill ran %d time(s) for a payload that breaks the schema", n)
+	}
 }

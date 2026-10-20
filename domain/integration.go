@@ -1,34 +1,63 @@
 package domain
 
-import "net/http"
+import (
+	"errors"
+	"fmt"
+	"net/http"
+)
 
 // EventHandler parses one specific event out of an already-verified webhook
 // payload. ok=false means the payload is valid but does not represent this
 // event — the runtime moves on to the next handler. err != nil means the
 // payload is malformed and processing should stop.
 //
-// payload is the structured string handed to the matching Skill as
-// trigger_input. actorExternalID is the provider's identifier for the user
-// who triggered the event (e.g. a GitHub login); empty when the event has no
-// attributable actor (a bot push, a ping, an automated system event).
+// payload is the JSON object handed to whatever reacts to the event. It must
+// satisfy the event's Payload schema (see the event contract). actorExternalID
+// is the provider's identifier for the person the event is about (a GitHub
+// login, a Stripe customer); empty when the event has no attributable person.
 type EventHandler func(body []byte, header http.Header) (payload, actorExternalID string, ok bool, err error)
 
 // IntegrationEvent declares one named event that an Integration can emit.
-// Creators subscribe Skills to events by Name; the runtime calls Handler to
-// confirm whether an incoming webhook payload represents this event and to
-// extract its data.
+//
+// An event is something that happened on a connection. It only tells: it never
+// acts. Every event must be complete when it is registered; see the event
+// contract in event_contract.go (ValidateEvent).
 type IntegrationEvent struct {
 	// Name is the canonical event name, e.g. "github.pull_request.opened".
-	// Must be unique within an Integration and stable across deploys — Skills
-	// persist trigger subscriptions by this string.
+	// Starts with the integration's service, unique across the platform, and
+	// stable across deploys — stored rules refer to it by this string.
 	Name string `json:"name"`
 
-	// Description is a short creator-facing explanation shown in the trigger
-	// picker UI when a Skill is being configured.
+	// Description is one plain sentence a person would use ("A pull request
+	// was opened"). It is shown wherever the event is offered, so it never uses
+	// platform words (event, trigger, webhook, payload...).
 	Description string `json:"description"`
+
+	// Arrival says how the event reaches us.
+	Arrival EventArrival `json:"arrival"`
+
+	// Subject says who the event is about.
+	Subject EventSubject `json:"subject"`
+
+	// Payload describes what the agent is told when the event happens: an object
+	// with typed, described properties and real required ones.
+	Payload Schema `json:"payload"`
+
+	// Options describes the settings a person may give when they ask to be
+	// told about this event (which repository, how long before). May have no
+	// properties.
+	Options Schema `json:"options"`
+
+	// RepeatKey names the required Payload property that identifies one
+	// occurrence, so the same one is never handled twice.
+	RepeatKey string `json:"repeat_key"`
+
+	// Sample is one realistic payload. It must satisfy Payload.
+	Sample map[string]any `json:"sample"`
 
 	// Handler parses one incoming webhook payload for this event.
 	// Not persisted — wired at startup alongside the Integration definition.
+	// Required for pushed events.
 	Handler EventHandler `json:"-"`
 }
 
@@ -48,14 +77,49 @@ func NewIntegrationEventRegistry() *IntegrationEventRegistry {
 	return &IntegrationEventRegistry{events: make(map[string][]*IntegrationEvent)}
 }
 
-// Register records the events for a given service name (e.g. "github").
-func (r *IntegrationEventRegistry) Register(service string, events []*IntegrationEvent) {
-	r.events[service] = events
+// Register records the events for a given service name (e.g. "github"). Every
+// event is held to the event contract: one that breaks it is left out and
+// reported in the returned error, and the rest are registered. An event name
+// already registered by another service is refused too.
+func (r *IntegrationEventRegistry) Register(service string, events []*IntegrationEvent) error {
+	taken := map[string]string{}
+	for svc, evs := range r.events {
+		if svc == service {
+			continue
+		}
+		for _, e := range evs {
+			taken[e.Name] = svc
+		}
+	}
+	valid, err := ValidEvents(service, events)
+	kept := valid[:0:0]
+	var extra []error
+	for _, e := range valid {
+		if svc, dup := taken[e.Name]; dup {
+			extra = append(extra, EventProblem{Event: e.Name, Message: fmt.Sprintf("is already registered by %q", svc)})
+			continue
+		}
+		kept = append(kept, e)
+	}
+	r.events[service] = kept
+	return errors.Join(append([]error{err}, extra...)...)
 }
 
 // EventsFor returns the events for the given service, or nil when none are registered.
 func (r *IntegrationEventRegistry) EventsFor(service string) []*IntegrationEvent {
 	return r.events[service]
+}
+
+// Event finds a registered event by name.
+func (r *IntegrationEventRegistry) Event(name string) (*IntegrationEvent, bool) {
+	for _, evs := range r.events {
+		for _, e := range evs {
+			if e.Name == name {
+				return e, true
+			}
+		}
+	}
+	return nil, false
 }
 
 // Integration is the top-level concept for one external service — the
