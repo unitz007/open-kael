@@ -40,6 +40,10 @@ func (h *Host) ListenAndServe(ctx context.Context) error {
 		h.agentInboxes.Store(hosted.Agent.ID, inbox)
 
 		if h.startListeners(ctx, hosted, inbox) == 0 {
+			// No chat app yet, so nothing reads this inbox. Leaving it stored would make StartListenerForAgent
+			// think a worker is already serving it when a chat app is attached later, and every message to
+			// that agent would then wait unread until the next restart.
+			h.agentInboxes.Delete(hosted.Agent.ID)
 			continue
 		}
 
@@ -407,6 +411,7 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 		if err != nil {
 			log.Printf("runtime: agent %q: setup check user %s: %v", hosted.Agent.ID, msg.Conversation.UserID, err)
 		} else if len(missingIDs) > 0 {
+			var unavailable []string // what they need to connect but cannot be offered a sign-in for
 			for _, identityID := range missingIDs {
 				var connectURL string
 				if h.connectURLGenerator != nil {
@@ -415,6 +420,11 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 					}
 				}
 				if connectURL == "" {
+					name := ""
+					if h.connectIntegrationNameLoader != nil {
+						name, _ = h.connectIntegrationNameLoader(ctx, identityID)
+					}
+					unavailable = append(unavailable, name)
 					continue
 				}
 				var integrationName string
@@ -443,6 +453,8 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 				h.deliverBestEffort(ctx, hosted, msg.Conversation, text, extra)
 				return
 			}
+			// They need a connection and none can be offered. Say so rather than leave them with silence.
+			h.deliverBestEffort(ctx, hosted, msg.Conversation, connectUnavailableText(unavailable))
 			return
 		}
 	}
@@ -914,4 +926,21 @@ func recoverFromPanic(agentID, where string) {
 	if r := recover(); r != nil {
 		log.Printf("runtime: agent %q: recovered panic in %s: %v", agentID, where, r)
 	}
+}
+
+// connectUnavailableText is what a person is told when the agent needs them to connect an account but no sign-in can
+// be offered right now. names may hold empty strings, for accounts whose name is not known.
+func connectUnavailableText(names []string) string {
+	var known []string
+	for _, n := range names {
+		if strings.TrimSpace(n) != "" {
+			known = append(known, n)
+		}
+	}
+	what := "an account"
+	if len(known) > 0 {
+		what = "your " + strings.Join(known, " and ") + " account"
+	}
+	return "I need you to connect " + what + " before I can help with that, but I can't offer the sign-in right now. " +
+		"Please let whoever set me up know, and I'll be able to help once it's sorted."
 }
