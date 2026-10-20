@@ -2288,6 +2288,12 @@ func (h *Host) deliverBestEffortID(ctx context.Context, hosted *HostedAgent, con
 // by default). See domain.WithUnattendedAllowing. The reply goes to (identityID, channelRef).
 // It runs in the background and returns at once.
 func (h *Host) RunScheduledTask(ctx context.Context, agentID, userID, identityID, channelRef, task string, allowChanges ...string) error {
+	return h.RunScheduledTaskThen(ctx, agentID, userID, identityID, channelRef, task, nil, allowChanges...)
+}
+
+// RunScheduledTaskThen is RunScheduledTask that also calls then, when the run is over, with the error if it
+// failed (nil when it finished). then may be nil. It runs in the background, like the task.
+func (h *Host) RunScheduledTaskThen(ctx context.Context, agentID, userID, identityID, channelRef, task string, then func(err error), allowChanges ...string) error {
 	h.mu.RLock()
 	hosted, ok := h.agents[agentID]
 	h.mu.RUnlock()
@@ -2308,11 +2314,15 @@ func (h *Host) RunScheduledTask(ctx context.Context, agentID, userID, identityID
 		defer recoverFromPanic(hosted.Agent.ID, "repeating task")
 		// HandleTurn loads the person's connections and details like any turn, and tells them
 		// plainly if it couldn't finish.
-		if _, err := h.HandleTurn(ctx, hosted, conv, task); err != nil {
+		_, err := h.HandleTurn(ctx, hosted, conv, task)
+		if err != nil {
 			log.Printf("runtime: repeating task agent %q user %q: %v", agentID, userID, err)
-			return
+		} else {
+			log.Printf("runtime: repeating task agent %q user %q: finished", agentID, userID)
 		}
-		log.Printf("runtime: repeating task agent %q user %q: finished", agentID, userID)
+		if then != nil {
+			then(err)
+		}
 	}()
 	return nil
 }

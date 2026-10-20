@@ -5,6 +5,7 @@ import (
 	"github.com/unitz007/open-kael/runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/unitz007/open-kael/domain"
 )
@@ -21,5 +22,22 @@ func TestExtraActions_AreOfferedOnAPersonsTurn(t *testing.T) {
 	}
 	if got := strings.Join(r.spy.offered[0], ","); !strings.Contains(got, "set_up_thing") {
 		t.Errorf("the extra action is offered: %s", got)
+	}
+}
+
+// RunScheduledTaskThen tells the caller when the run is over, with whether it failed.
+func TestRunScheduledTaskThen_CallsBackWhenTheRunIsOver(t *testing.T) {
+	r := newFollowRig(t, &followRouter{byText: map[string][]string{}})
+	done := make(chan error, 1)
+	if err := r.host.RunScheduledTaskThen(context.Background(), "a1", "u1", "id_slack", "C1", "what is the price", func(err error) { done <- err }); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("the run finished: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("never called back")
 	}
 }
