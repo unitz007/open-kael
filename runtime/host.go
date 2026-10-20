@@ -293,6 +293,9 @@ type Host struct {
 	// account with a single click.
 	linkCodeGenerator func(ctx context.Context, identityID, channelRef string) (code string, err error)
 
+	// readiness, when set, says why an agent cannot answer people yet ("" when it can).
+	readiness func(ctx context.Context, agent *domain.Agent) string
+
 	// frontendURL is the base URL of the creator/user-facing web app. When
 	// set, unlinked users receive an onboarding message that includes this URL
 	// so they know where to sign up and get their link code.
@@ -559,6 +562,14 @@ func (h *Host) SetFrontendURL(url string) { h.frontendURL = url }
 // When set, the /settings command sends a web_app button to the mini app instead
 // of falling back to the inline-keyboard SettingsFlow.
 func (h *Host) SetMiniAppBaseURL(url string) { h.miniAppBaseURL = url }
+
+// SetReadinessCheck registers the check that decides whether an agent may answer people. An agent that is not ready
+// does not run: whoever writes to it is told, in plain words, that it is not ready yet. The reason the check returns
+// is for the creator and is never sent to them.
+func (h *Host) SetReadinessCheck(f func(ctx context.Context, agent *domain.Agent) string) { h.readiness = f }
+
+// notReadyReply is what a person is told by an agent that is not ready to answer yet.
+const notReadyReply = "I'm not ready to help yet. The person who set me up still has a little more to do, so please try again later."
 
 // SetLinkCodeGenerator registers a function that creates and stores a
 // short-lived ChannelLinkCode for the given (identityID, channelRef) pair

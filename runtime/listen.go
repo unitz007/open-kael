@@ -242,6 +242,12 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 		msg.Conversation.ThreadID = msg.ThreadID
 	}
 
+	// An agent that is not ready does not run anything: it says so and stops.
+	if h.readiness != nil && h.readiness(ctx, hosted.Agent) != "" {
+		h.deliverBestEffort(ctx, hosted, msg.Conversation, notReadyReply)
+		return
+	}
+
 	// Route callback queries (button taps) directly — they never go to HandleTurn.
 	if msg.CallbackQuery != nil {
 		h.handleCallbackQuery(ctx, hosted, msg)

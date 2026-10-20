@@ -77,6 +77,10 @@ type Server struct {
 	// and identityID of the newly connected integration.
 	onIntegrationConnected func(ctx context.Context, userID, identityID string)
 
+	// agentReadiness, when set, says why an agent cannot go live yet ("" when it can). Connecting a chat app
+	// to an agent that is not ready is refused with that reason.
+	agentReadiness func(ctx context.Context, agent *domain.Agent) string
+
 	// mailer, when set, sends transactional emails (e.g. email verification).
 	// When nil, email verification is skipped and accounts are auto-verified.
 	mailer domain.Mailer
@@ -140,6 +144,12 @@ func WithAgentCreateHook(f func(agentID string)) Option {
 // Intended for wiring the runtime Host to start/stop listeners dynamically.
 func WithAgentIdentityChangeHook(f func(agentID string, addedIdentityIDs, removedIdentityIDs []string)) Option {
 	return func(s *Server) { s.onAgentIdentityChange = f }
+}
+
+// WithAgentReadiness registers the check that decides whether an agent may be given a chat app. It returns a
+// reason in plain words when the agent is not ready, or "" when it is. Taking a chat app away is never refused.
+func WithAgentReadiness(f func(ctx context.Context, agent *domain.Agent) string) Option {
+	return func(s *Server) { s.agentReadiness = f }
 }
 
 // WithAgentDeleteHook registers a callback invoked after an agent is deleted.

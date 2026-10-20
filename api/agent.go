@@ -185,6 +185,12 @@ func (s *Server) setAgentIdentities(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if s.agentReadiness != nil && len(addedStrings(oldIDs, body.IdentityIDs)) > 0 {
+		if reason := s.agentReadiness(r.Context(), agent); reason != "" {
+			writeError(w, http.StatusConflict, errors.New(reason))
+			return
+		}
+	}
 	agent.IdentityIDs = body.IdentityIDs
 	if err := s.store.SaveAgent(r.Context(), agent); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
