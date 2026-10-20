@@ -226,3 +226,25 @@ func TestDerivedChoices_OnlyTheOfferedActionCounts(t *testing.T) {
 		t.Errorf("a call to anything else is not a set of choices: %v", b)
 	}
 }
+
+// Whatever model a creator gives their agent, the buttons are made by the platform's own.
+func TestDerivedChoices_ThePlatformModelMakesThemNotTheAgentsOwn(t *testing.T) {
+	// the agent's own model would make useless buttons if it were asked
+	agentLLM := &twoStepLLM{reply: "Clash. Want me to move one?", derive: offerChoicesCall([]any{
+		map[string]any{"label": "Yes", "say": "Yes."}, map[string]any{"label": "No", "say": "No."}})}
+	platform := &twoStepLLM{derive: offerChoicesCall(twoChoices())}
+	host, hosted, box, _ := choiceRig(t, agentLLM, true)
+	host.SetChoiceModel(platform)
+	host.DispatchInbound(context.Background(), hosted, firstMessage("go"))
+	waitFor(t, "buttons", func() bool { b, _ := box.snapshot(); return len(b) == 1 })
+	buttons, _ := box.snapshot()
+	if buttons[0][0].Label != "10:15 tomorrow" {
+		t.Errorf("made by the platform's model: %+v", buttons[0])
+	}
+	if len(agentLLM.deriving) != 0 || agentLLM.calls != 1 {
+		t.Errorf("the agent's own model only answers the turn: derive=%d calls=%d", len(agentLLM.deriving), agentLLM.calls)
+	}
+	if len(platform.deriving) != 1 {
+		t.Errorf("the platform model was asked once: %d", len(platform.deriving))
+	}
+}

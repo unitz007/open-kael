@@ -42,7 +42,12 @@ const deriveInstruction = "You turn the end of an assistant's reply into buttons
 	"if the only thing on offer is to do one thing or not, call nothing. " +
 	"If the reply simply answers, or asks something that needs the person's own words (a name, a number, a free-form detail), do not call offer_choices."
 
-// deriveChoices asks the agent's own model to turn a reply's closing offer into choices.
+// SetChoiceModel sets the model that turns a reply's closing offer into choices. It belongs to the
+// platform, not to any agent: whichever model a creator gives their agent, the buttons come out the same.
+// Without it the agent's own model is used.
+func (h *Host) SetChoiceModel(m domain.LLM) { h.choiceModel = m }
+
+// deriveChoices asks a model to turn a reply's closing offer into choices.
 func (h *Host) deriveChoices(ctx context.Context, hosted *HostedAgent, userText, reply string) []domain.ProposalChoice {
 	ctx, cancel := context.WithTimeout(ctx, deriveTimeout)
 	defer cancel()
@@ -60,8 +65,12 @@ func (h *Host) deriveChoices(ctx context.Context, hosted *HostedAgent, userText,
 		{Role: domain.RoleSystem, Content: deriveInstruction},
 		{Role: domain.RoleUser, Content: "The person wrote:\n" + userText + "\n\nThe assistant replied:\n" + reply},
 	}
+	models := hosted.Agent.LLMs
+	if h.choiceModel != nil {
+		models = []domain.LLM{h.choiceModel}
+	}
 	var lastErr error
-	for _, llm := range hosted.Agent.LLMs {
+	for _, llm := range models {
 		resp, err := llm.Call(ctx, msgs, []domain.ActionSpec{spec})
 		if err != nil {
 			lastErr = err
@@ -86,7 +95,7 @@ func (h *Host) withDerived(ctx context.Context, hosted *HostedAgent, result *dom
 	if len(given) > 0 || result == nil || result.Status != domain.LoopStatusComplete || result.Content == "" || reply != result.Content {
 		return given
 	}
-	if len(hosted.Agent.LLMs) == 0 || !endsInOffer(reply) || !h.canOfferChoices(ctx, hosted) {
+	if (h.choiceModel == nil && len(hosted.Agent.LLMs) == 0) || !endsInOffer(reply) || !h.canOfferChoices(ctx, hosted) {
 		return given
 	}
 	return h.deriveChoices(ctx, hosted, userText, reply)

@@ -381,6 +381,7 @@ type Host struct {
 	// proposals keeps the choices an agent offers as buttons (see proposal_host.go); proposalDispatch hands a
 	// tapped choice to the conversation as if it had been typed.
 	proposals        domain.ProposalStore
+	choiceModel      domain.LLM // the platform's own model for turning an offer into choices; the agent's own when unset
 	proposalDispatch func(ctx context.Context, hosted *HostedAgent, msg domain.InboundMessage)
 
 	// intentHandlers maps a domain.Intent to a handler that intercepts turns
