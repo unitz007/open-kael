@@ -194,7 +194,7 @@ func (f *SettingsFlow) buildMainMenu(ctx context.Context, hosted *HostedAgent, a
 	var integrations []integrationEntry
 	seen := map[string]bool{}
 	for _, tool := range hosted.tools() {
-		if tool.RequiresApproval || botIntegrationIDs[tool.IntegrationID] {
+		if tool.RequiresApproval || tool.ReadOnly || botIntegrationIDs[tool.IntegrationID] {
 			continue
 		}
 		if seen[tool.IntegrationID] {
@@ -241,7 +241,7 @@ func (f *SettingsFlow) buildMainMenu(ctx context.Context, hosted *HostedAgent, a
 func (f *SettingsFlow) buildToolListMenu(hosted *HostedAgent, integrationID string, page int, approvals map[string]bool) *domain.SettingsMenu {
 	var tools []*domain.ToolDefinition
 	for _, t := range hosted.tools() {
-		if t.IntegrationID == integrationID && !t.RequiresApproval {
+		if t.IntegrationID == integrationID && !t.RequiresApproval && !t.ReadOnly {
 			tools = append(tools, t)
 		}
 	}
@@ -330,7 +330,7 @@ func (f *SettingsFlow) buildAppMenu(hosted *HostedAgent, integrationID string, a
 
 	var active, total int
 	for _, t := range hosted.tools() {
-		if t.IntegrationID == integrationID && !t.RequiresApproval {
+		if t.IntegrationID == integrationID && !t.RequiresApproval && !t.ReadOnly {
 			total++
 			if approvals[t.ID] {
 				active++

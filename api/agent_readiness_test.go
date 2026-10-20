@@ -14,7 +14,8 @@ import (
 // readinessStore holds one agent that already has the chat app "old".
 type readinessStore struct {
 	noopStore
-	saved []string
+	saved          []string
+	integrationFor map[string]string // identity id -> integration (and service) id; telegram unless said
 }
 
 func (s *readinessStore) LoadAgent(_ context.Context, id string) (*domain.Agent, error) {
@@ -27,11 +28,26 @@ func (s *readinessStore) GetAgentByIdentityID(context.Context, string) (*domain.
 	return nil, domain.ErrNotFound
 }
 func (s *readinessStore) GetIdentity(_ context.Context, id string) (*domain.Identity, error) {
-	return &domain.Identity{ID: id}, nil
+	integration := s.integrationFor[id]
+	if integration == "" {
+		integration = "telegram"
+	}
+	return &domain.Identity{ID: id, IntegrationID: integration}, nil
+}
+func (s *readinessStore) LoadIntegration(_ context.Context, id string) (*domain.Integration, error) {
+	return &domain.Integration{ID: id, Service: id}, nil
 }
 func (s *readinessStore) SaveAgent(_ context.Context, a *domain.Agent) error {
 	s.saved = append(s.saved, strings.Join(a.IdentityIDs, ","))
 	return nil
+}
+
+func (s *readinessStore) with(identity, integration string) *readinessStore {
+	if s.integrationFor == nil {
+		s.integrationFor = map[string]string{}
+	}
+	s.integrationFor[identity] = integration
+	return s
 }
 
 func putIdentities(st *readinessStore, ready func(context.Context, *domain.Agent) string, body string) (int, string) {
@@ -73,5 +89,17 @@ func TestAgentIdentities_TakingAChatAppAwayOrKeepingTheSameIsNeverRefused(t *tes
 		if code, b := putIdentities(st, notReady, body); code != http.StatusOK || len(st.saved) != 1 {
 			t.Errorf("%s: got %d %s saved=%v", name, code, b, st.saved)
 		}
+	}
+}
+
+// The rule is about chat apps: a GitHub app (what listens for pull requests) is not held back by it.
+func TestAgentIdentities_OnlyAChatAppIsHeldToTheRule(t *testing.T) {
+	st := (&readinessStore{}).with("new", "github")
+	if code, body := putIdentities(st, notReady, `{"identity_ids":["old","new"]}`); code != http.StatusOK {
+		t.Fatalf("a GitHub identity is attached whether or not the agent is ready: %d %s", code, body)
+	}
+	st = (&readinessStore{}).with("new", "telegram")
+	if code, _ := putIdentities(st, notReady, `{"identity_ids":["old","new"]}`); code != http.StatusConflict {
+		t.Fatalf("a chat app is still refused: %d", code)
 	}
 }

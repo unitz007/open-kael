@@ -199,3 +199,40 @@ func TestHydrateSkillTools_ALimitOnAConnectionNotListedGrantsNothing(t *testing.
 		t.Errorf("a limit does not add a connection, and does not narrow the one that is listed: %v", got)
 	}
 }
+
+// askRecorder is an ApprovalRequester that records being asked and answers yes.
+type askRecorder struct{ asked int }
+
+func (a *askRecorder) RequestApproval(context.Context, domain.ConversationRef, string, int) (bool, error) {
+	a.asked++
+	return true, nil
+}
+
+// A person's own "ask me first" is for things that change something: it is honoured on a change,
+// and never asked on a lookup, even if the setting was made earlier.
+func TestUserApproval_IsAskedForAChangeAndNeverForALookup(t *testing.T) {
+	integration := &domain.Integration{ID: "int_1", Service: "mock"}
+	registry := domain.NewExecutorRegistry()
+	registry.Register("mock", echoExecutor{})
+	run := func(readOnly bool) int {
+		tool := &domain.ToolDefinition{ID: "t", Name: "thing", Description: "A thing", IntegrationID: integration.ID, Action: "mock.thing", ReadOnly: readOnly}
+		bound, err := domain.HydrateTool(tool, nil, integration, registry)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ask := &askRecorder{}
+		ctx := domain.WithUserToolApprovals(context.Background(), map[string]bool{"t": true})
+		ctx = domain.WithApprovalRequester(ctx, ask)
+		ctx = domain.WithConversation(ctx, domain.ConversationRef{ChatID: "c"})
+		if _, err := bound.Invoke(ctx, map[string]any{}); err != nil {
+			t.Fatal(err)
+		}
+		return ask.asked
+	}
+	if n := run(false); n != 1 {
+		t.Errorf("a change the person asked to approve is asked once: %d", n)
+	}
+	if n := run(true); n != 0 {
+		t.Errorf("a lookup is never asked: %d", n)
+	}
+}

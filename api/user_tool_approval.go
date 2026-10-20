@@ -37,11 +37,16 @@ func (s *Server) setMyToolApproval(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	toolID := r.PathValue("toolID")
-	if _, err := s.store.GetTool(r.Context(), toolID); errors.Is(err, domain.ErrNotFound) {
+	tool, err := s.store.GetTool(r.Context(), toolID)
+	if errors.Is(err, domain.ErrNotFound) {
 		writeError(w, http.StatusNotFound, errors.New("tool not found"))
 		return
 	} else if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if tool.ReadOnly {
+		writeError(w, http.StatusBadRequest, errors.New("that only looks things up, so it never asks for approval; approval is for things that change something"))
 		return
 	}
 	if err := s.store.SetUserToolApproval(r.Context(), user.ID, toolID, true); err != nil {

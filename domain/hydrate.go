@@ -400,8 +400,9 @@ func UserToolApprovalsFromContext(ctx context.Context) map[string]bool {
 // the set — so it is safe to attach to every tool unconditionally.
 func withUserApprovalGate(def *ToolDefinition, inner func(ctx context.Context, input map[string]any) (any, error)) func(ctx context.Context, input map[string]any) (any, error) {
 	return func(ctx context.Context, input map[string]any) (any, error) {
+		// Approval is for things that change something; a lookup never asks, whatever was set before.
 		approvals := UserToolApprovalsFromContext(ctx)
-		if !approvals[def.ID] {
+		if def.ReadOnly || !approvals[def.ID] {
 			return inner(ctx, input)
 		}
 		requester, ok := ApprovalRequesterFromContext(ctx)

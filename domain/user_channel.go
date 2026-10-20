@@ -63,6 +63,19 @@ func SenderSharedAcrossBots(service string) bool {
 	return false
 }
 
+// messengerServices are the chat apps people talk to an agent on.
+var messengerServices = []string{"telegram", "slack", "discord", "whatsapp"}
+
+// IsMessengerService reports whether a service is a chat app.
+func IsMessengerService(service string) bool {
+	for _, s := range messengerServices {
+		if s == service {
+			return true
+		}
+	}
+	return false
+}
+
 // SharedSenderServices lists the services for which SenderSharedAcrossBots is true.
 func SharedSenderServices() []string { return append([]string(nil), sharedSenderServices...) }
 

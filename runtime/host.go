@@ -1167,6 +1167,9 @@ func (h *Host) configureToolApprovalAction(hosted *HostedAgent) *domain.BoundAct
 					name = def.Name
 				}
 				if name == toolName {
+					if def.ReadOnly {
+						return fmt.Sprintf("%q only looks things up, so it never needs your approval. Approval is for things that change something.", toolName), nil
+					}
 					toolID = def.ID
 					break
 				}

@@ -185,7 +185,7 @@ func (s *Server) setAgentIdentities(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if s.agentReadiness != nil && len(addedStrings(oldIDs, body.IdentityIDs)) > 0 {
+	if s.agentReadiness != nil && s.addsChatApp(r.Context(), addedStrings(oldIDs, body.IdentityIDs)) {
 		if reason := s.agentReadiness(r.Context(), agent); reason != "" {
 			writeError(w, http.StatusConflict, errors.New(reason))
 			return
@@ -370,4 +370,20 @@ func removedStrings(old, new []string) []string {
 		}
 	}
 	return removed
+}
+
+// addsChatApp reports whether any of the identities being added belongs to a chat app. Other
+// identities (a GitHub app, say) are not what people talk to the agent on.
+func (s *Server) addsChatApp(ctx context.Context, ids []string) bool {
+	for _, id := range ids {
+		identity, err := s.store.GetIdentity(ctx, id)
+		if err != nil {
+			continue
+		}
+		integration, err := s.store.LoadIntegration(ctx, identity.IntegrationID)
+		if err != nil || integration == nil || domain.IsMessengerService(integration.Service) {
+			return true // when in doubt, hold it to the rule
+		}
+	}
+	return false
 }
