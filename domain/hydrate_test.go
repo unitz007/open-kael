@@ -243,16 +243,17 @@ func TestUnattendedRun_AgreedChangeRunsWithoutAskingAndAnyOtherIsRefused(t *test
 	integration := &domain.Integration{ID: "int_1", Service: "mock"}
 	registry := domain.NewExecutorRegistry()
 	registry.Register("mock", echoExecutor{})
-	tool := &domain.ToolDefinition{ID: "t", Name: "post_comment", Description: "Posts", IntegrationID: integration.ID, Action: "mock.post", RequiresApproval: true,
-		InputSchema: domain.Schema{Type: domain.SchemaTypeObject}}
-	bound, err := domain.HydrateTool(tool, nil, integration, registry)
-	if err != nil {
-		t.Fatal(err)
-	}
 	attended := domain.WithConversation(context.Background(), domain.ConversationRef{ChatID: "c"})
 	unattended := func(allowed ...string) context.Context { return domain.WithUnattendedAllowing(attended, allowed) }
-	// ran reports whether the call reached the executor (the executor answers with its action).
+	// ran reports whether a call reached the executor (it answers with its action). Each call gets its own bound
+	// tool, because one that has run once refuses to run again in the same turn.
 	ran := func(ctx context.Context) bool {
+		tool := &domain.ToolDefinition{ID: "t", Name: "post_comment", Description: "Posts", IntegrationID: integration.ID, Action: "mock.post", RequiresApproval: true,
+			InputSchema: domain.Schema{Type: domain.SchemaTypeObject}}
+		bound, err := domain.HydrateTool(tool, nil, integration, registry)
+		if err != nil {
+			t.Fatal(err)
+		}
 		out, err := bound.Invoke(ctx, map[string]any{})
 		m, ok := out.(map[string]any)
 		return err == nil && ok && m["action"] == "mock.post"
