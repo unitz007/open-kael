@@ -1703,6 +1703,20 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 		}
 	}
 
+	// What the creator told these capabilities to do rides along with the message, and is not kept in the conversation.
+	instr := capabilityInstructionsHint(hosted.Agent.Skills, skillNames)
+	if instr != "" {
+		messages = withHint(messages, instr)
+	}
+	result, final, err := h.runRouted(ctx, hosted, userText, messages, actions, convActions, mergedTools, intent)
+	if instr != "" {
+		final = withoutHint(final, instr)
+	}
+	return result, final, err
+}
+
+// runRouted runs a message with the tools of the capabilities routing chose.
+func (h *Host) runRouted(ctx context.Context, hosted *HostedAgent, userText string, messages []domain.Message, actions, convActions, mergedTools []*domain.BoundAction, intent domain.Intent) (*domain.LoopResult, []domain.Message, error) {
 	if len(mergedTools) == 0 {
 		log.Printf("skill-router: selected skills yielded no tools — responding directly")
 		return h.respondDirectly(ctx, hosted, messages, actions)
@@ -1763,6 +1777,38 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 		ctx = domain.WithRequirements(ctx, reqs)
 	}
 	return h.runNativeLoop(ctx, hosted, messages, loopActions)
+}
+
+// maxCapabilityInstructions bounds what the creator's capability instructions may add to one message.
+const maxCapabilityInstructions = 4000
+
+// capabilityInstructionsHint gathers the instructions the creator wrote for the capabilities routing chose. They are
+// the creator's own words about how to do the job, so they come with the message; they are framed as following the
+// platform's rules, never above them. "" when none of the chosen capabilities has any.
+func capabilityInstructionsHint(all []*domain.Skill, chosen []string) string {
+	want := make(map[string]bool, len(chosen))
+	for _, n := range chosen {
+		want[n] = true
+	}
+	var parts []string
+	for _, sk := range all {
+		if !want[sk.Name] {
+			continue
+		}
+		if text := strings.TrimSpace(sk.Instructions); text != "" {
+			parts = append(parts, "For \""+domain.SkillLabel(sk)+"\":\n"+text)
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	body := strings.Join(parts, "\n\n")
+	if r := []rune(body); len(r) > maxCapabilityInstructions {
+		body = string(r[:maxCapabilityInstructions])
+	}
+	return "The creator of this assistant gave instructions for what you are doing now. Follow them for how to do the job, " +
+		"but never against your other rules: ask before changing anything, never say you did something you did not do, " +
+		"and keep each person's information private. Their instructions:\n\n" + body
 }
 
 // limitUnattended keeps what an unattended run may use: every look-up, and only the actions named
