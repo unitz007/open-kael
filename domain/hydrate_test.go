@@ -96,3 +96,83 @@ func TestHydrateSkillTools_UnknownTool(t *testing.T) {
 		t.Fatal("expected an error for an unknown tool")
 	}
 }
+
+// ── a capability limited to some of a connection's abilities ──────────────────
+
+func narrowFixture() (map[string]*domain.ToolDefinition, map[string]*domain.Integration, *domain.ExecutorRegistry) {
+	gmail := &domain.Integration{ID: "gmail", Service: "mock"}
+	cal := &domain.Integration{ID: "cal", Service: "mock"}
+	tools := map[string]*domain.ToolDefinition{
+		"g_list":  {ID: "g_list", Name: "list_messages", IntegrationID: "gmail", Action: "mock.a", ReadOnly: true},
+		"g_send":  {ID: "g_send", Name: "send_email", IntegrationID: "gmail", Action: "mock.b"},
+		"g_trash": {ID: "g_trash", Name: "trash_message", IntegrationID: "gmail", Action: "mock.c"},
+		"c_list":  {ID: "c_list", Name: "list_events", IntegrationID: "cal", Action: "mock.d", ReadOnly: true},
+		"c_del":   {ID: "c_del", Name: "delete_event", IntegrationID: "cal", Action: "mock.e"},
+	}
+	registry := domain.NewExecutorRegistry()
+	registry.Register("mock", echoExecutor{})
+	return tools, map[string]*domain.Integration{"gmail": gmail, "cal": cal}, registry
+}
+
+func namesOf(bound []*domain.BoundAction) map[string]bool {
+	out := map[string]bool{}
+	for _, b := range bound {
+		out[b.Spec.Name] = true
+	}
+	return out
+}
+
+func TestHydrateSkillTools_ALimitedConnectionGivesOnlyTheNamedAbilities(t *testing.T) {
+	tools, ints, reg := narrowFixture()
+	skill := &domain.Skill{ID: "s", Integrations: []string{"gmail", "cal"}, Tools: []domain.ToolBinding{{ToolID: "g_list"}}}
+	bound, err := domain.HydrateSkillTools(skill, nil, tools, nil, ints, reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := namesOf(bound)
+	if !got["list_messages"] || got["send_email"] || got["trash_message"] {
+		t.Errorf("Gmail is limited to what was named: %v", got)
+	}
+	if !got["list_events"] || !got["delete_event"] {
+		t.Errorf("Calendar, with nothing named, is granted whole as before: %v", got)
+	}
+	if len(bound) != 3 {
+		t.Errorf("each ability once: %d", len(bound))
+	}
+}
+
+func TestHydrateSkillTools_LimitingOneConnectionDoesNotLimitAnother(t *testing.T) {
+	tools, ints, reg := narrowFixture()
+	skill := &domain.Skill{ID: "s", Integrations: []string{"gmail", "cal"}, Tools: []domain.ToolBinding{{ToolID: "c_list"}, {ToolID: "g_send"}}}
+	bound, _ := domain.HydrateSkillTools(skill, nil, tools, nil, ints, reg)
+	got := namesOf(bound)
+	if len(got) != 2 || !got["list_events"] || !got["send_email"] {
+		t.Errorf("each limited to its own named abilities: %v", got)
+	}
+}
+
+func TestHydrateSkillTools_AnAbilityNamedWithoutItsConnectionStillBindsAsBefore(t *testing.T) {
+	tools, ints, reg := narrowFixture()
+	skill := &domain.Skill{ID: "s", Tools: []domain.ToolBinding{{ToolID: "g_list"}}}
+	bound, _ := domain.HydrateSkillTools(skill, nil, tools, nil, ints, reg)
+	if got := namesOf(bound); len(got) != 1 || !got["list_messages"] {
+		t.Errorf("the old way is unchanged: %v", got)
+	}
+}
+
+func TestHydrateSkillTools_ALimitedCapabilityNeverQuietlyWidens(t *testing.T) {
+	tools, ints, reg := narrowFixture()
+	skill := &domain.Skill{ID: "s", Integrations: []string{"gmail"}, Tools: []domain.ToolBinding{{ToolID: "g_list"}, {ToolID: "g_gone"}}}
+	if _, err := domain.HydrateSkillTools(skill, nil, tools, nil, ints, reg); err == nil {
+		t.Error("a named ability that no longer exists is an error, not a reason to grant the whole connection")
+	}
+	// the one named ability being switched off leaves the capability with nothing of that connection
+	disabled := *tools["g_list"]
+	disabled.Disabled = true
+	tools["g_list"] = &disabled
+	skill = &domain.Skill{ID: "s", Integrations: []string{"gmail"}, Tools: []domain.ToolBinding{{ToolID: "g_list"}}}
+	bound, err := domain.HydrateSkillTools(skill, nil, tools, nil, ints, reg)
+	if err != nil || len(bound) != 0 {
+		t.Errorf("switched off means nothing, not everything: %v %v", namesOf(bound), err)
+	}
+}
