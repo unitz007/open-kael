@@ -12,6 +12,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -1425,7 +1426,7 @@ func (h *Host) HandleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 				log.Printf("runtime: agent %q: stream reply failed, falling back: %v", hosted.Agent.ID, serr)
 				messageID = h.deliverBestEffortID(ctx, hosted, conv, content)
 			}
-			h.attachChoices(ctx, hosted, conv, identity, connRef, executor, messageID, content, choices)
+			h.attachChoices(ctx, hosted, conv, identity, connRef, executor, messageID, content, h.withDerived(ctx, hosted, result, userText, content, choices))
 			if !unattended {
 				h.maybeLearn(ctx, conv, hosted, userText, content)
 			}
@@ -1434,7 +1435,7 @@ func (h *Host) HandleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 		log.Printf("runtime: agent %q: executor does not implement StreamingMessenger, using atomic send", hosted.Agent.ID)
 	}
 	messageID := h.deliverBestEffortID(ctx, hosted, conv, content)
-	h.attachChoices(ctx, hosted, conv, identity, connRef, executor, messageID, content, choices)
+	h.attachChoices(ctx, hosted, conv, identity, connRef, executor, messageID, content, h.withDerived(ctx, hosted, result, userText, content, choices))
 	if !unattended {
 		h.maybeLearn(ctx, conv, hosted, userText, content)
 	}
@@ -1633,7 +1634,21 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 			if classified && intent == domain.IntentRecommend {
 				log.Printf("skill-router: a question no ability covers — answering without tools")
 				result, final, rerr := h.respondDirectly(ctx, hosted, withHint(messages, inAreaHint), actions)
-				return result, withoutHint(final, inAreaHint), rerr
+				if rerr != nil || !promisesLookup(result) {
+					return result, withoutHint(final, inAreaHint), rerr
+				}
+				// It said it was about to check or run something, and with no tools it cannot: some
+				// models ignore the instruction not to. Ask once more, and if it still does, say what
+				// the agent can do instead of leaving a promise nothing will keep.
+				log.Printf("skill-router: the reply promised a look-up it cannot do — asking again")
+				retryHint := inAreaHint + " " + inAreaRetryHint
+				result, final, rerr = h.respondDirectly(ctx, hosted, withHint(messages, retryHint), actions)
+				if rerr != nil || promisesLookup(result) {
+					log.Printf("skill-router: still promising a look-up — replying with what I can do")
+					r, f := fixedReply(messages, declineText(hosted.Agent))
+					return r, f, nil
+				}
+				return result, withoutHint(final, retryHint), rerr
 			}
 			log.Printf("skill-router: nothing it can do for this matched — replying with what I can do")
 			h.noteCouldNot(ctx, hosted, userText)
@@ -1834,6 +1849,25 @@ const inAreaHint = "The person asked about something in your area that none of y
 	"Never say or imply that you are looking something up, checking, running or doing anything. " +
 	"Do not state live prices, quotes or other current data that you do not have, and do not promise anything you cannot do. " +
 	"If you cannot answer without live data or an ability you do not have, say so plainly and say briefly what you can do."
+
+// inAreaRetryHint is added when a reply to such a question promised a look-up that cannot happen.
+const inAreaRetryHint = "Your last attempt said you were about to look something up, check or run something. You cannot do that here, so do not say it. " +
+	"Answer from what you know in a sentence or two, or say plainly what you can do and what you would need from them."
+
+// promiseOfLookup finds a reply that says it is about to look something up or run something.
+var promiseOfLookup = regexp.MustCompile(`(?i)(let me (check|look|scan|run|pull|see|find|analy[sz]e|search|fetch|get|go)\b|i'?ll (check|look|scan|run|pull|find|analy[sz]e|search|fetch|get)\b|i will (check|look|scan|run|pull|find|analy[sz]e|search|fetch|get)\b|i('m| am) (checking|looking|scanning|running|pulling|analy[sz]ing|searching)\b|one moment|give me a (moment|second|sec)\b)`)
+
+// promisesLookup reports whether a turn's reply promises a look-up (in its first few sentences).
+func promisesLookup(result *domain.LoopResult) bool {
+	if result == nil || result.Content == "" {
+		return false
+	}
+	r := []rune(result.Content)
+	if len(r) > 240 {
+		r = r[:240]
+	}
+	return promiseOfLookup.MatchString(string(r))
+}
 
 // scopeContext describes what an agent is for, so a router can judge whether a message is in
 // its area: what the creator wrote about it. The list of abilities is deliberately left out:

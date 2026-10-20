@@ -43,9 +43,9 @@ func (h *Host) finishFor(ctx context.Context, hosted *HostedAgent, withOutcome b
 	return a
 }
 
-// addChoicesTo lets the finish action carry choices.
-func addChoicesTo(a *domain.BoundAction) {
-	a.Spec.InputSchema.Properties["choices"] = domain.Schema{
+// choicesSchema describes the choices an agent may finish with.
+func choicesSchema() domain.Schema {
+	return domain.Schema{
 		Type: domain.SchemaTypeArray,
 		Description: "Optional. When the best next step is a decision for the person, and you would otherwise end by asking " +
 			"\"want me to…?\", give 2 to 5 ready next steps instead, shown as buttons so they can tap rather than type. " +
@@ -61,6 +61,11 @@ func addChoicesTo(a *domain.BoundAction) {
 			Required: []string{"label", "say"},
 		},
 	}
+}
+
+// addChoicesTo lets the finish action carry choices.
+func addChoicesTo(a *domain.BoundAction) {
+	a.Spec.InputSchema.Properties["choices"] = choicesSchema()
 }
 
 // choicesOf reads the choices an agent finished with, for turns where someone is there to see them.

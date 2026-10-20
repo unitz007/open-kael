@@ -169,3 +169,96 @@ func TestIntentFirst_TheModelIsToldNotToPretendToLookThingsUp(t *testing.T) {
 		}
 	}
 }
+
+// promiseLLM answers each call with the next reply in its list (the last one repeats) and records
+// the instructions the model was shown each time.
+type promiseLLM struct {
+	replies []string
+	seen    [][]string
+}
+
+func (s *promiseLLM) Call(_ context.Context, msgs []domain.Message, _ []domain.ActionSpec) (*domain.LLMResponse, error) {
+	var sys []string
+	for _, m := range msgs {
+		if m.Role == domain.RoleSystem {
+			sys = append(sys, m.Content)
+		}
+	}
+	s.seen = append(s.seen, sys)
+	i := len(s.seen) - 1
+	if i >= len(s.replies) {
+		i = len(s.replies) - 1
+	}
+	return &domain.LLMResponse{ToolCalls: []domain.ToolCall{{ID: "f", Name: domain.FinishActionName, Arguments: map[string]any{"content": s.replies[i]}}}}, nil
+}
+
+func inAreaRigWith(t *testing.T, llm domain.LLM) *followRig {
+	t.Helper()
+	router := &intentRouter{intents: map[string]domain.Intent{"Are there any tradeable pairs?": domain.IntentRecommend}}
+	r := newIntentRig(t, router)
+	r.hosted.Agent.LLMs = []domain.LLM{llm}
+	return r
+}
+
+// Some models say "Let me check the major pairs…" with no tools to check anything: the promise is
+// never kept. The question is asked once more, and what is sent is the honest answer.
+func TestIntentFirst_APromisedLookUpWithNoToolsIsAskedAgain(t *testing.T) {
+	llm := &promiseLLM{replies: []string{"Let me check the major pairs for tradeable setups right now.", "Any pair can be traded; I analyse one at a time, so tell me which."}}
+	r := inAreaRigWith(t, llm)
+	r.say(t, "C1", "Are there any tradeable pairs?")
+
+	if got := r.box.texts(); len(got) != 1 || got[0] != "Any pair can be traded; I analyse one at a time, so tell me which." {
+		t.Fatalf("the second answer is the one sent: %q", got)
+	}
+	if len(llm.seen) != 2 {
+		t.Fatalf("asked twice: %d", len(llm.seen))
+	}
+	if joined := strings.Join(llm.seen[1], "\n"); !strings.Contains(joined, "Your last attempt said you were about to look something up") {
+		t.Errorf("the second ask says what was wrong: %q", llm.seen[1])
+	}
+	for _, s := range llm.seen[0] {
+		if strings.Contains(s, "last attempt") {
+			t.Errorf("the first ask does not carry the correction: %q", s)
+		}
+	}
+	for _, msgs := range r.mem.store {
+		for _, m := range msgs {
+			if m.Role == domain.RoleSystem || strings.Contains(m.Content, "Let me check") {
+				t.Errorf("neither the instructions nor the broken promise are kept: %+v", m)
+			}
+		}
+	}
+}
+
+func TestIntentFirst_AModelThatKeepsPromisingIsToldWhatTheAgentCanDoInstead(t *testing.T) {
+	llm := &promiseLLM{replies: []string{"I'll scan the majors now.", "Let me run a scan for you."}}
+	r := inAreaRigWith(t, llm)
+	r.say(t, "C1", "Are there any tradeable pairs?")
+	if got := r.box.texts(); len(got) != 1 || got[0] != fixedDecline() {
+		t.Errorf("what the agent can do, not a promise nothing keeps: %q", got)
+	}
+	if len(llm.seen) != 2 {
+		t.Errorf("one retry, no more: %d", len(llm.seen))
+	}
+}
+
+func TestIntentFirst_AnHonestAnswerIsNotAskedAgain(t *testing.T) {
+	llm := &promiseLLM{replies: []string{"The forex market is open around the clock on weekdays, so yes."}}
+	r := inAreaRigWith(t, llm)
+	r.say(t, "C1", "Are there any tradeable pairs?")
+	if len(llm.seen) != 1 || r.box.texts()[0] != llm.replies[0] {
+		t.Errorf("one call, reply as given: %d %q", len(llm.seen), r.box.texts())
+	}
+}
+
+// Only how a reply opens decides whether it promised something: a long, honest answer that happens to
+// say "let me check" much later is left alone.
+func TestIntentFirst_APhraseFarIntoALongAnswerIsNotAPromise(t *testing.T) {
+	long := "Forex trades around the clock from Sunday evening to Friday evening. " + strings.Repeat("Liquidity is highest when London and New York overlap. ", 6) + "If you want a specific pair, let me check it for you."
+	llm := &promiseLLM{replies: []string{long}}
+	r := inAreaRigWith(t, llm)
+	r.say(t, "C1", "Are there any tradeable pairs?")
+	if len(llm.seen) != 1 || r.box.texts()[0] != long {
+		t.Errorf("one call, reply as given: %d", len(llm.seen))
+	}
+}
