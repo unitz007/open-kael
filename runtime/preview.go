@@ -21,11 +21,11 @@ type ToolUse struct {
 // executed, so it is safe to run while someone is still typing their instructions. It reports the model's first
 // move: the abilities it reaches for before it has seen any result.
 func PreviewToolUse(ctx context.Context, llm domain.LLM, agent *domain.Agent, skill *domain.Skill, defs []*domain.ToolDefinition, userText string) (ToolUse, error) {
-	messages := []domain.Message{{Role: domain.RoleSystem, Content: buildSystemPrompt(agent, "", "", nil, nil, nil, domain.UserDetails{})}}
+	system := buildSystemPrompt(agent, "", "", nil, nil, nil, domain.UserDetails{})
 	if hint := capabilityInstructionsHint([]*domain.Skill{skill}, []string{skill.Name}); hint != "" {
-		messages = append(messages, domain.Message{Role: domain.RoleSystem, Content: hint})
+		system += "\n\n" + hint
 	}
-	messages = append(messages, domain.Message{Role: domain.RoleUser, Content: userText})
+	messages := []domain.Message{{Role: domain.RoleSystem, Content: system}, {Role: domain.RoleUser, Content: userText}}
 
 	byName := make(map[string]*domain.ToolDefinition, len(defs))
 	specs := make([]domain.ActionSpec, 0, len(defs)+1)

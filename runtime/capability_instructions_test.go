@@ -69,7 +69,7 @@ func TestCapabilityInstructions_ReachTheModelWhenRoutingChoosesThatCapability(t 
 	}
 	for _, text := range spy.systemTexts() {
 		if strings.Contains(text, "ALWAYS-QUOTE") {
-			for _, want := range []string{"never against your other rules", "ask before changing anything", "never say you did something you did not do", "keep each person's information private", `For "Analyses a currency pair"`} {
+			for _, want := range []string{"Follow them closely", "Where they say not to use something, do not use it", "Only your other rules come before them", "ask before changing anything", "never say you did something you did not do", "keep each person's information private", `For "Analyses a currency pair"`} {
 				if !strings.Contains(text, want) {
 					t.Errorf("they come framed under the platform's rules, saying which capability they are for: missing %q in %q", want, text)
 				}
@@ -96,7 +96,7 @@ func TestCapabilityInstructions_AreNotKeptInTheConversation(t *testing.T) {
 	r.say(t, "C1", "what is the price")
 	for _, msgs := range r.mem.store {
 		for _, m := range msgs {
-			if strings.Contains(m.Content, "SECRET-WORDING-OF-THE-CREATOR") || strings.Contains(m.Content, "never against your other rules") {
+			if strings.Contains(m.Content, "SECRET-WORDING-OF-THE-CREATOR") || strings.Contains(m.Content, "Only your other rules come before them") {
 				t.Errorf("the instructions ride along with the message and are not stored: %+v", m)
 			}
 		}
@@ -137,5 +137,28 @@ func TestCapabilityInstructions_AnUnroutedMessageGetsNone(t *testing.T) {
 	r.say(t, "C1", "hello there")
 	if spy.saw("ONLY-WHEN-CHOSEN") {
 		t.Errorf("not chosen, not applied: %q", spy.systemTexts())
+	}
+}
+
+// Where the instructions go matters: measured on the real model, instructions inside the agent's own prompt are followed far more
+// often than a note beside the message.
+func TestCapabilityInstructions_AreInTheAgentsOwnPromptNotANoteBesideTheMessage(t *testing.T) {
+	r, spy := instructionRig(t, "KEEP-IN-THE-PROMPT")
+	r.say(t, "C1", "what is the price")
+	spy.mu.Lock()
+	defer spy.mu.Unlock()
+	if len(spy.seen) == 0 {
+		t.Fatal("no model call")
+	}
+	for _, call := range spy.seen {
+		first := call[0]
+		if first.Role != domain.RoleSystem || !strings.Contains(first.Content, "You are Desk.") || !strings.Contains(first.Content, "KEEP-IN-THE-PROMPT") {
+			t.Errorf("the first system message is the agent's own prompt and carries the instructions: %q", first.Content)
+		}
+		for _, m := range call[1:] {
+			if m.Role == domain.RoleSystem && strings.Contains(m.Content, "KEEP-IN-THE-PROMPT") {
+				t.Errorf("not a separate note: %q", m.Content)
+			}
+		}
 	}
 }

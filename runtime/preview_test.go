@@ -46,16 +46,13 @@ func TestPreviewToolUse_TriesTheMessageTheWayARealTurnWouldShowIt(t *testing.T) 
 	if _, err := runtime.PreviewToolUse(context.Background(), llm, agent, skill, defs(), "what is open?"); err != nil {
 		t.Fatal(err)
 	}
-	if len(llm.msgs) != 3 || llm.msgs[0].Role != domain.RoleSystem || llm.msgs[1].Role != domain.RoleSystem || llm.msgs[2].Role != domain.RoleUser || llm.msgs[2].Content != "what is open?" {
-		t.Fatalf("the agent's own prompt, the creator's instructions, then the message: %+v", llm.msgs)
+	if len(llm.msgs) != 2 || llm.msgs[0].Role != domain.RoleSystem || llm.msgs[1].Role != domain.RoleUser || llm.msgs[1].Content != "what is open?" {
+		t.Fatalf("one prompt, with the creator's instructions in it, then the message: %+v", llm.msgs)
 	}
-	for _, want := range []string{"You are Nova.", "Trading helper", "You are calm."} {
+	for _, want := range []string{"You are Nova.", "Trading helper", "You are calm.", "Always check what is open before anything else.", "Only your other rules come before them"} {
 		if !strings.Contains(llm.msgs[0].Content, want) {
-			t.Errorf("the agent's own prompt must carry %q: %q", want, llm.msgs[0].Content)
+			t.Errorf("the agent's own prompt, then the capability's instructions as in a real turn, must carry %q: %q", want, llm.msgs[0].Content)
 		}
-	}
-	if !strings.Contains(llm.msgs[1].Content, "Always check what is open before anything else.") || !strings.Contains(llm.msgs[1].Content, "never against your other rules") {
-		t.Errorf("the capability's instructions, framed as in a real turn: %q", llm.msgs[1].Content)
 	}
 	var names []string
 	for _, a := range llm.actions {
@@ -76,8 +73,8 @@ func TestPreviewToolUse_NoInstructionsMeansNoExtraMessage(t *testing.T) {
 	if _, err := runtime.PreviewToolUse(context.Background(), llm, agent, skill, defs(), "hello"); err != nil {
 		t.Fatal(err)
 	}
-	if len(llm.msgs) != 2 {
-		t.Errorf("only the agent's prompt and the message: %+v", llm.msgs)
+	if len(llm.msgs) != 2 || strings.Contains(llm.msgs[0].Content, "gave instructions for what you are doing now") {
+		t.Errorf("only the agent's prompt and the message, no instructions section: %+v", llm.msgs)
 	}
 }
 

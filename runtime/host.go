@@ -1703,16 +1703,24 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 		}
 	}
 
-	// What the creator told these capabilities to do rides along with the message, and is not kept in the conversation.
-	instr := capabilityInstructionsHint(hosted.Agent.Skills, skillNames)
-	if instr != "" {
-		messages = withHint(messages, instr)
+	// What the creator told these capabilities to do goes into the agent's own prompt for this message: measured on the
+	// real model, instructions there are followed far more often than as a note beside the message (90% against 73%
+	// on "do not use this" instructions). The prompt is not kept in the conversation, so neither are they.
+	if instr := capabilityInstructionsHint(hosted.Agent.Skills, skillNames); instr != "" {
+		messages = withSystemAddition(messages, instr)
 	}
-	result, final, err := h.runRouted(ctx, hosted, userText, messages, actions, convActions, mergedTools, intent)
-	if instr != "" {
-		final = withoutHint(final, instr)
+	return h.runRouted(ctx, hosted, userText, messages, actions, convActions, mergedTools, intent)
+}
+
+// withSystemAddition returns messages with text added to the end of the first system message, which is the agent's
+// own prompt. The list the caller holds is not changed.
+func withSystemAddition(messages []domain.Message, text string) []domain.Message {
+	if len(messages) == 0 || messages[0].Role != domain.RoleSystem {
+		return withHint(messages, text) // no prompt to add to: it rides beside the message instead
 	}
-	return result, final, err
+	out := append([]domain.Message(nil), messages...)
+	out[0].Content += "\n\n" + text
+	return out
 }
 
 // runRouted runs a message with the tools of the capabilities routing chose.
@@ -1806,8 +1814,9 @@ func capabilityInstructionsHint(all []*domain.Skill, chosen []string) string {
 	if r := []rune(body); len(r) > maxCapabilityInstructions {
 		body = string(r[:maxCapabilityInstructions])
 	}
-	return "The creator of this assistant gave instructions for what you are doing now. Follow them for how to do the job, " +
-		"but never against your other rules: ask before changing anything, never say you did something you did not do, " +
+	return "The creator of this assistant gave instructions for what you are doing now. Follow them closely: they decide how you do this job, " +
+		"including when to use an ability and when not to, and what to say. Where they say not to use something, do not use it. " +
+		"Only your other rules come before them: ask before changing anything, never say you did something you did not do, " +
 		"and keep each person's information private. Their instructions:\n\n" + body
 }
 
