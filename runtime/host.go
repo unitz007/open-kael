@@ -932,7 +932,9 @@ const proposeGuidance = "Moving things forward: when the next useful step is onl
 	"do it now and tell them what you found; do not offer to. When the next step would change something, do the looking-up first so that " +
 	"what you propose is specific (the real time, the real name, the real amount), then propose exactly that. Never end with a vague " +
 	"\"want me to help with that?\" or \"let me know if you'd like...\". If there are a few good ways forward, give them as choices when " +
-	"your finish action allows it, otherwise ask one short, specific question. Never go ahead with a change without their agreement."
+	"your finish action allows it, otherwise ask one short, specific question. When they only asked a question, answer it and stop: " +
+	"do not tack on an offer to book, hold, set up or do something they did not ask about, unless you can name the exact thing as a choice. " +
+	"Never go ahead with a change without their agreement."
 
 // buildSystemPrompt constructs the agent's system prompt dynamically from its
 // name, description, and current skill list. Three layers of user context are
