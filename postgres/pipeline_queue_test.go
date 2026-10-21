@@ -961,3 +961,27 @@ func TestJobs_DeferPutsItOffWithoutCountingTheAttempt(t *testing.T) {
 		t.Fatalf("at its time, still its first attempt: %+v", again)
 	}
 }
+
+// Switching the pipeline off drops what was waiting or running, with the reason, and leaves shadow and finished jobs alone.
+func TestDropLiveJobs_DropsWhatWouldRunLateAndNothingElse(t *testing.T) {
+	s, pool := world(t)
+	ctx := context.Background()
+	person(t, s, "p1")
+	for i, st := range []string{"new", "running", "shadow", "done", "failed"} {
+		enqueue(t, s.Jobs(), fmt.Sprint("a", i), "p1", nil)
+		exec(t, pool, fmt.Sprintf(`UPDATE pipeline_jobs SET status = '%s' WHERE alert_id = 'a%d'`, st, i))
+	}
+	n, err := s.DropLiveJobs(ctx, "the pipeline was switched off")
+	if err != nil || n != 2 {
+		t.Fatalf("%d %v", n, err)
+	}
+	c, _ := s.Jobs().Counts(ctx)
+	if c["dropped"] != 2 || c["shadow"] != 1 || c["done"] != 1 || c["failed"] != 1 || c["new"] != 0 {
+		t.Fatalf("%v", c)
+	}
+	var note string
+	_ = pool.QueryRow(ctx, `SELECT note FROM pipeline_jobs WHERE alert_id = 'a0'`).Scan(&note)
+	if note != "the pipeline was switched off" {
+		t.Fatalf("%q", note)
+	}
+}

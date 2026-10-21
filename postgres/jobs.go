@@ -416,3 +416,15 @@ func (s *Store) PurgeInbox(ctx context.Context, keep, keepProblems time.Duration
 }
 
 var _ domain.PipelinePurger = (*Store)(nil)
+
+// DropLiveJobs drops the jobs that are waiting or were running (not shadow ones, which never run), with a reason. It is
+// how switching the pipeline off leaves nothing behind that a later start would run late. It returns how many.
+func (s *Store) DropLiveJobs(ctx context.Context, note string) (int, error) {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE pipeline_jobs SET status = 'dropped', note = $1, locked_by = '', locked_until = NULL, finished_at = NOW()
+		WHERE status IN ('new', 'running')`, note)
+	if err != nil {
+		return 0, fmt.Errorf("postgres: drop live jobs: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
+}
