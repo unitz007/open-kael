@@ -3,6 +3,7 @@ package domain
 import (
 	"context"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -62,4 +63,34 @@ type InboxStore interface {
 	Insert(ctx context.Context, o *Occurrence) (id int64, inserted bool, err error)
 	// Counts says how many stored occurrences are in each status.
 	Counts(ctx context.Context) (map[string]int, error)
+}
+
+// ExternalIdentity says that a person is known on a connection by an identifier the source uses: their GitHub login on
+// a GitHub app, their id in a creator's service. An event that names such an identifier is about every person linked
+// to it, which is why this is one to many (several people can be connected to one GitHub account, or to a shared app).
+type ExternalIdentity struct {
+	ConnectionID string // the identity (app) the identifier is seen through
+	Kind         string // what sort of identifier: "github_account"; matches Occurrence.SubjectKind
+	Value        string // the identifier, as NormalizeIdentifier makes it
+	PersonID     string
+	AuthID       string // the connected account it came from, when it came from one; deleting that deletes this
+}
+
+// NormalizeIdentifier makes an identifier comparable. Sources that ignore case (GitHub logins, email addresses) are
+// folded to lower case on both sides; every other kind is only trimmed.
+func NormalizeIdentifier(kind, value string) string {
+	value = strings.TrimSpace(value)
+	switch kind {
+	case "github_account", "email":
+		return strings.ToLower(value)
+	}
+	return value
+}
+
+// PeopleStore finds the people an occurrence is about.
+type PeopleStore interface {
+	// Link records that a person is known by an identifier on a connection. Linking the same thing again is a no-op.
+	Link(ctx context.Context, id ExternalIdentity) error
+	// PeopleFor returns the people linked to an identifier on a connection, in a stable order; none when unknown.
+	PeopleFor(ctx context.Context, connectionID, kind, value string) ([]string, error)
 }

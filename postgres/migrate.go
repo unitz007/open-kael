@@ -10,6 +10,7 @@ package postgres
 import (
 	"context"
 	_ "embed"
+	"sync"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -35,6 +36,8 @@ type Store struct {
 	hub  activityHub
 	// extra is what other packages keep per person, so a merge or delete reaches it too.
 	extra personTables
+	// identityKinds maps a service to the kind of identifier its connected accounts carry (see RegisterIdentityKind).
+	identityKinds sync.Map
 }
 
 func New(pool *pgxpool.Pool) *Store {

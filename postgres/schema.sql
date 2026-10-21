@@ -590,3 +590,17 @@ CREATE TABLE IF NOT EXISTS events_inbox (
     UNIQUE (source, delivery_id)
 );
 CREATE INDEX IF NOT EXISTS events_inbox_due ON events_inbox (next_attempt_at) WHERE status IN ('new', 'routing');
+
+-- Events pipeline: who an identifier a source uses (a GitHub login, an id in a creator's service) stands for. One to
+-- many: an identifier can be several people. A row that came from a connected account goes when that account does.
+CREATE TABLE IF NOT EXISTS external_identities (
+    connection_id TEXT NOT NULL,
+    kind          TEXT NOT NULL,
+    value         TEXT NOT NULL,
+    person_id     TEXT NOT NULL REFERENCES persons (id) ON DELETE CASCADE,
+    auth_id       TEXT REFERENCES app_authorizations (id) ON DELETE CASCADE,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (connection_id, kind, value, person_id)
+);
+CREATE INDEX IF NOT EXISTS external_identities_person ON external_identities (person_id);
+CREATE INDEX IF NOT EXISTS external_identities_auth ON external_identities (auth_id);

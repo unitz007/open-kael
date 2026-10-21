@@ -26,7 +26,10 @@ func (s *Store) SaveAppAuthorization(ctx context.Context, a *domain.AppAuthoriza
 			credential_ref   = EXCLUDED.credential_ref,
 			external_user_id = EXCLUDED.external_user_id
 	`, a.ID, a.IdentityID, a.UserID, a.Scope, a.Name, a.CredentialRef, a.ExternalUserID)
-	return err
+	if err != nil {
+		return err
+	}
+	return s.syncExternalIdentity(ctx, a)
 }
 
 func (s *Store) GetAppAuthorization(ctx context.Context, id string) (*domain.AppAuthorization, error) {

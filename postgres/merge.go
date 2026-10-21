@@ -37,6 +37,7 @@ var keyedPersonTables = []personTable{
 	{"profile_migrations", "user_id"},
 	{"user_profiles", "user_id"},
 	{"user_integration_notes", "user_id"},
+	{"external_identities", "person_id"},
 }
 
 type personTable struct{ table, column string }
