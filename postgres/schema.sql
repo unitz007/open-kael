@@ -618,7 +618,7 @@ CREATE TABLE IF NOT EXISTS pipeline_jobs (
     facts         JSONB NOT NULL,
     level         TEXT NOT NULL,                      -- notify | filter | agent
     run_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    status        TEXT NOT NULL DEFAULT 'new',        -- new | running | done | dropped | failed
+    status        TEXT NOT NULL DEFAULT 'new',        -- new | running | done | dropped | failed | shadow
     attempts      INT NOT NULL DEFAULT 0,
     locked_by     TEXT NOT NULL DEFAULT '',
     locked_until  TIMESTAMPTZ,

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -45,11 +46,11 @@ func (j jobStore) Enqueue(ctx context.Context, job *domain.Job) (bool, error) {
 		runAt = time.Now()
 	}
 	err = j.s.pool.QueryRow(ctx, `
-		INSERT INTO pipeline_jobs (inbox_id, alert_id, person_id, agent_id, event, repeat_key, facts, level, run_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		INSERT INTO pipeline_jobs (inbox_id, alert_id, person_id, agent_id, event, repeat_key, facts, level, run_at, status)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		ON CONFLICT (alert_id, repeat_key) DO NOTHING
 		RETURNING id`,
-		inbox, job.AlertID, job.PersonID, job.AgentID, job.Event, job.RepeatKey, facts, job.Level, runAt).Scan(&job.ID)
+		inbox, job.AlertID, job.PersonID, job.AgentID, job.Event, job.RepeatKey, facts, job.Level, runAt, startStatus(job)).Scan(&job.ID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
@@ -57,6 +58,92 @@ func (j jobStore) Enqueue(ctx context.Context, job *domain.Job) (bool, error) {
 		return false, fmt.Errorf("postgres: enqueue job: %w", err)
 	}
 	return true, nil
+}
+
+func startStatus(j *domain.Job) string {
+	if j.Shadow {
+		return "shadow"
+	}
+	return "new"
+}
+
+// EnqueueCapped stores a job within caps. See domain.JobStore.
+func (j jobStore) EnqueueCapped(ctx context.Context, job *domain.Job, caps []domain.JobCap) (domain.EnqueueResult, error) {
+	if job.AlertID == "" || job.PersonID == "" || job.AgentID == "" || job.Event == "" || job.RepeatKey == "" || !validLevel(job.Level) {
+		return domain.EnqueueResult{}, fmt.Errorf("postgres: enqueue job: need an alert, person, agent, event, repeat key and a level")
+	}
+	for _, c := range caps {
+		if (c.Scope != domain.CapAlert && c.Scope != domain.CapPersonAgent) || c.Window <= 0 || c.Max < 0 {
+			return domain.EnqueueResult{}, fmt.Errorf("postgres: enqueue job: not a cap: %+v", c)
+		}
+	}
+	facts, err := json.Marshal(job.Facts)
+	if err != nil {
+		return domain.EnqueueResult{}, fmt.Errorf("postgres: encode job facts: %w", err)
+	}
+	runAt := job.RunAt
+	if runAt.IsZero() {
+		runAt = time.Now()
+	}
+	tx, err := j.s.pool.Begin(ctx)
+	if err != nil {
+		return domain.EnqueueResult{}, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	// One lock per alert and one per person with an agent, always taken in the same order, so two workers counting
+	// and storing for the same alert or person take turns instead of both seeing room.
+	keys := []string{"job-alert:" + job.AlertID, "job-person-agent:" + job.PersonID + "|" + job.AgentID}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, k); err != nil {
+			return domain.EnqueueResult{}, fmt.Errorf("postgres: lock for jobs: %w", err)
+		}
+	}
+	var dup bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pipeline_jobs WHERE alert_id = $1 AND repeat_key = $2)`, job.AlertID, job.RepeatKey).Scan(&dup); err != nil {
+		return domain.EnqueueResult{}, err
+	}
+	if dup {
+		return domain.EnqueueResult{Outcome: domain.JobDuplicate}, nil
+	}
+	// A shadow job is counted only against other shadow jobs, and a real one only against real ones.
+	statuses := []string{"new", "running", "done"}
+	if job.Shadow {
+		statuses = []string{"shadow"}
+	}
+	for i := range caps {
+		c := caps[i]
+		var n int
+		var err error
+		if c.Scope == domain.CapAlert {
+			err = tx.QueryRow(ctx, `SELECT COUNT(*) FROM pipeline_jobs WHERE alert_id = $1 AND status = ANY($2) AND created_at > NOW() - make_interval(secs => $3)`,
+				job.AlertID, statuses, c.Window.Seconds()).Scan(&n)
+		} else {
+			err = tx.QueryRow(ctx, `SELECT COUNT(*) FROM pipeline_jobs WHERE person_id = $1 AND agent_id = $2 AND status = ANY($3) AND created_at > NOW() - make_interval(secs => $4)`,
+				job.PersonID, job.AgentID, statuses, c.Window.Seconds()).Scan(&n)
+		}
+		if err != nil {
+			return domain.EnqueueResult{}, fmt.Errorf("postgres: count jobs: %w", err)
+		}
+		if n >= c.Max {
+			return domain.EnqueueResult{Outcome: domain.JobOverCap, Cap: &caps[i]}, nil
+		}
+	}
+	var inbox any
+	if job.InboxID != 0 {
+		inbox = job.InboxID
+	}
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO pipeline_jobs (inbox_id, alert_id, person_id, agent_id, event, repeat_key, facts, level, run_at, status)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
+		inbox, job.AlertID, job.PersonID, job.AgentID, job.Event, job.RepeatKey, facts, job.Level, runAt, startStatus(job)).Scan(&job.ID); err != nil {
+		return domain.EnqueueResult{}, fmt.Errorf("postgres: enqueue job: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return domain.EnqueueResult{}, err
+	}
+	return domain.EnqueueResult{Outcome: domain.JobQueued}, nil
 }
 
 // Lease takes jobs that are due and holds them.

@@ -160,12 +160,46 @@ type Job struct {
 	Level     string
 	RunAt     time.Time // not before this (quiet hours push it to the morning)
 	Attempts  int       // including this one, once leased
+	// Shadow marks a job that is recorded but never carried out: it is kept with the status "shadow", is never leased,
+	// and is counted against the caps only by other shadow jobs. It is how the router is run beside the original path
+	// to see what it would do.
+	Shadow bool
+}
+
+// What a cap on jobs counts.
+const (
+	CapAlert       = "alert"        // the jobs of one alert
+	CapPersonAgent = "person_agent" // all the jobs of one person with one agent
+)
+
+// JobCap limits how many jobs may be made within a window of time.
+type JobCap struct {
+	Scope  string // CapAlert or CapPersonAgent
+	Window time.Duration
+	Max    int
+}
+
+// Outcomes of EnqueueCapped.
+const (
+	JobQueued    = "queued"
+	JobDuplicate = "duplicate" // the alert already has a job for this occurrence
+	JobOverCap   = "over_cap"
+)
+
+// EnqueueResult says what EnqueueCapped did. When Outcome is JobOverCap, Cap is the first cap that was full.
+type EnqueueResult struct {
+	Outcome string
+	Cap     *JobCap
 }
 
 // JobStore keeps the jobs and hands them to workers, with the same lease rules as InboxQueue.
 type JobStore interface {
 	// Enqueue stores a job. inserted is false when the alert already has a job for this repeat key.
 	Enqueue(ctx context.Context, j *Job) (inserted bool, err error)
+	// EnqueueCapped stores a job unless the alert has one for this occurrence already, or a cap is full. The counting
+	// and the storing are one step for each alert and for each person with an agent, so busy workers cannot together
+	// go over a cap. Jobs that were dropped or failed do not count.
+	EnqueueCapped(ctx context.Context, j *Job, caps []JobCap) (EnqueueResult, error)
 	Lease(ctx context.Context, worker string, limit int, hold time.Duration) ([]*Job, error)
 	Done(ctx context.Context, id int64, worker string) (bool, error)
 	Drop(ctx context.Context, id int64, worker, note string) (bool, error)

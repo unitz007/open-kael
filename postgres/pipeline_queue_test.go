@@ -392,3 +392,164 @@ func TestJobs_FailingJobIsGivenUpOn(t *testing.T) {
 		t.Fatal("not tried again")
 	}
 }
+
+func capped(t *testing.T, j domain.JobStore, jb *domain.Job, caps ...domain.JobCap) string {
+	t.Helper()
+	res, err := j.EnqueueCapped(context.Background(), jb, caps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return res.Outcome
+}
+
+// A cap is a limit on jobs made in a window, per alert or per person with an agent; a repeat is a duplicate, not a cap.
+func TestJobs_CapsPerAlertAndPerPersonWithAnAgent(t *testing.T) {
+	s, pool := world(t)
+	ctx := context.Background()
+	j := s.Jobs()
+	person(t, s, "p1")
+	perAlert := domain.JobCap{Scope: domain.CapAlert, Window: time.Hour, Max: 2}
+	perPerson := domain.JobCap{Scope: domain.CapPersonAgent, Window: 24 * time.Hour, Max: 3}
+
+	for i, want := range []string{domain.JobQueued, domain.JobQueued, domain.JobOverCap} {
+		if got := capped(t, j, job("a1", fmt.Sprint("r", i)), perAlert, perPerson); got != want {
+			t.Fatalf("job %d: %s, want %s", i, got, want)
+		}
+	}
+	if got := capped(t, j, job("a1", "r0"), perAlert, perPerson); got != domain.JobDuplicate {
+		t.Fatalf("the same occurrence again is a duplicate, not a cap: %s", got)
+	}
+	res, _ := j.EnqueueCapped(ctx, job("a1", "r9"), []domain.JobCap{perAlert, perPerson})
+	if res.Cap == nil || res.Cap.Scope != domain.CapAlert {
+		t.Fatalf("it says which cap was full: %+v", res)
+	}
+	if got := capped(t, j, job("a2", "r0"), perAlert, perPerson); got != domain.JobQueued {
+		t.Fatalf("another alert has its own count: %s", got)
+	}
+	res, _ = j.EnqueueCapped(ctx, job("a3", "r0"), []domain.JobCap{perAlert, perPerson})
+	if res.Outcome != domain.JobOverCap || res.Cap.Scope != domain.CapPersonAgent {
+		t.Fatalf("three in all for this person with this agent: %+v", res)
+	}
+	other := job("a4", "r0")
+	other.AgentID = "a2"
+	if got := capped(t, j, other, perAlert, perPerson); got != domain.JobQueued {
+		t.Fatalf("another agent has its own count: %s", got)
+	}
+
+	// Old ones fall out of the window, and ones that were dropped or failed never counted.
+	exec(t, pool, `UPDATE pipeline_jobs SET created_at = NOW() - interval '2 hours' WHERE alert_id = 'a1'`)
+	if got := capped(t, j, job("a1", "r10"), perAlert); got != domain.JobQueued {
+		t.Fatalf("an hour has passed: %s", got)
+	}
+	exec(t, pool, `UPDATE pipeline_jobs SET status = 'dropped' WHERE alert_id = 'a2'`)
+	for i := 0; i < 3; i++ {
+		if got := capped(t, j, job("a2", fmt.Sprint("n", i)), domain.JobCap{Scope: domain.CapAlert, Window: time.Hour, Max: 3}); got != domain.JobQueued {
+			t.Fatalf("dropped jobs do not count: %s", got)
+		}
+	}
+}
+
+// Busy workers together never go over a cap.
+func TestJobs_CapsHoldWhenManyWorkersEnqueueAtOnce(t *testing.T) {
+	s, pool := world(t)
+	j := s.Jobs()
+	person(t, s, "p1")
+	var queued int
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < 60; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			res, err := j.EnqueueCapped(context.Background(), job(fmt.Sprint("a", i%3), fmt.Sprint("r", i)),
+				[]domain.JobCap{{Scope: domain.CapPersonAgent, Window: time.Hour, Max: 5}})
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			if res.Outcome == domain.JobQueued {
+				mu.Lock()
+				queued++
+				mu.Unlock()
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	var n int
+	_ = pool.QueryRow(context.Background(), `SELECT COUNT(*) FROM pipeline_jobs`).Scan(&n)
+	if queued != 5 || n != 5 {
+		t.Fatalf("exactly the cap: queued=%d stored=%d", queued, n)
+	}
+}
+
+// A shadow job is kept and counted among shadow jobs only; it is never taken by a worker.
+func TestJobs_ShadowJobsAreRecordedAndNeverRun(t *testing.T) {
+	s, _ := world(t)
+	ctx := context.Background()
+	j := s.Jobs()
+	person(t, s, "p1")
+	cap1 := domain.JobCap{Scope: domain.CapAlert, Window: time.Hour, Max: 1}
+	if got := capped(t, j, job("a1", "r0"), cap1); got != domain.JobQueued {
+		t.Fatal(got)
+	}
+	sh := job("a1", "r1")
+	sh.Shadow = true
+	if got := capped(t, j, sh, cap1); got != domain.JobQueued {
+		t.Fatal(got)
+	}
+	sh2 := job("a1", "r2")
+	sh2.Shadow = true
+	if got := capped(t, j, sh2, cap1); got != domain.JobOverCap {
+		t.Fatalf("shadow jobs have their own count: %s", got)
+	}
+	if got := capped(t, j, job("a1", "r3"), cap1); got != domain.JobOverCap {
+		t.Fatalf("a real job counts real jobs only, and the shadow ones did not use up room: %s", got)
+	}
+	got, _ := j.Lease(ctx, "w", 10, time.Minute)
+	if len(got) != 1 || got[0].RepeatKey != "r0" {
+		t.Fatalf("only the real one is taken: %+v", got)
+	}
+	if c, _ := j.Counts(ctx); c["shadow"] != 1 || c["running"] != 1 {
+		t.Fatalf("%v", c)
+	}
+}
+
+// Counting and storing for one alert are a single step: while another worker is in the middle of it, a worker waits its turn.
+func TestJobs_WorkersTakeTurnsPerAlert(t *testing.T) {
+	s, pool := world(t)
+	ctx := context.Background()
+	person(t, s, "p1")
+	hold, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hold.Rollback(ctx) //nolint:errcheck
+	if _, err := hold.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('job-alert:a1', 0))`); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.Jobs().EnqueueCapped(ctx, job("a1", "r1"), []domain.JobCap{{Scope: domain.CapAlert, Window: time.Hour, Max: 1}})
+		done <- err
+	}()
+	select {
+	case <-done:
+		t.Fatal("it went ahead while another worker held the alert")
+	case <-time.After(300 * time.Millisecond):
+	}
+	if err := hold.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("it did not go ahead once the alert was free")
+	}
+}
