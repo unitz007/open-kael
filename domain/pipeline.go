@@ -76,6 +76,11 @@ type ExternalIdentity struct {
 	AuthID       string // the connected account it came from, when it came from one; deleting that deletes this
 }
 
+// IdentityKindEmail is the kind of identifier that is an email address. People are found by it through the verified
+// emails of their logins, not through rows of their own, so it works for any connection and can only be someone who
+// proved the address is theirs.
+const IdentityKindEmail = "email"
+
 // NormalizeIdentifier makes an identifier comparable. Sources that ignore case (GitHub logins, email addresses) are
 // folded to lower case on both sides; every other kind is only trimmed.
 func NormalizeIdentifier(kind, value string) string {

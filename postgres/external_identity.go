@@ -47,6 +47,11 @@ func (s *Store) PeopleFor(ctx context.Context, connectionID, kind, value string)
 	if connectionID == "" || kind == "" || value == "" {
 		return nil, nil
 	}
+	if kind == domain.IdentityKindEmail {
+		// An address names whoever proved it is theirs: a login with this email, verified. That is true for any
+		// connection, and a person cannot claim someone else's address.
+		return s.peopleWithVerifiedEmail(ctx, value)
+	}
 	rows, err := s.pool.Query(ctx, `
 		SELECT person_id FROM external_identities WHERE connection_id = $1 AND kind = $2 AND value = $3 ORDER BY person_id`,
 		connectionID, kind, value)
@@ -120,4 +125,22 @@ func (s *Store) BackfillExternalIdentities(ctx context.Context, service string) 
 		return 0, fmt.Errorf("postgres: backfill identities: %w", err)
 	}
 	return int(tag.RowsAffected()), nil
+}
+
+func (s *Store) peopleWithVerifiedEmail(ctx context.Context, email string) ([]string, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT DISTINCT person_id FROM accounts WHERE email = $1 AND email_verified AND person_id IS NOT NULL ORDER BY person_id`, email)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: people with verified email: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
 }

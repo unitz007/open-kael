@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sync"
 )
 
 // EventHandler parses one specific event out of an already-verified webhook
@@ -76,6 +77,7 @@ type IntegrationEvent struct {
 // per-provider in code, not per-DB row — multiple GitHub App identities all
 // emit the same set of events.
 type IntegrationEventRegistry struct {
+	mu     sync.RWMutex // connections created while the server runs add and replace events, while agents read them
 	events map[string][]*IntegrationEvent
 }
 
@@ -88,6 +90,8 @@ func NewIntegrationEventRegistry() *IntegrationEventRegistry {
 // reported in the returned error, and the rest are registered. An event name
 // already registered by another service is refused too.
 func (r *IntegrationEventRegistry) Register(service string, events []*IntegrationEvent) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	taken := map[string]string{}
 	for svc, evs := range r.events {
 		if svc == service {
@@ -113,11 +117,22 @@ func (r *IntegrationEventRegistry) Register(service string, events []*Integratio
 
 // EventsFor returns the events for the given service, or nil when none are registered.
 func (r *IntegrationEventRegistry) EventsFor(service string) []*IntegrationEvent {
-	return r.events[service]
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return append([]*IntegrationEvent(nil), r.events[service]...)
+}
+
+// Remove forgets a service's events (a connection that was deleted).
+func (r *IntegrationEventRegistry) Remove(service string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.events, service)
 }
 
 // ServiceOf says which integration's service an event belongs to.
 func (r *IntegrationEventRegistry) ServiceOf(name string) (string, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	for svc, evs := range r.events {
 		for _, e := range evs {
 			if e.Name == name {
@@ -130,6 +145,8 @@ func (r *IntegrationEventRegistry) ServiceOf(name string) (string, bool) {
 
 // Services lists the services that have events, with their events, for whoever has to offer them.
 func (r *IntegrationEventRegistry) Services() map[string][]*IntegrationEvent {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	out := make(map[string][]*IntegrationEvent, len(r.events))
 	for svc, evs := range r.events {
 		out[svc] = append([]*IntegrationEvent(nil), evs...)
@@ -139,6 +156,8 @@ func (r *IntegrationEventRegistry) Services() map[string][]*IntegrationEvent {
 
 // Event finds a registered event by name.
 func (r *IntegrationEventRegistry) Event(name string) (*IntegrationEvent, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	for _, evs := range r.events {
 		for _, e := range evs {
 			if e.Name == name {

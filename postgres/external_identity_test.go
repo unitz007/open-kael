@@ -150,7 +150,7 @@ func TestExternalIdentities_MergeMovesThem(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := s.Link(ctx, domain.ExternalIdentity{ConnectionID: "gh1", Kind: "email", Value: "A@x.com", PersonID: "from"}); err != nil {
+	if err := s.Link(ctx, domain.ExternalIdentity{ConnectionID: "gh1", Kind: "slack_user", Value: "U1", PersonID: "from"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.MergePersons(ctx, "from", "to"); err != nil {
@@ -159,7 +159,34 @@ func TestExternalIdentities_MergeMovesThem(t *testing.T) {
 	if got := peopleFor(t, s, "gh1", "github_account", "octo"); !reflect.DeepEqual(got, []string{"to"}) {
 		t.Fatalf("one person now: %v", got)
 	}
-	if got := peopleFor(t, s, "gh1", "email", "a@x.com"); !reflect.DeepEqual(got, []string{"to"}) {
+	if got := peopleFor(t, s, "gh1", "slack_user", "U1"); !reflect.DeepEqual(got, []string{"to"}) {
 		t.Fatalf("an identifier only the merged person had moves: %v", got)
+	}
+}
+
+// An email address finds whoever has a verified login with it, on any connection, and nobody else.
+func TestExternalIdentities_AnEmailIsFoundThroughVerifiedLogins(t *testing.T) {
+	s, pool := world(t)
+	person(t, s, "p1")
+	person(t, s, "p2")
+	person(t, s, "p3")
+	exec(t, pool, `INSERT INTO accounts (id, email, email_verified, person_id) VALUES
+		('l1', 'ada@example.com', TRUE, 'p1'),
+		('l2', 'grace@example.com', FALSE, 'p2'),
+		('l3', 'free@example.com', TRUE, NULL)`)
+	if got := peopleFor(t, s, "any-connection", "email", " Ada@Example.com "); !reflect.DeepEqual(got, []string{"p1"}) {
+		t.Fatalf("a verified address finds its person, whatever the case: %v", got)
+	}
+	if got := peopleFor(t, s, "another-connection", "email", "ada@example.com"); !reflect.DeepEqual(got, []string{"p1"}) {
+		t.Fatalf("on any connection: %v", got)
+	}
+	if got := peopleFor(t, s, "c", "email", "grace@example.com"); len(got) != 0 {
+		t.Fatalf("an address nobody proved is nobody: %v", got)
+	}
+	if got := peopleFor(t, s, "c", "email", "free@example.com"); len(got) != 0 {
+		t.Fatalf("a login linked to no person is nobody: %v", got)
+	}
+	if got := peopleFor(t, s, "c", "email", "stranger@example.com"); len(got) != 0 {
+		t.Fatalf("%v", got)
 	}
 }
