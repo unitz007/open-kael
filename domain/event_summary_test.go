@@ -1,8 +1,10 @@
 package domain
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -79,5 +81,46 @@ func TestRenderSummary_FillsBlanksSafely(t *testing.T) {
 	}
 	if _, err := summaryEvent("").RenderSummary(e.Sample); err == nil {
 		t.Error("no summary to render")
+	}
+}
+
+// Connections made while the server runs add, replace and remove events as agents read them: that must be safe.
+func TestEventRegistry_IsSafeToChangeWhileItIsRead(t *testing.T) {
+	r := NewIntegrationEventRegistry()
+	mk := func(service string) []*IntegrationEvent {
+		e := summaryEvent("")
+		e.Name = service + ".thing.happened"
+		return []*IntegrationEvent{e}
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		i := i
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			for n := 0; n < 50; n++ {
+				svc := fmt.Sprintf("svc%d", i)
+				_ = r.Register(svc, mk(svc))
+				r.Remove(svc)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			for n := 0; n < 50; n++ {
+				r.Services()
+				r.Event("svc1.thing.happened")
+				r.EventsFor("svc2")
+				r.ServiceOf("svc3.thing.happened")
+			}
+		}()
+	}
+	wg.Wait()
+	_ = r.Register("keep", mk("keep"))
+	if len(r.EventsFor("keep")) != 1 {
+		t.Fatal("registered")
+	}
+	r.Remove("keep")
+	if len(r.EventsFor("keep")) != 0 {
+		t.Fatal("removed")
 	}
 }
