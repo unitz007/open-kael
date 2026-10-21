@@ -29,7 +29,8 @@ import (
 //   - Options: the settings a person may give (which repository, how long before). May be empty;
 //   - a RepeatKey: the required property that identifies one occurrence, so the same one is
 //     never handled twice;
-//   - a Sample payload that satisfies the schema, for previews and tests.
+//   - a Sample payload that satisfies the schema, for previews and tests;
+//   - optionally a Summary: a one-line message with {{blanks}} that are required properties of the payload.
 //
 // Events enter through IntegrationEventRegistry.Register, which holds each to this contract:
 // one that breaks it is left out and reported, and the rest load. How an event is *used* is the
@@ -204,6 +205,10 @@ func ValidateEvent(service string, e *IntegrationEvent) error {
 		bad("the repeat key %q must be text or a whole number", e.RepeatKey)
 	case !required(e.RepeatKey):
 		bad("the repeat key %q must be required", e.RepeatKey)
+	}
+
+	for _, msg := range summaryProblems(e) {
+		bad("%s", msg)
 	}
 
 	if e.Sample == nil {

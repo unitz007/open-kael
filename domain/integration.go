@@ -55,6 +55,12 @@ type IntegrationEvent struct {
 	// Sample is one realistic payload. It must satisfy Payload.
 	Sample map[string]any `json:"sample"`
 
+	// Summary is an optional one-line message for a plain "tell me" alert, with blanks written {{name}}: each must be
+	// a required, plain property of the payload, so the line can always be filled in. It is what lets an alert that
+	// only tells be sent without a model writing it. An event without one can only be told by an agent. See
+	// RenderSummary.
+	Summary string `json:"summary,omitempty"`
+
 	// Handler parses one incoming webhook payload for this event.
 	// Not persisted — wired at startup alongside the Integration definition.
 	// Required for pushed events.
