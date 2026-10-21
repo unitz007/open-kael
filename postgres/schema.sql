@@ -566,3 +566,27 @@ CREATE TABLE IF NOT EXISTS proposals (
 );
 CREATE INDEX IF NOT EXISTS idx_proposals_person ON proposals (person_id);
 CREATE INDEX IF NOT EXISTS idx_proposals_expires ON proposals (expires_at);
+
+-- Events pipeline: what arrived from outside (a webhook), stored before anything is done with it, so a deploy or a
+-- crash cannot lose it. The decoded facts are kept, never the raw delivery. A redelivery of the same delivery is the
+-- same row.
+CREATE TABLE IF NOT EXISTS events_inbox (
+    id              BIGSERIAL PRIMARY KEY,
+    source          TEXT NOT NULL,
+    connection_id   TEXT NOT NULL,
+    delivery_id     TEXT NOT NULL,
+    event           TEXT NOT NULL,
+    facts           JSONB NOT NULL,
+    subject_kind    TEXT NOT NULL DEFAULT '',
+    subject_value   TEXT NOT NULL DEFAULT '',
+    repeat_key      TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'new',      -- new | routing | done | dropped | failed
+    attempts        INT NOT NULL DEFAULT 0,
+    next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    locked_by       TEXT NOT NULL DEFAULT '',
+    locked_until    TIMESTAMPTZ,
+    note            TEXT NOT NULL DEFAULT '',
+    received_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (source, delivery_id)
+);
+CREATE INDEX IF NOT EXISTS events_inbox_due ON events_inbox (next_attempt_at) WHERE status IN ('new', 'routing');
