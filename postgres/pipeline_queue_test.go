@@ -741,7 +741,7 @@ func TestJobs_LeaseFairKeepsOnePersonFromTakingEveryWorker(t *testing.T) {
 	}
 	enqueue(t, j, "q0", "quiet", nil)
 
-	got, err := j.LeaseFair(ctx, "w1", 10, time.Minute, 2)
+	got, err := j.LeaseFair(ctx, "w1", 10, time.Minute, 2, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -752,13 +752,13 @@ func TestJobs_LeaseFairKeepsOnePersonFromTakingEveryWorker(t *testing.T) {
 	if per["busy"] != 2 || per["quiet"] != 1 || len(got) != 3 {
 		t.Fatalf("two for the busy one, one for the quiet one: %v", per)
 	}
-	more, _ := j.LeaseFair(ctx, "w2", 10, time.Minute, 2)
+	more, _ := j.LeaseFair(ctx, "w2", 10, time.Minute, 2, 0)
 	if len(more) != 0 {
 		t.Fatalf("the busy person is at their share while those are running: %d", len(more))
 	}
 	// When one finishes, the next of theirs is taken.
 	j.Done(ctx, got[0].ID, "w1")
-	next, _ := j.LeaseFair(ctx, "w2", 10, time.Minute, 2)
+	next, _ := j.LeaseFair(ctx, "w2", 10, time.Minute, 2, 0)
 	if len(next) != 1 || next[0].PersonID != "busy" {
 		t.Fatalf("%+v", next)
 	}
@@ -786,7 +786,7 @@ func TestJobs_LeaseFairHoldsUnderManyWorkers(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			if _, err := j.LeaseFair(ctx, fmt.Sprint("w", w), 5, time.Minute, 2); err != nil {
+			if _, err := j.LeaseFair(ctx, fmt.Sprint("w", w), 5, time.Minute, 2, 0); err != nil {
 				t.Error(err)
 			}
 		}()
@@ -875,7 +875,7 @@ func TestJobs_LeaseFairWorkersTakeTurns(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() {
-		_, err := s.Jobs().LeaseFair(ctx, "w", 1, time.Minute, 2)
+		_, err := s.Jobs().LeaseFair(ctx, "w", 1, time.Minute, 2, 0)
 		done <- err
 	}()
 	select {
@@ -905,5 +905,59 @@ func TestJobs_AnInterruptedJobStillCountsAgainstTheCaps(t *testing.T) {
 	res, err := j.EnqueueCapped(ctx, job("a", "r2"), []domain.JobCap{{Scope: domain.CapAlert, Window: time.Hour, Max: 1}})
 	if err != nil || res.Outcome != domain.JobOverCap {
 		t.Fatalf("%+v %v", res, err)
+	}
+}
+
+// No agent has more than its share running at once either, whoever the people are.
+func TestJobs_LeaseFairAlsoLimitsWhatOneAgentRuns(t *testing.T) {
+	s, _ := world(t)
+	ctx := context.Background()
+	j := s.Jobs()
+	for p := 0; p < 4; p++ {
+		person(t, s, fmt.Sprint("p", p))
+		enqueue(t, j, fmt.Sprint("busyagent", p), fmt.Sprint("p", p), func(x *domain.Job) { x.AgentID = "A" })
+		enqueue(t, j, fmt.Sprint("otheragent", p), fmt.Sprint("p", p), func(x *domain.Job) { x.AgentID = "B"; x.RepeatKey = "r2" })
+	}
+	got, err := j.LeaseFair(ctx, "w1", 20, time.Minute, 5, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	per := map[string]int{}
+	for _, g := range got {
+		per[g.AgentID]++
+	}
+	if per["A"] != 2 || per["B"] != 2 {
+		t.Fatalf("two for each agent, not all of them: %v", per)
+	}
+	if more, _ := j.LeaseFair(ctx, "w2", 20, time.Minute, 5, 2); len(more) != 0 {
+		t.Fatalf("both agents are at their share while those run: %d", len(more))
+	}
+	unlimited, _ := j.LeaseFair(ctx, "w3", 20, time.Minute, 5, 0)
+	if len(unlimited) != 4 {
+		t.Fatalf("0 means no limit on agents: %d", len(unlimited))
+	}
+}
+
+// A deferred job waits for its new time and is not counted as an attempt.
+func TestJobs_DeferPutsItOffWithoutCountingTheAttempt(t *testing.T) {
+	s, _ := world(t)
+	ctx := context.Background()
+	j := s.Jobs()
+	person(t, s, "p1")
+	enqueue(t, j, "a", "p1", nil)
+	got, _ := j.Lease(ctx, "w1", 1, time.Minute)
+	if ok, _ := j.Defer(ctx, got[0].ID, "intruder", time.Now().Add(time.Hour)); ok {
+		t.Fatal("only the holder")
+	}
+	if ok, err := j.Defer(ctx, got[0].ID, "w1", time.Now().Add(150*time.Millisecond)); err != nil || !ok {
+		t.Fatalf("%v %v", ok, err)
+	}
+	if again, _ := j.Lease(ctx, "w2", 1, time.Minute); len(again) != 0 {
+		t.Fatal("not before its time")
+	}
+	time.Sleep(250 * time.Millisecond)
+	again, _ := j.Lease(ctx, "w2", 1, time.Minute)
+	if len(again) != 1 || again[0].Attempts != 1 {
+		t.Fatalf("at its time, still its first attempt: %+v", again)
 	}
 }

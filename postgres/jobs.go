@@ -224,7 +224,7 @@ func (j jobStore) Lease(ctx context.Context, worker string, limit int, hold time
 
 // LeaseFair takes jobs like Lease but gives no person more than perPerson running at once. One lock serialises the
 // choosing, so the count of what is running is exact however many workers ask.
-func (j jobStore) LeaseFair(ctx context.Context, worker string, limit int, hold time.Duration, perPerson int) ([]*domain.Job, error) {
+func (j jobStore) LeaseFair(ctx context.Context, worker string, limit int, hold time.Duration, perPerson, perAgent int) ([]*domain.Job, error) {
 	if limit <= 0 || perPerson <= 0 {
 		return nil, nil
 	}
@@ -244,16 +244,19 @@ func (j jobStore) LeaseFair(ctx context.Context, worker string, limit int, hold 
 			SELECT x.id, x.run_at,
 			       ROW_NUMBER() OVER (PARTITION BY x.person_id ORDER BY x.run_at, x.id) AS rn,
 			       (SELECT COUNT(*) FROM pipeline_jobs r
-			         WHERE r.person_id = x.person_id AND r.status = 'running' AND r.locked_until >= NOW()) AS busy
+			         WHERE r.person_id = x.person_id AND r.status = 'running' AND r.locked_until >= NOW()) AS busy,
+			       ROW_NUMBER() OVER (PARTITION BY x.agent_id ORDER BY x.run_at, x.id) AS ra,
+			       (SELECT COUNT(*) FROM pipeline_jobs r
+			         WHERE r.agent_id = x.agent_id AND r.status = 'running' AND r.locked_until >= NOW()) AS busy_agent
 			FROM pipeline_jobs x
 			WHERE (x.status = 'new' AND x.run_at <= NOW()) OR (x.status = 'running' AND x.locked_until < NOW())),
 		pick AS (
-			SELECT id FROM cand WHERE rn + busy <= $4 ORDER BY run_at, id LIMIT $2)
+			SELECT id FROM cand WHERE rn + busy <= $4 AND ($5 <= 0 OR ra + busy_agent <= $5) ORDER BY run_at, id LIMIT $2)
 		UPDATE pipeline_jobs p SET status = 'running', attempts = p.attempts + 1, locked_by = $1,
 			locked_until = NOW() + make_interval(secs => $3)
 		FROM pick WHERE p.id = pick.id
 		RETURNING `+jobColumns,
-		worker, limit, hold.Seconds(), perPerson)
+		worker, limit, hold.Seconds(), perPerson, perAgent)
 	if err != nil {
 		return nil, fmt.Errorf("postgres: lease jobs fairly: %w", err)
 	}
@@ -271,6 +274,17 @@ func (j jobStore) Extend(ctx context.Context, id int64, worker string, hold time
 		WHERE id = $1 AND locked_by = $2 AND status = 'running'`, id, worker, hold.Seconds())
 	if err != nil {
 		return false, fmt.Errorf("postgres: extend job lease: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// Defer puts a leased job off until a later time without counting the attempt.
+func (j jobStore) Defer(ctx context.Context, id int64, worker string, until time.Time) (bool, error) {
+	tag, err := j.s.pool.Exec(ctx, `
+		UPDATE pipeline_jobs SET status = 'new', run_at = $3, attempts = GREATEST(attempts - 1, 0), locked_by = '', locked_until = NULL
+		WHERE id = $1 AND locked_by = $2 AND status = 'running'`, id, worker, until)
+	if err != nil {
+		return false, fmt.Errorf("postgres: defer job: %w", err)
 	}
 	return tag.RowsAffected() == 1, nil
 }

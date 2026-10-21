@@ -205,9 +205,12 @@ type JobStore interface {
 	// go over a cap. Jobs that were dropped or failed do not count.
 	EnqueueCapped(ctx context.Context, j *Job, caps []JobCap) (EnqueueResult, error)
 	Lease(ctx context.Context, worker string, limit int, hold time.Duration) ([]*Job, error)
-	// LeaseFair is Lease, but never gives one person more than perPerson jobs running at once (counting those other
-	// workers hold), so one person with a burst cannot take every worker. The counting and the taking are one step.
-	LeaseFair(ctx context.Context, worker string, limit int, hold time.Duration, perPerson int) ([]*Job, error)
+	// LeaseFair is Lease, but never gives one person more than perPerson jobs running at once, nor one agent more than
+	// perAgent (0 means no limit on agents), counting those other workers hold, so one person or one busy agent cannot
+	// take every worker. The counting and the taking are one step.
+	LeaseFair(ctx context.Context, worker string, limit int, hold time.Duration, perPerson, perAgent int) ([]*Job, error)
+	// Defer puts a leased job off until a later time without counting the attempt (quiet hours began while it waited).
+	Defer(ctx context.Context, id int64, worker string, until time.Time) (bool, error)
 	// Extend renews a lease the worker still holds, for a run that takes longer than the lease. It reports false when
 	// the lease was lost (another worker has the job): the caller must stop and not report a result.
 	Extend(ctx context.Context, id int64, worker string, hold time.Duration) (bool, error)
