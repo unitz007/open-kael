@@ -180,15 +180,6 @@ type Host struct {
 	// userToolApprovalLoader and userToolApprovalSetter are set.
 	settingsFlow *SettingsFlow
 
-	// eventActorRefLoader resolves an external actor identifier from an event
-	// payload into a map of identityID → connectionRef for that actor's
-	// AppAuthorizations. sourceIdentityID identifies which Identity received
-	// the event (used to find the matching AppAuthorization by external user
-	// ID); actorExternalID is the provider's own user identifier (e.g. a
-	// GitHub login). Returns nil/empty when no matching user is found — the
-	// skill then runs without per-user connection refs (bot-only).
-	eventActorRefLoader func(ctx context.Context, sourceIdentityID, actorExternalID string) (map[string]string, error)
-
 	// channelRedeemer, when set, is called on every inbound message before
 	// HandleTurn. If the text contains a valid ChannelLinkCode (either as a
 	// plain token or as a Telegram /start <code> deep link), the callback
@@ -617,16 +608,6 @@ func (h *Host) SetConnectURLGenerator(f func(ctx context.Context, userID, identi
 // the code, and persist an AppAuthorization for the given user and identity.
 func (h *Host) SetCredentialSaver(f func(ctx context.Context, userID, identityID, code, state string) error) {
 	h.credentialSaver = f
-}
-
-// SetEventActorRefLoader registers a function that resolves a webhook sender's
-// external user ID (e.g. a GitHub login) into a map of identityID →
-// connectionRef for that user's AppAuthorizations. When set, event-triggered
-// Skills whose payload carries an attributable sender gain per-user connection
-// refs — enabling them to act on the sender's behalf across providers (e.g.
-// a GitHub webhook triggering a Slack DM using the sender's own Slack token).
-func (h *Host) SetEventActorRefLoader(f func(ctx context.Context, sourceIdentityID, actorExternalID string) (map[string]string, error)) {
-	h.eventActorRefLoader = f
 }
 
 // SetLLMFactory registers a function that builds the live LLM slice for an
