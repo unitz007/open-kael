@@ -604,3 +604,29 @@ CREATE TABLE IF NOT EXISTS external_identities (
 );
 CREATE INDEX IF NOT EXISTS external_identities_person ON external_identities (person_id);
 CREATE INDEX IF NOT EXISTS external_identities_auth ON external_identities (auth_id);
+
+-- Events pipeline: one job per alert and occurrence. Unique on the alert and the occurrence's repeat key, so the router
+-- running twice for one occurrence does nothing twice. person_id has no foreign key: jobs are history.
+CREATE TABLE IF NOT EXISTS pipeline_jobs (
+    id            BIGSERIAL PRIMARY KEY,
+    inbox_id      BIGINT REFERENCES events_inbox (id) ON DELETE SET NULL,
+    alert_id      TEXT NOT NULL,
+    person_id     TEXT NOT NULL,
+    agent_id      TEXT NOT NULL,
+    event         TEXT NOT NULL,
+    repeat_key    TEXT NOT NULL,
+    facts         JSONB NOT NULL,
+    level         TEXT NOT NULL,                      -- notify | filter | agent
+    run_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    status        TEXT NOT NULL DEFAULT 'new',        -- new | running | done | dropped | failed
+    attempts      INT NOT NULL DEFAULT 0,
+    locked_by     TEXT NOT NULL DEFAULT '',
+    locked_until  TIMESTAMPTZ,
+    note          TEXT NOT NULL DEFAULT '',
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    finished_at   TIMESTAMPTZ,
+    UNIQUE (alert_id, repeat_key)
+);
+CREATE INDEX IF NOT EXISTS pipeline_jobs_due ON pipeline_jobs (run_at) WHERE status IN ('new', 'running');
+CREATE INDEX IF NOT EXISTS pipeline_jobs_person ON pipeline_jobs (person_id, created_at);
+CREATE INDEX IF NOT EXISTS pipeline_jobs_agent ON pipeline_jobs (agent_id, created_at);

@@ -94,3 +94,82 @@ type PeopleStore interface {
 	// PeopleFor returns the people linked to an identifier on a connection, in a stable order; none when unknown.
 	PeopleFor(ctx context.Context, connectionID, kind, value string) ([]string, error)
 }
+
+// How hard the pipeline tries before giving up on something it keeps failing at.
+const (
+	MaxAttempts  = 6
+	backoffFirst = 30 * time.Second
+	backoffLimit = time.Hour
+)
+
+// Backoff is how long to wait before trying again after the given number of attempts have failed: 30 seconds, doubling,
+// never more than an hour.
+func Backoff(attempts int) time.Duration {
+	d := backoffFirst
+	for i := 1; i < attempts && d < backoffLimit; i++ {
+		d *= 2
+	}
+	if d > backoffLimit {
+		d = backoffLimit
+	}
+	return d
+}
+
+// InboxRow is a stored occurrence that a worker holds a lease on.
+type InboxRow struct {
+	ID       int64
+	Attempts int // including this one
+	Occurrence
+}
+
+// InboxQueue is how workers take what is in the inbox. A row is leased for a while: only its holder may finish it,
+// and if the holder dies the lease runs out and another worker takes it. Every finishing call reports whether it
+// applied, which is false when the lease was lost; the caller must then not act as if it had finished.
+type InboxQueue interface {
+	// Lease takes up to limit rows that are due (new, or leased and the lease has run out) and holds them for hold.
+	// Several workers may lease at once; they never get the same row. A row whose lease ran out after its last allowed
+	// attempt is marked failed instead of handed out.
+	Lease(ctx context.Context, worker string, limit int, hold time.Duration) ([]*InboxRow, error)
+	// Done marks a row dealt with.
+	Done(ctx context.Context, id int64, worker string) (bool, error)
+	// Drop marks a row as not to be acted on (nobody to tell, no match), with the reason.
+	Drop(ctx context.Context, id int64, worker, note string) (bool, error)
+	// Fail records that a try failed: the row is tried again after retryAfter, or marked failed when it has used
+	// MaxAttempts.
+	Fail(ctx context.Context, id int64, worker, note string, retryAfter time.Duration) (bool, error)
+}
+
+// Levels say how much it costs to carry out a job (see closed-kael docs/events-pipeline.md, "Cost levels").
+const (
+	LevelNotify = "notify" // a message built from the facts; no model
+	LevelFilter = "filter" // a quick yes or no from Jev, then a message built from the facts
+	LevelAgent  = "agent"  // the agent's own model thinks or acts
+)
+
+// Job is one thing to do for one alert because of one occurrence. There is at most one per alert and repeat key, so a
+// retry of the router cannot do anything twice.
+type Job struct {
+	ID        int64
+	InboxID   int64 // the occurrence it came from; 0 when that has been cleared away
+	AlertID   string
+	PersonID  string
+	AgentID   string
+	Event     string
+	RepeatKey string
+	Facts     map[string]any
+	Level     string
+	RunAt     time.Time // not before this (quiet hours push it to the morning)
+	Attempts  int       // including this one, once leased
+}
+
+// JobStore keeps the jobs and hands them to workers, with the same lease rules as InboxQueue.
+type JobStore interface {
+	// Enqueue stores a job. inserted is false when the alert already has a job for this repeat key.
+	Enqueue(ctx context.Context, j *Job) (inserted bool, err error)
+	Lease(ctx context.Context, worker string, limit int, hold time.Duration) ([]*Job, error)
+	Done(ctx context.Context, id int64, worker string) (bool, error)
+	Drop(ctx context.Context, id int64, worker, note string) (bool, error)
+	Fail(ctx context.Context, id int64, worker, note string, retryAfter time.Duration) (bool, error)
+	// Counts says how many jobs are in each status.
+	Counts(ctx context.Context) (map[string]int, error)
+}

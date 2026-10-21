@@ -23,6 +23,7 @@ var bulkPersonTables = []personTable{
 	{"user_channels", "user_id"},
 	{"email_verifications", "user_id"},
 	{"proposals", "person_id"},
+	{"pipeline_jobs", "person_id"},
 }
 
 // These do have such uniqueness (one setting per person and key), so each row moves on its own.
