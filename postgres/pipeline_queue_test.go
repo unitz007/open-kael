@@ -319,8 +319,8 @@ func TestJobs_LeaseFinishFailAndGiveUp(t *testing.T) {
 		t.Fatal("not handed out beyond the limit")
 	}
 	c, _ = j.Counts(ctx)
-	if c["failed"] != 1 {
-		t.Fatalf("%v", c)
+	if c["interrupted"] != 1 {
+		t.Fatalf("a job whose worker keeps stopping is interrupted, not failed: %v", c)
 	}
 }
 
@@ -551,5 +551,359 @@ func TestJobs_WorkersTakeTurnsPerAlert(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("it did not go ahead once the alert was free")
+	}
+}
+
+func enqueue(t *testing.T, j domain.JobStore, alert, person string, mutate func(*domain.Job)) *domain.Job {
+	t.Helper()
+	jb := job(alert, "r")
+	jb.PersonID = person
+	if mutate != nil {
+		mutate(jb)
+	}
+	if ok, err := j.Enqueue(context.Background(), jb); err != nil || !ok {
+		t.Fatalf("enqueue %s: %v %v", alert, ok, err)
+	}
+	return jb
+}
+
+// A run that takes longer than its lease renews it; a worker that lost the lease is told so.
+func TestJobs_ExtendRenewsOnlyForTheHolder(t *testing.T) {
+	s, pool := world(t)
+	ctx := context.Background()
+	j := s.Jobs()
+	person(t, s, "p1")
+	enqueue(t, j, "a", "p1", nil)
+	got, _ := j.Lease(ctx, "w1", 1, 200*time.Millisecond)
+	id := got[0].ID
+	if ok, _ := j.Extend(ctx, id, "intruder", time.Minute); ok {
+		t.Fatal("only the holder renews")
+	}
+	if ok, err := j.Extend(ctx, id, "w1", time.Minute); err != nil || !ok {
+		t.Fatalf("holder renews: %v %v", ok, err)
+	}
+	time.Sleep(350 * time.Millisecond)
+	if again, _ := j.Lease(ctx, "w2", 1, time.Minute); len(again) != 0 {
+		t.Fatal("a renewed lease did not run out")
+	}
+	// A lease that ran out and was taken by someone else cannot be renewed by the first worker.
+	exec(t, pool, `UPDATE pipeline_jobs SET locked_until = NOW() - interval '1 second'`)
+	if taken, _ := j.Lease(ctx, "w2", 1, time.Minute); len(taken) != 1 {
+		t.Fatal("w2 takes the job whose lease ran out")
+	}
+	if ok, _ := j.Extend(ctx, id, "w1", time.Minute); ok {
+		t.Fatal("w1 lost the lease and cannot renew it")
+	}
+}
+
+// A released job goes back to the queue as if it had never been taken.
+func TestJobs_ReleaseGivesItBackWithoutCountingTheAttempt(t *testing.T) {
+	s, _ := world(t)
+	ctx := context.Background()
+	j := s.Jobs()
+	person(t, s, "p1")
+	enqueue(t, j, "a", "p1", nil)
+	got, _ := j.Lease(ctx, "w1", 1, time.Minute)
+	if ok, _ := j.Release(ctx, got[0].ID, "intruder"); ok {
+		t.Fatal("only the holder releases")
+	}
+	if ok, err := j.Release(ctx, got[0].ID, "w1"); err != nil || !ok {
+		t.Fatalf("%v %v", ok, err)
+	}
+	again, _ := j.Lease(ctx, "w2", 1, time.Minute)
+	if len(again) != 1 || again[0].Attempts != 1 {
+		t.Fatalf("taken again at once, still its first attempt: %+v", again)
+	}
+	if ok, _ := j.Release(ctx, got[0].ID, "w1"); ok {
+		t.Fatal("w1 no longer holds it")
+	}
+}
+
+// How many times a job may be started decides what an interruption means: a job that may change something is started
+// once and never again.
+func TestJobs_AnInterruptedRunIsRetriedOnlyIfItMay(t *testing.T) {
+	s, pool := world(t)
+	ctx := context.Background()
+	j := s.Jobs()
+	person(t, s, "p1")
+	enqueue(t, j, "once", "p1", func(x *domain.Job) { x.MaxAttempts = 1 })
+	enqueue(t, j, "twice", "p1", func(x *domain.Job) { x.MaxAttempts = 2 })
+	expire := func() {
+		exec(t, pool, `UPDATE pipeline_jobs SET locked_until = NOW() - interval '1 second' WHERE status = 'running'`)
+	}
+
+	first, _ := j.Lease(ctx, "w1", 10, time.Minute)
+	if len(first) != 2 {
+		t.Fatalf("%d", len(first))
+	}
+	expire()
+	second, _ := j.Lease(ctx, "w2", 10, time.Minute)
+	if len(second) != 1 || second[0].AlertID != "twice" || second[0].Attempts != 2 || second[0].MaxAttempts != 2 {
+		t.Fatalf("only the one that may be run again is: %+v", second)
+	}
+	expire()
+	if third, _ := j.Lease(ctx, "w3", 10, time.Minute); len(third) != 0 {
+		t.Fatalf("nor is it a third time: %+v", third)
+	}
+	c, _ := j.Counts(ctx)
+	if c["interrupted"] != 2 || c["failed"] != 0 {
+		t.Fatalf("both are interrupted, neither failed: %v", c)
+	}
+
+	// Each is reported once, so the person is told once.
+	told, err := j.TakeInterrupted(ctx, 10)
+	if err != nil || len(told) != 2 {
+		t.Fatalf("%d %v", len(told), err)
+	}
+	if again, _ := j.TakeInterrupted(ctx, 10); len(again) != 0 {
+		t.Fatalf("not told twice: %d", len(again))
+	}
+}
+
+func TestJobs_TakeInterruptedFindsThemEvenIfNoWorkerLeasesFirst(t *testing.T) {
+	s, pool := world(t)
+	ctx := context.Background()
+	j := s.Jobs()
+	person(t, s, "p1")
+	enqueue(t, j, "a", "p1", func(x *domain.Job) { x.MaxAttempts = 1 })
+	j.Lease(ctx, "w1", 1, time.Minute)
+	exec(t, pool, `UPDATE pipeline_jobs SET locked_until = NOW() - interval '1 second'`)
+	told, err := j.TakeInterrupted(ctx, 5)
+	if err != nil || len(told) != 1 || told[0].AlertID != "a" {
+		t.Fatalf("%+v %v", told, err)
+	}
+}
+
+func TestJobs_FailRetriesUntilTheJobsOwnLimitAndFailFinalEndsAtOnce(t *testing.T) {
+	s, _ := world(t)
+	ctx := context.Background()
+	j := s.Jobs()
+	person(t, s, "p1")
+	enqueue(t, j, "limited", "p1", func(x *domain.Job) { x.MaxAttempts = 2 })
+	for i := 1; i <= 2; i++ {
+		got, _ := j.Lease(ctx, "w", 1, time.Minute)
+		if len(got) != 1 || got[0].Attempts != i {
+			t.Fatalf("try %d: %+v", i, got)
+		}
+		if ok, _ := j.Fail(ctx, got[0].ID, "w", "busy", 0); !ok {
+			t.Fatal("fail applies")
+		}
+	}
+	if c, _ := j.Counts(ctx); c["failed"] != 1 {
+		t.Fatalf("it had two tries: %v", c)
+	}
+	enqueue(t, j, "final", "p1", nil)
+	got, _ := j.Lease(ctx, "w", 1, time.Minute)
+	if ok, _ := j.FailFinal(ctx, got[0].ID, "intruder", "x"); ok {
+		t.Fatal("only the holder")
+	}
+	if ok, _ := j.FailFinal(ctx, got[0].ID, "w", "the agent could not finish"); !ok {
+		t.Fatal("holder ends it")
+	}
+	if again, _ := j.Lease(ctx, "w", 1, time.Minute); len(again) != 0 {
+		t.Fatal("a job that failed for good is not leased again, though it had tries left")
+	}
+	if c, _ := j.Counts(ctx); c["failed"] != 2 {
+		t.Fatalf("%v", c)
+	}
+}
+
+func TestJobs_AJobMayNotAskForMoreAttemptsThanThereAre(t *testing.T) {
+	s, _ := world(t)
+	j := s.Jobs()
+	person(t, s, "p1")
+	for _, n := range []int{-1, domain.MaxAttempts + 1} {
+		jb := job("a", "r")
+		jb.MaxAttempts = n
+		if _, err := j.Enqueue(context.Background(), jb); err == nil {
+			t.Errorf("%d attempts is refused", n)
+		}
+		if _, err := j.EnqueueCapped(context.Background(), jb, nil); err == nil {
+			t.Errorf("%d attempts is refused when capped too", n)
+		}
+	}
+}
+
+// No person has more than their share running at once, whoever asks, and nobody is left out by someone else's burst.
+func TestJobs_LeaseFairKeepsOnePersonFromTakingEveryWorker(t *testing.T) {
+	s, _ := world(t)
+	ctx := context.Background()
+	j := s.Jobs()
+	person(t, s, "busy")
+	person(t, s, "quiet")
+	for i := 0; i < 6; i++ {
+		jb := job(fmt.Sprint("b", i), "r")
+		jb.PersonID = "busy"
+		jb.RunAt = time.Now().Add(-time.Duration(10-i) * time.Minute) // older than the quiet person's
+		if ok, err := j.Enqueue(ctx, jb); err != nil || !ok {
+			t.Fatal(ok, err)
+		}
+	}
+	enqueue(t, j, "q0", "quiet", nil)
+
+	got, err := j.LeaseFair(ctx, "w1", 10, time.Minute, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	per := map[string]int{}
+	for _, g := range got {
+		per[g.PersonID]++
+	}
+	if per["busy"] != 2 || per["quiet"] != 1 || len(got) != 3 {
+		t.Fatalf("two for the busy one, one for the quiet one: %v", per)
+	}
+	more, _ := j.LeaseFair(ctx, "w2", 10, time.Minute, 2)
+	if len(more) != 0 {
+		t.Fatalf("the busy person is at their share while those are running: %d", len(more))
+	}
+	// When one finishes, the next of theirs is taken.
+	j.Done(ctx, got[0].ID, "w1")
+	next, _ := j.LeaseFair(ctx, "w2", 10, time.Minute, 2)
+	if len(next) != 1 || next[0].PersonID != "busy" {
+		t.Fatalf("%+v", next)
+	}
+}
+
+func TestJobs_LeaseFairHoldsUnderManyWorkers(t *testing.T) {
+	s, pool := world(t)
+	ctx := context.Background()
+	j := s.Jobs()
+	for p := 0; p < 3; p++ {
+		person(t, s, fmt.Sprint("p", p))
+		for i := 0; i < 8; i++ {
+			jb := job(fmt.Sprintf("a%d-%d", p, i), "r")
+			jb.PersonID = fmt.Sprint("p", p)
+			if ok, err := j.Enqueue(ctx, jb); err != nil || !ok {
+				t.Fatal(ok, err)
+			}
+		}
+	}
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for w := 0; w < 10; w++ {
+		w := w
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			if _, err := j.LeaseFair(ctx, fmt.Sprint("w", w), 5, time.Minute, 2); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	rows, _ := pool.Query(ctx, `SELECT person_id, COUNT(*) FROM pipeline_jobs WHERE status = 'running' GROUP BY person_id`)
+	defer rows.Close()
+	total := 0
+	for rows.Next() {
+		var p string
+		var n int
+		_ = rows.Scan(&p, &n)
+		total += n
+		if n > 2 {
+			t.Errorf("%s has %d running", p, n)
+		}
+	}
+	if total != 6 {
+		t.Errorf("each of three people has their two: %d running", total)
+	}
+}
+
+// What has been dealt with is deleted after its time; what is waiting, running or recent is not.
+func TestPurge_KeepsWhatIsStillNeededAndDeletesTheRest(t *testing.T) {
+	s, pool := world(t)
+	ctx := context.Background()
+	person(t, s, "p1")
+	storeInbox(t, s, 6)
+	exec(t, pool, `UPDATE events_inbox SET status = 'done', received_at = NOW() - interval '40 days' WHERE delivery_id = 'd000'`)
+	exec(t, pool, `UPDATE events_inbox SET status = 'dropped', received_at = NOW() - interval '31 days' WHERE delivery_id = 'd001'`)
+	exec(t, pool, `UPDATE events_inbox SET status = 'failed', received_at = NOW() - interval '40 days' WHERE delivery_id = 'd002'`)
+	exec(t, pool, `UPDATE events_inbox SET status = 'done', received_at = NOW() - interval '1 day' WHERE delivery_id = 'd003'`)
+	exec(t, pool, `UPDATE events_inbox SET status = 'new', received_at = NOW() - interval '90 days' WHERE delivery_id = 'd004'`) // still waiting
+	exec(t, pool, `UPDATE events_inbox SET status = 'failed', received_at = NOW() - interval '100 days' WHERE delivery_id = 'd005'`)
+	keep, problems := 30*24*time.Hour, 90*24*time.Hour
+	n, err := s.PurgeInbox(ctx, keep, problems)
+	if err != nil || n != 3 {
+		t.Fatalf("done 40d, dropped 31d and failed 100d go: %d %v", n, err)
+	}
+	var left int
+	_ = pool.QueryRow(ctx, `SELECT COUNT(*) FROM events_inbox`).Scan(&left)
+	if left != 3 {
+		t.Fatalf("a recent one, a waiting one and a failed one under 90 days stay: %d", left)
+	}
+
+	j := s.Jobs()
+	for i, st := range []string{"done", "dropped", "shadow", "failed", "interrupted", "new", "running", "done"} {
+		jb := job(fmt.Sprint("p", i), "r")
+		if ok, err := j.Enqueue(ctx, jb); err != nil || !ok {
+			t.Fatal(ok, err)
+		}
+		age := "40 days"
+		if st == "failed" || st == "interrupted" {
+			age = "40 days" // older than 30 but under 90: kept
+		}
+		if i == 7 {
+			age = "1 day" // a recent one
+		}
+		exec(t, pool, fmt.Sprintf(`UPDATE pipeline_jobs SET status = '%s', created_at = NOW() - interval '%s', finished_at = NOW() - interval '%s' WHERE alert_id = 'p%d'`, st, age, age, i))
+	}
+	exec(t, pool, `UPDATE pipeline_jobs SET finished_at = NOW() - interval '120 days', created_at = NOW() - interval '120 days' WHERE alert_id = 'p4'`) // interrupted, very old
+	n, err = s.PurgeJobs(ctx, keep, problems)
+	if err != nil || n != 4 {
+		t.Fatalf("done, dropped, shadow (40d) and the interrupted one (120d) go: %d %v", n, err)
+	}
+	_ = pool.QueryRow(ctx, `SELECT COUNT(*) FROM pipeline_jobs`).Scan(&left)
+	if left != 4 {
+		t.Fatalf("a failed 40d, a new, a running and a recent done stay: %d", left)
+	}
+}
+
+// Choosing who runs next is one step at a time: while one worker is choosing, another waits its turn.
+func TestJobs_LeaseFairWorkersTakeTurns(t *testing.T) {
+	s, pool := world(t)
+	ctx := context.Background()
+	person(t, s, "p1")
+	enqueue(t, s.Jobs(), "a", "p1", nil)
+	hold, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hold.Rollback(ctx) //nolint:errcheck
+	if _, err := hold.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('job-lease', 0))`); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.Jobs().LeaseFair(ctx, "w", 1, time.Minute, 2)
+		done <- err
+	}()
+	select {
+	case <-done:
+		t.Fatal("it chose while another worker was choosing")
+	case <-time.After(300 * time.Millisecond):
+	}
+	_ = hold.Rollback(ctx)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("it did not go ahead once the other had finished")
+	}
+}
+
+// A job that was started and interrupted may have told the person, so it still counts against the limits.
+func TestJobs_AnInterruptedJobStillCountsAgainstTheCaps(t *testing.T) {
+	s, pool := world(t)
+	ctx := context.Background()
+	j := s.Jobs()
+	person(t, s, "p1")
+	enqueue(t, j, "a", "p1", nil)
+	exec(t, pool, `UPDATE pipeline_jobs SET status = 'interrupted'`)
+	res, err := j.EnqueueCapped(ctx, job("a", "r2"), []domain.JobCap{{Scope: domain.CapAlert, Window: time.Hour, Max: 1}})
+	if err != nil || res.Outcome != domain.JobOverCap {
+		t.Fatalf("%+v %v", res, err)
 	}
 }

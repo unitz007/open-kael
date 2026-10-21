@@ -160,6 +160,10 @@ type Job struct {
 	Level     string
 	RunAt     time.Time // not before this (quiet hours push it to the morning)
 	Attempts  int       // including this one, once leased
+	// MaxAttempts is how many times it may be started: a run that is interrupted (its worker stops before finishing) is
+	// handed to another worker until it has been started this many times, then it is marked interrupted. 0 means
+	// MaxAttempts (the package default). A job that may change something sets 1: it is never run a second time.
+	MaxAttempts int
 	// Shadow marks a job that is recorded but never carried out: it is kept with the status "shadow", is never leased,
 	// and is counted against the caps only by other shadow jobs. It is how the router is run beside the original path
 	// to see what it would do.
@@ -201,9 +205,35 @@ type JobStore interface {
 	// go over a cap. Jobs that were dropped or failed do not count.
 	EnqueueCapped(ctx context.Context, j *Job, caps []JobCap) (EnqueueResult, error)
 	Lease(ctx context.Context, worker string, limit int, hold time.Duration) ([]*Job, error)
+	// LeaseFair is Lease, but never gives one person more than perPerson jobs running at once (counting those other
+	// workers hold), so one person with a burst cannot take every worker. The counting and the taking are one step.
+	LeaseFair(ctx context.Context, worker string, limit int, hold time.Duration, perPerson int) ([]*Job, error)
+	// Extend renews a lease the worker still holds, for a run that takes longer than the lease. It reports false when
+	// the lease was lost (another worker has the job): the caller must stop and not report a result.
+	Extend(ctx context.Context, id int64, worker string, hold time.Duration) (bool, error)
+	// Release gives a job back unstarted, as at shutdown: it can be taken again at once and the attempt is not counted.
+	Release(ctx context.Context, id int64, worker string) (bool, error)
 	Done(ctx context.Context, id int64, worker string) (bool, error)
 	Drop(ctx context.Context, id int64, worker, note string) (bool, error)
+	// Fail records a failed try: the job is tried again after retryAfter, until it has been started MaxAttempts times,
+	// then it is marked failed.
 	Fail(ctx context.Context, id int64, worker, note string, retryAfter time.Duration) (bool, error)
+	// FailFinal marks a job failed at once, whatever attempts it has left (an agent run that failed has already told
+	// the person, so running it again would tell them twice).
+	FailFinal(ctx context.Context, id int64, worker, note string) (bool, error)
+	// TakeInterrupted returns jobs that were interrupted (a worker stopped while running them and they have no attempts
+	// left), each only once, so the person can be told that something may not have finished.
+	TakeInterrupted(ctx context.Context, limit int) ([]*Job, error)
 	// Counts says how many jobs are in each status.
 	Counts(ctx context.Context) (map[string]int, error)
+}
+
+// PipelinePurger applies the retention: what has been dealt with is not kept for ever, since facts hold text from
+// outside (a pull request's title).
+type PipelinePurger interface {
+	// PurgeJobs deletes jobs that are done, dropped or shadow once older than keep, and failed or interrupted ones once
+	// older than keepProblems. It returns how many.
+	PurgeJobs(ctx context.Context, keep, keepProblems time.Duration) (int, error)
+	// PurgeInbox does the same for stored occurrences (done or dropped; failed). Ones still waiting are never deleted.
+	PurgeInbox(ctx context.Context, keep, keepProblems time.Duration) (int, error)
 }

@@ -618,7 +618,7 @@ CREATE TABLE IF NOT EXISTS pipeline_jobs (
     facts         JSONB NOT NULL,
     level         TEXT NOT NULL,                      -- notify | filter | agent
     run_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    status        TEXT NOT NULL DEFAULT 'new',        -- new | running | done | dropped | failed | shadow
+    status        TEXT NOT NULL DEFAULT 'new',        -- new | running | done | dropped | failed | interrupted | shadow
     attempts      INT NOT NULL DEFAULT 0,
     locked_by     TEXT NOT NULL DEFAULT '',
     locked_until  TIMESTAMPTZ,
@@ -627,6 +627,8 @@ CREATE TABLE IF NOT EXISTS pipeline_jobs (
     finished_at   TIMESTAMPTZ,
     UNIQUE (alert_id, repeat_key)
 );
+ALTER TABLE pipeline_jobs ADD COLUMN IF NOT EXISTS max_attempts INT NOT NULL DEFAULT 6;
+ALTER TABLE pipeline_jobs ADD COLUMN IF NOT EXISTS told_at TIMESTAMPTZ;      -- when the person was told it was interrupted
 CREATE INDEX IF NOT EXISTS pipeline_jobs_due ON pipeline_jobs (run_at) WHERE status IN ('new', 'running');
 CREATE INDEX IF NOT EXISTS pipeline_jobs_person ON pipeline_jobs (person_id, created_at);
 CREATE INDEX IF NOT EXISTS pipeline_jobs_agent ON pipeline_jobs (agent_id, created_at);
