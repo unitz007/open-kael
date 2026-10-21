@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"log"
 	"net/url"
@@ -268,14 +267,8 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 	// plain codes and Telegram's /start <code> deep link format.
 	if h.channelRedeemer != nil {
 		if code := extractLinkCode(msg.Text); code != "" {
-			userID, err := h.channelRedeemer(ctx, code, msg.Conversation.IdentityID, msg.Conversation.ChatID)
+			_, err := h.channelRedeemer(ctx, code, msg.Conversation.IdentityID, msg.Conversation.ChatID)
 			if err == nil {
-				payload, _ := json.Marshal(map[string]string{
-					"user_id":     userID,
-					"identity_id": msg.Conversation.IdentityID,
-					"channel_ref": msg.Conversation.ChatID,
-				})
-				h.Emit(ctx, "user.channel.connected", string(payload))
 				// Send setup link so the user can configure integrations.
 				if h.frontendURL != "" {
 					setupURL := h.frontendURL + "/setup"

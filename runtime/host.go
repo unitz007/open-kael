@@ -17,7 +17,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/robfig/cron/v3"
 	"github.com/unitz007/open-kael/domain"
 )
 
@@ -124,13 +123,6 @@ type Host struct {
 	mu     sync.RWMutex
 	agents map[string]*HostedAgent
 
-	// Cron scheduler state, kept in step with the agents (see StartCron).
-	// cronMu is only ever taken after h.mu, never before.
-	cronMu      sync.Mutex
-	sched       *cron.Cron
-	cronCtx     context.Context
-	cronEntries map[string][]cron.EntryID // agentID -> its scheduled entries
-
 	// listenerCancels stores a cancel func for each running listener goroutine,
 	// keyed by "agentID:identityID". Allows individual listeners to be stopped
 	// when an identity is removed from an agent (see StopIdentityListeners).
@@ -154,10 +146,6 @@ type Host struct {
 	// StartListenerForAgent. A sentinel goroutine keeps it non-zero while
 	// ctx is live, so dynamically added goroutines never race with Wait.
 	serveWG sync.WaitGroup
-
-	// bus dispatches named events to subscribed Skills — populated by
-	// RegisterEventSources and fed by Emit for internal system events.
-	bus *EventBus
 
 	// llmFactory, when set, is called to build a live LLM slice for an
 	// Agent being hydrated at MCP session time — so a freshly-created Agent
@@ -480,7 +468,6 @@ type ToolFilter interface {
 func NewHost() *Host {
 	h := &Host{
 		agents:         make(map[string]*HostedAgent),
-		bus:            newEventBus(),
 		intentHandlers: make(map[domain.Intent]IntentHandler),
 		carry:          newCarryOver(),
 		convQueues:     make(map[string]*convQueue),
@@ -584,7 +571,9 @@ func (h *Host) SetEventDispatcher(f func(ctx context.Context, eventName, payload
 // SetReadinessCheck registers the check that decides whether an agent may answer people. An agent that is not ready
 // does not run: whoever writes to it is told, in plain words, that it is not ready yet. The reason the check returns
 // is for the creator and is never sent to them.
-func (h *Host) SetReadinessCheck(f func(ctx context.Context, agent *domain.Agent) string) { h.readiness = f }
+func (h *Host) SetReadinessCheck(f func(ctx context.Context, agent *domain.Agent) string) {
+	h.readiness = f
+}
 
 // notReadyReply is what a person is told by an agent that is not ready to answer yet.
 const notReadyReply = "I'm not ready to help yet. The person who set me up still has a little more to do, so please try again later."
@@ -900,9 +889,6 @@ func (h *Host) Register(hosted *HostedAgent) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.agents[hosted.Agent.ID] = hosted
-	// A new (or replaced) agent's event and cron skills take effect at once.
-	h.bus.resync(hosted)
-	h.syncCron(hosted)
 }
 
 // Deregister removes a HostedAgent from the host's in-memory map and stops its
@@ -912,8 +898,6 @@ func (h *Host) Deregister(agentID string, identityIDs []string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	delete(h.agents, agentID)
-	h.bus.drop(agentID)
-	h.dropCron(agentID)
 }
 
 // Get looks up a previously Register'd HostedAgent by Agent.ID.
@@ -944,9 +928,6 @@ func (h *Host) ReloadAgent(ctx context.Context, agentID string, loader func(cont
 	hosted.Agent.Greeting = fresh.Greeting
 	hosted.Agent.Description = fresh.Description
 	hosted.Agent.Instructions = fresh.Instructions
-	// Skills changed: bring event subscriptions and cron entries into line.
-	h.bus.resync(hosted)
-	h.syncCron(hosted)
 }
 
 // ReloadAgentSkills is an alias for ReloadAgent kept for backwards compatibility.

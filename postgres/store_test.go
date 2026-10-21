@@ -170,8 +170,7 @@ func TestAgentAndSkillCRUD(t *testing.T) {
 
 	skill := &domain.Skill{
 		ID: "skill_1", AgentID: agent.ID, Name: "ship_pr", Visibility: domain.SkillPublic,
-		Tools:   []domain.ToolBinding{{ToolID: tool.ID}},
-		Trigger: &domain.Trigger{Type: domain.TriggerTypeCron, Value: "0 9 * * *"},
+		Tools: []domain.ToolBinding{{ToolID: tool.ID}},
 	}
 	if err := store.SaveSkill(ctx, skill); err != nil {
 		t.Fatalf("save skill: %v", err)
@@ -183,9 +182,6 @@ func TestAgentAndSkillCRUD(t *testing.T) {
 	}
 	if got.AgentID != agent.ID || len(got.Tools) != 1 || got.Tools[0].ToolID != tool.ID {
 		t.Fatalf("unexpected skill: %+v", got)
-	}
-	if got.Trigger == nil || got.Trigger.Type != domain.TriggerTypeCron || got.Trigger.Value != "0 9 * * *" {
-		t.Fatalf("trigger did not round-trip: %+v", got.Trigger)
 	}
 
 	loaded, err := store.LoadAgent(ctx, agent.ID)

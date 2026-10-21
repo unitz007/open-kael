@@ -62,12 +62,6 @@ type Skill struct {
 	// this skill (time + timezone). The creator sets this flag; the actual
 	// schedule is stored per-user, not on the Skill itself.
 	Schedulable bool `json:"schedulable,omitempty"`
-
-	// Trigger is optional — nil means purely invoked on demand (by the
-	// owning Agent's own loop, or by another agent's delegate call). Set,
-	// it also fires autonomously — the replacement for what
-	// workflow.Workflow's Trigger field did in the old framework.
-	Trigger *Trigger `json:"trigger,omitempty"`
 }
 
 // PublicContract returns only what a Public Skill exposes to other agents —

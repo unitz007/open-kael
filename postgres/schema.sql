@@ -207,8 +207,8 @@ CREATE TABLE IF NOT EXISTS skills (
     input_schema   JSONB NOT NULL DEFAULT '{}',
     output_schema  JSONB NOT NULL DEFAULT '{}',
     visibility     TEXT NOT NULL DEFAULT 'private',
-    -- Trigger is optional on domain.Skill (nil = invoked on demand only) —
-    -- both columns NULL together means no Trigger.
+    -- Not used any more: a capability carries no trigger (what happens when something happens is a reaction a
+    -- person sets up). Left in place so old rows and rollbacks are safe.
     trigger_type   TEXT,
     trigger_value  TEXT
 );

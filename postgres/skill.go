@@ -24,13 +24,6 @@ func (s *Store) SaveSkill(ctx context.Context, skill *domain.Skill) error {
 		return fmt.Errorf("postgres: encode skill %q output schema: %w", skill.ID, err)
 	}
 
-	var triggerType, triggerValue *string
-	if skill.Trigger != nil {
-		tt := string(skill.Trigger.Type)
-		triggerType = &tt
-		triggerValue = &skill.Trigger.Value
-	}
-
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("postgres: begin: %w", err)
@@ -47,8 +40,8 @@ func (s *Store) SaveSkill(ctx context.Context, skill *domain.Skill) error {
 	}
 
 	_, err = tx.Exec(ctx, `
-		INSERT INTO skills (id, agent_id, name, description, instructions, input_schema, output_schema, visibility, schedulable, trigger_type, trigger_value, integrations, limited_integrations)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		INSERT INTO skills (id, agent_id, name, description, instructions, input_schema, output_schema, visibility, schedulable, integrations, limited_integrations)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		ON CONFLICT (id) DO UPDATE SET
 			agent_id = EXCLUDED.agent_id,
 			name = EXCLUDED.name,
@@ -58,12 +51,10 @@ func (s *Store) SaveSkill(ctx context.Context, skill *domain.Skill) error {
 			output_schema = EXCLUDED.output_schema,
 			visibility = EXCLUDED.visibility,
 			schedulable = EXCLUDED.schedulable,
-			trigger_type = EXCLUDED.trigger_type,
-			trigger_value = EXCLUDED.trigger_value,
 			integrations = EXCLUDED.integrations,
 			limited_integrations = EXCLUDED.limited_integrations
 	`, skill.ID, skill.AgentID, skill.Name, skill.Description, skill.Instructions,
-		inputJSON, outputJSON, string(skill.Visibility), skill.Schedulable, triggerType, triggerValue, integrations, limited)
+		inputJSON, outputJSON, string(skill.Visibility), skill.Schedulable, integrations, limited)
 	if err != nil {
 		return fmt.Errorf("postgres: save skill %q: %w", skill.ID, err)
 	}
@@ -85,7 +76,7 @@ func (s *Store) SaveSkill(ctx context.Context, skill *domain.Skill) error {
 
 func (s *Store) GetSkill(ctx context.Context, id string) (*domain.Skill, error) {
 	row := s.pool.QueryRow(ctx, `
-		SELECT id, agent_id, name, description, instructions, input_schema, output_schema, visibility, schedulable, trigger_type, trigger_value, integrations, limited_integrations
+		SELECT id, agent_id, name, description, instructions, input_schema, output_schema, visibility, schedulable, integrations, limited_integrations
 		FROM skills WHERE id = $1
 	`, id)
 	skill, err := scanSkill(row)
@@ -105,7 +96,7 @@ func (s *Store) GetSkill(ctx context.Context, id string) (*domain.Skill, error) 
 
 func (s *Store) ListSkillsByAgent(ctx context.Context, agentID string) ([]*domain.Skill, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, agent_id, name, description, instructions, input_schema, output_schema, visibility, schedulable, trigger_type, trigger_value, integrations, limited_integrations
+		SELECT id, agent_id, name, description, instructions, input_schema, output_schema, visibility, schedulable, integrations, limited_integrations
 		FROM skills WHERE agent_id = $1 ORDER BY id
 	`, agentID)
 	if err != nil {
@@ -162,11 +153,10 @@ func scanSkill(row rowScanner) (*domain.Skill, error) {
 	var skill domain.Skill
 	var inputJSON, outputJSON []byte
 	var visibility string
-	var triggerType, triggerValue *string
 	var integrations, limited []string
 
 	if err := row.Scan(&skill.ID, &skill.AgentID, &skill.Name, &skill.Description, &skill.Instructions,
-		&inputJSON, &outputJSON, &visibility, &skill.Schedulable, &triggerType, &triggerValue, &integrations, &limited); err != nil {
+		&inputJSON, &outputJSON, &visibility, &skill.Schedulable, &integrations, &limited); err != nil {
 		return nil, err
 	}
 	skill.Integrations = integrations
@@ -178,8 +168,5 @@ func scanSkill(row rowScanner) (*domain.Skill, error) {
 		return nil, fmt.Errorf("postgres: decode skill %q output schema: %w", skill.ID, err)
 	}
 	skill.Visibility = domain.SkillVisibility(visibility)
-	if triggerType != nil {
-		skill.Trigger = &domain.Trigger{Type: domain.TriggerType(*triggerType), Value: *triggerValue}
-	}
 	return &skill, nil
 }
