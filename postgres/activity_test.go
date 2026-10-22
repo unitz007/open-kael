@@ -393,3 +393,67 @@ func TestActivity_EachAgentHasItsOwnNumbers(t *testing.T) {
 		t.Errorf("which agents were asked: %+v", sum.Topics)
 	}
 }
+
+// The connected apps screen: each capability's uses day by day, and how many of the people who chat with the agents have
+// connected their own account to each service.
+func TestActivity_UsesDayByDayAndPeopleSignedInPerService(t *testing.T) {
+	s, ctx := activityRig(t)
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.CapabilitiesUsed(ctx, "ag_a", []string{"sk_mail"})
+	must(s.AgeUsesForTest(ctx, "ag_a", 2))
+	s.CapabilitiesUsed(ctx, "ag_a", []string{"sk_prs"})
+	s.CapabilitiesUsed(ctx, "ag_a", []string{"sk_prs", "sk_mail"})
+	s.CapabilitiesUsed(ctx, "ag_a", nil) // just talking: not a series
+
+	sum, err := s.ActivitySummary(ctx, []string{"ag_a"}, 7, time.Now())
+	must(err)
+	got := map[string][]int{}
+	for _, u := range sum.UsesDaily {
+		if len(u.Daily) != 7 {
+			t.Fatalf("one count a day, like Daily: %+v", u)
+		}
+		got[u.Name] = u.Daily
+	}
+	if len(got) != 2 || got["sk_prs"][6] != 2 || got["sk_prs"][4] != 0 || got["sk_mail"][6] != 1 || got["sk_mail"][4] != 1 {
+		t.Errorf("per capability per day, talking left out: %v", got)
+	}
+
+	must(s.SaveIntegration(ctx, &domain.Integration{ID: "int_gm", Name: "Gmail", Service: "gmail"}))
+	must(s.SaveIntegration(ctx, &domain.Integration{ID: "int_cal", Name: "Calendar", Service: "google_calendar"}))
+	must(s.SaveIdentity(ctx, &domain.Identity{ID: "id_gm", IntegrationID: "int_gm", Name: "gmail", Kind: "oauth"}))
+	must(s.SaveIdentity(ctx, &domain.Identity{ID: "id_cal", IntegrationID: "int_cal", Name: "calendar", Kind: "oauth"}))
+	chat := func(id, ident, user string) {
+		must(s.SaveMessengerChannel(ctx, &domain.MessengerChannel{ID: id, IdentityID: ident, UserID: user, ChannelRef: id}))
+	}
+	chat("mc_s1", "id_tg", "u_act_u1")
+	chat("mc_s2", "id_sl", "u_act_u1")
+	chat("mc_s3", "id_tg", "u_act_u2")
+	signIn := func(id, ident, user string) {
+		must(s.SaveAppAuthorization(ctx, &domain.AppAuthorization{ID: id, IdentityID: ident, UserID: user, Scope: "user"}))
+	}
+	signIn("aa1", "id_gm", "u_act_u1")
+	signIn("aa2", "id_cal", "u_act_u1")
+	signIn("aa3", "id_gm", "u_act_u2")
+	signIn("aa4", "id_gm", "u_act_u3") // signed in, but never chats with these agents: not counted
+
+	count := func(agents ...string) (map[string]int, int) {
+		sum, err := s.ActivitySummary(ctx, agents, 7, time.Now())
+		must(err)
+		m := map[string]int{}
+		for _, c := range sum.SignedIn {
+			m[c.Name] = c.Count
+		}
+		return m, sum.SignedInPeople
+	}
+	if m, n := count("ag_a"); m["int_gm"] != 2 || m["int_cal"] != 1 || len(m) != 2 || n != 2 {
+		t.Errorf("people who chat with ag_a, per service and in all: %v %d", m, n)
+	}
+	if m, n := count("ag_b"); m["int_gm"] != 1 || m["int_cal"] != 1 || n != 1 {
+		t.Errorf("ag_b is only on Slack, where only u1 chats: %v %d", m, n)
+	}
+}

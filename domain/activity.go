@@ -115,6 +115,19 @@ type ActivitySummary struct {
 	UsesSince string          `json:"uses_since"`
 	// ByAgent is each agent's own numbers, in the order the agents were asked for.
 	ByAgent []ActivityAgent `json:"by_agent"`
+	// UsesDaily is Uses day by day for each capability (Name is the capability id; "with none" is left out), in the
+	// same order as Daily, so a screen can draw what a connection was used for each day.
+	UsesDaily []ActivitySeries `json:"uses_daily"`
+	// SignedIn is, for each service (Name is the integration id), how many of the people who chat with these agents
+	// have connected their own account to it; SignedInPeople is how many have connected at least one. Counts only.
+	SignedIn       []ActivityCount `json:"signed_in"`
+	SignedInPeople int             `json:"signed_in_people"`
+}
+
+// ActivitySeries is a name with a count for each day of the period, in the order of ActivitySummary.Daily.
+type ActivitySeries struct {
+	Name  string `json:"name"`
+	Daily []int  `json:"daily"`
 }
 
 // RecentMessagesWindow is how far back "messages handled lately" looks.

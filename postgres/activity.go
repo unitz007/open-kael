@@ -231,7 +231,7 @@ func (s *Store) ActivitySummary(ctx context.Context, agentIDs []string, days int
 	if days > 30 {
 		days = 30
 	}
-	out := domain.ActivitySummary{RecentWindowMinutes: int(domain.RecentMessagesWindow / time.Minute), Daily: []domain.ActivityDay{}, ChatApps: []domain.ActivityCount{}, Topics: []domain.ActivityCount{}, Uses: []domain.ActivityCount{}, ByAgent: []domain.ActivityAgent{}, Problems: []domain.ActivityProblem{}, Events: []domain.ActivityEvent{}}
+	out := domain.ActivitySummary{RecentWindowMinutes: int(domain.RecentMessagesWindow / time.Minute), Daily: []domain.ActivityDay{}, ChatApps: []domain.ActivityCount{}, Topics: []domain.ActivityCount{}, Uses: []domain.ActivityCount{}, ByAgent: []domain.ActivityAgent{}, UsesDaily: []domain.ActivitySeries{}, SignedIn: []domain.ActivityCount{}, Problems: []domain.ActivityProblem{}, Events: []domain.ActivityEvent{}}
 	now = now.UTC()
 	today := now.Format("2006-01-02")
 	first := now.AddDate(0, 0, -(days - 1)).Format("2006-01-02")
@@ -384,6 +384,9 @@ func (s *Store) ActivitySummary(ctx context.Context, agentIDs []string, days int
 	if err := s.byAgent(ctx, &out, agentIDs, first, today, dayStart); err != nil {
 		return out, err
 	}
+	if err := s.byConnection(ctx, &out, agentIDs, first, today); err != nil {
+		return out, err
+	}
 
 	// The latest things that happened.
 	rows, err = s.pool.Query(ctx, `SELECT id, agent_id, kind, detail, at FROM agent_activity_events WHERE agent_id = ANY($1) ORDER BY id DESC LIMIT 30`, agentIDs)
@@ -402,6 +405,64 @@ func (s *Store) ActivitySummary(ctx context.Context, agentIDs []string, days int
 	}
 	rows.Close()
 	return out, rows.Err()
+}
+
+// byConnection fills in what the connected apps screen needs: each capability's uses day by day, and how many of the
+// people who chat with these agents have connected their own account to each service (and to any). Counts only: never
+// who, and only people who chat with these agents, though the account may have been connected through someone else's.
+func (s *Store) byConnection(ctx context.Context, out *domain.ActivitySummary, agentIDs []string, first, today string) error {
+	index := make(map[string]int, len(out.Daily))
+	for i, d := range out.Daily {
+		index[d.Day] = i
+	}
+	series := map[string]int{}
+	rows, err := s.pool.Query(ctx, `SELECT skill_id, to_char(day, 'YYYY-MM-DD'), SUM(uses)::int FROM agent_activity_uses
+		WHERE agent_id = ANY($1) AND skill_id <> '' AND day >= $2 AND day <= $3 GROUP BY skill_id, day ORDER BY skill_id`, agentIDs, first, today)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var id, day string
+		var n int
+		if err := rows.Scan(&id, &day, &n); err != nil {
+			rows.Close()
+			return err
+		}
+		k, seen := series[id]
+		if !seen {
+			k = len(out.UsesDaily)
+			series[id] = k
+			out.UsesDaily = append(out.UsesDaily, domain.ActivitySeries{Name: id, Daily: make([]int, len(out.Daily))})
+		}
+		if i, known := index[day]; known {
+			out.UsesDaily[k].Daily[i] += n
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	const people = `SELECT DISTINCT mc.user_id FROM messenger_channels mc JOIN agent_identities ai ON ai.identity_id = mc.identity_id WHERE ai.agent_id = ANY($1)`
+	rows, err = s.pool.Query(ctx, `SELECT idn.integration_id, COUNT(DISTINCT aa.user_id) AS n FROM app_authorizations aa
+		JOIN identities idn ON idn.id = aa.identity_id
+		WHERE aa.user_id IN (`+people+`) GROUP BY idn.integration_id ORDER BY n DESC, idn.integration_id`, agentIDs)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var c domain.ActivityCount
+		if err := rows.Scan(&c.Name, &c.Count); err != nil {
+			rows.Close()
+			return err
+		}
+		out.SignedIn = append(out.SignedIn, c)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	return s.pool.QueryRow(ctx, `SELECT COUNT(DISTINCT user_id) FROM app_authorizations WHERE user_id IN (`+people+`)`, agentIDs).Scan(&out.SignedInPeople)
 }
 
 // byAgent fills in each agent's own numbers, for comparing them: people today, this week and each day of the period,
