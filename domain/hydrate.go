@@ -135,6 +135,7 @@ func withApprovalGate(def *ToolDefinition, inner func(ctx context.Context, input
 		if !ok {
 			return nil, fmt.Errorf("tool %q requires approval, but this run has no active conversation to ask in", def.ID)
 		}
+		noteStep(ctx, def.ModelName(), StepWaiting)
 		approved, err := requester.RequestApproval(ctx, conv, def.RenderApprovalPrompt(input), def.ApprovalTimeoutSeconds)
 		if err != nil {
 			return nil, fmt.Errorf("tool %q: requesting approval: %w", def.ID, err)
@@ -142,6 +143,7 @@ func withApprovalGate(def *ToolDefinition, inner func(ctx context.Context, input
 		if !approved {
 			return OutputNotApproved, nil
 		}
+		noteStep(ctx, def.ModelName(), StepRunning)
 		return inner(ctx, input)
 	}
 }
@@ -434,6 +436,7 @@ func withUserApprovalGate(def *ToolDefinition, inner func(ctx context.Context, i
 		if !ok {
 			return nil, fmt.Errorf("tool %q: user requires approval, but this run has no active conversation", def.ID)
 		}
+		noteStep(ctx, def.ModelName(), StepWaiting)
 		approved, err := requester.RequestApproval(ctx, conv, def.RenderApprovalPrompt(input), def.ApprovalTimeoutSeconds)
 		if err != nil {
 			return nil, fmt.Errorf("tool %q: requesting user approval: %w", def.ID, err)
@@ -441,6 +444,7 @@ func withUserApprovalGate(def *ToolDefinition, inner func(ctx context.Context, i
 		if !approved {
 			return OutputNotApproved, nil
 		}
+		noteStep(ctx, def.ModelName(), StepRunning)
 		return inner(ctx, input)
 	}
 }

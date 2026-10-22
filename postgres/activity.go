@@ -6,10 +6,12 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/jackc/pgx/v5"
 	"log"
+	"sort"
 	"sync"
 	"time"
 
@@ -159,6 +161,123 @@ func (s *Store) CapabilitiesUsed(ctx context.Context, agentID string, skillIDs [
 	s.pruneActivity(ctx, now)
 }
 
+var _ domain.TurnRecorder = (*Store)(nil)
+
+// TurnHandled implements domain.TurnRecorder: one row for the message, and each ability's use counted by how it went.
+func (s *Store) TurnHandled(ctx context.Context, agentID string, rec domain.TurnRecord) {
+	if agentID == "" {
+		return
+	}
+	now := time.Now().UTC()
+	steps := rec.Steps
+	if steps == nil {
+		steps = []domain.LiveStep{}
+	}
+	raw, err := json.Marshal(steps)
+	if err != nil {
+		return
+	}
+	caps := rec.Capabilities
+	if caps == nil {
+		caps = []string{}
+	}
+	if _, err := s.pool.Exec(ctx, `INSERT INTO agent_activity_turns (agent_id, at, capabilities, steps, failed) VALUES ($1, $2, $3, $4, $5)`,
+		agentID, now, caps, raw, rec.Failed); err != nil {
+		log.Printf("activity: note a message: %v", err)
+		return
+	}
+	for _, st := range steps {
+		state := st.State
+		if !state.Ended() {
+			state = domain.StepStopped // the turn ended while it was still going
+		}
+		if _, err := s.pool.Exec(ctx, `
+			INSERT INTO agent_activity_tools (agent_id, day, tool_id, state, uses) VALUES ($1, $2, $3, $4, 1)
+			ON CONFLICT (agent_id, day, tool_id, state) DO UPDATE SET uses = agent_activity_tools.uses + 1`,
+			agentID, now.Format("2006-01-02"), st.Tool, string(state)); err != nil {
+			log.Printf("activity: count an ability: %v", err)
+			break
+		}
+	}
+	s.notifyActivity(agentID)
+	s.pruneActivity(ctx, now)
+}
+
+// turnsAndTools fills in the latest handled messages and each ability's uses over the period.
+func (s *Store) turnsAndTools(ctx context.Context, out *domain.ActivitySummary, agentIDs []string, first, today string) error {
+	rows, err := s.pool.Query(ctx, `SELECT id, agent_id, to_char(at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'), capabilities, steps, failed
+		FROM agent_activity_turns WHERE agent_id = ANY($1) ORDER BY id DESC LIMIT 20`, agentIDs)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var t domain.ActivityTurn
+		var raw []byte
+		if err := rows.Scan(&t.ID, &t.AgentID, &t.At, &t.Capabilities, &raw, &t.Failed); err != nil {
+			rows.Close()
+			return err
+		}
+		if err := json.Unmarshal(raw, &t.Steps); err != nil || t.Steps == nil {
+			t.Steps = []domain.LiveStep{}
+		}
+		if t.Capabilities == nil {
+			t.Capabilities = []string{}
+		}
+		out.Turns = append(out.Turns, t)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	rows, err = s.pool.Query(ctx, `SELECT tool_id, state, SUM(uses)::int FROM agent_activity_tools
+		WHERE agent_id = ANY($1) AND day >= $2 AND day <= $3 GROUP BY tool_id, state`, agentIDs, first, today)
+	if err != nil {
+		return err
+	}
+	by := map[string]*domain.ActivityToolUse{}
+	for rows.Next() {
+		var tool, state string
+		var n int
+		if err := rows.Scan(&tool, &state, &n); err != nil {
+			rows.Close()
+			return err
+		}
+		u := by[tool]
+		if u == nil {
+			u = &domain.ActivityToolUse{Tool: tool}
+			by[tool] = u
+		}
+		switch domain.StepState(state) {
+		case domain.StepDone:
+			u.Done += n
+		case domain.StepFailed:
+			u.Failed += n
+		case domain.StepDeclined:
+			u.Declined += n
+		case domain.StepSignIn:
+			u.SignIn += n
+		default:
+			u.Stopped += n
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, u := range by {
+		out.ToolUses = append(out.ToolUses, *u)
+	}
+	sort.Slice(out.ToolUses, func(i, j int) bool {
+		a, b := out.ToolUses[i], out.ToolUses[j]
+		if a.Total() != b.Total() {
+			return a.Total() > b.Total()
+		}
+		return a.Tool < b.Tool
+	})
+	return nil
+}
+
 // ActivityEvent implements domain.ActivityRecorder.
 func (s *Store) ActivityEvent(ctx context.Context, agentID string, kind domain.ActivityKind, detail string) {
 	if agentID == "" || kind == "" {
@@ -189,6 +308,11 @@ func (s *Store) pruneActivity(ctx context.Context, now time.Time) {
 		{`DELETE FROM agent_activity_people WHERE day < $1`, []any{cutoff.Format("2006-01-02")}},
 		{`DELETE FROM agent_activity_uses WHERE day < $1`, []any{cutoff.Format("2006-01-02")}},
 		{`DELETE FROM agent_activity_events WHERE at < $1`, []any{cutoff}},
+		{`DELETE FROM agent_activity_turns WHERE at < $1`, []any{cutoff}},
+		{`DELETE FROM agent_activity_tools WHERE day < $1`, []any{cutoff.Format("2006-01-02")}},
+		{`DELETE FROM agent_activity_turns t USING (
+			SELECT id, ROW_NUMBER() OVER (PARTITION BY agent_id ORDER BY id DESC) AS n FROM agent_activity_turns
+		) r WHERE t.id = r.id AND r.n > $1`, []any{activityMaxEvents}},
 		{`DELETE FROM agent_activity_minutes WHERE minute < $1`, []any{now.Add(-24 * time.Hour)}},
 		{`DELETE FROM agent_activity_events e USING (
 			SELECT id, ROW_NUMBER() OVER (PARTITION BY agent_id ORDER BY id DESC) AS n FROM agent_activity_events
@@ -231,7 +355,7 @@ func (s *Store) ActivitySummary(ctx context.Context, agentIDs []string, days int
 	if days > 30 {
 		days = 30
 	}
-	out := domain.ActivitySummary{RecentWindowMinutes: int(domain.RecentMessagesWindow / time.Minute), Daily: []domain.ActivityDay{}, ChatApps: []domain.ActivityCount{}, Topics: []domain.ActivityCount{}, Uses: []domain.ActivityCount{}, ByAgent: []domain.ActivityAgent{}, UsesDaily: []domain.ActivitySeries{}, SignedIn: []domain.ActivityCount{}, Problems: []domain.ActivityProblem{}, Events: []domain.ActivityEvent{}}
+	out := domain.ActivitySummary{RecentWindowMinutes: int(domain.RecentMessagesWindow / time.Minute), Daily: []domain.ActivityDay{}, ChatApps: []domain.ActivityCount{}, Topics: []domain.ActivityCount{}, Uses: []domain.ActivityCount{}, ByAgent: []domain.ActivityAgent{}, UsesDaily: []domain.ActivitySeries{}, SignedIn: []domain.ActivityCount{}, Turns: []domain.ActivityTurn{}, ToolUses: []domain.ActivityToolUse{}, Problems: []domain.ActivityProblem{}, Events: []domain.ActivityEvent{}}
 	now = now.UTC()
 	today := now.Format("2006-01-02")
 	first := now.AddDate(0, 0, -(days - 1)).Format("2006-01-02")
@@ -385,6 +509,9 @@ func (s *Store) ActivitySummary(ctx context.Context, agentIDs []string, days int
 		return out, err
 	}
 	if err := s.byConnection(ctx, &out, agentIDs, first, today); err != nil {
+		return out, err
+	}
+	if err := s.turnsAndTools(ctx, &out, agentIDs, first, today); err != nil {
 		return out, err
 	}
 

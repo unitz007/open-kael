@@ -457,3 +457,56 @@ func TestActivity_UsesDayByDayAndPeopleSignedInPerService(t *testing.T) {
 		t.Errorf("ag_b is only on Slack, where only u1 chats: %v %d", m, n)
 	}
 }
+
+// What an agent did with each message: one row per message (capabilities, abilities and how each went, whether the
+// reply went through), newest first, and each ability's uses over the period by how they went. Ids and states only.
+func TestActivity_MessagesKeepTheirStepsAndAbilitiesAreCountedByHowTheyWent(t *testing.T) {
+	s, ctx := activityRig(t)
+	s.TurnHandled(ctx, "ag_a", domain.TurnRecord{Capabilities: []string{"sk_fpl"}, Steps: []domain.LiveStep{
+		{Tool: "fpl.my_team", State: domain.StepDone}, {Tool: "fpl.transfer", State: domain.StepDeclined},
+	}})
+	s.TurnHandled(ctx, "ag_a", domain.TurnRecord{Capabilities: []string{"sk_fpl"}, Steps: []domain.LiveStep{
+		{Tool: "fpl.status", State: domain.StepFailed}, {Tool: "fpl.my_team", State: domain.StepRunning}, // still going when it ended
+	}, Failed: true})
+	s.TurnHandled(ctx, "ag_a", domain.TurnRecord{}) // just talking
+	s.TurnHandled(ctx, "ag_b", domain.TurnRecord{Steps: []domain.LiveStep{{Tool: "other", State: domain.StepDone}}})
+
+	sum, err := s.ActivitySummary(ctx, []string{"ag_a"}, 7, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sum.Turns) != 3 {
+		t.Fatalf("three messages, another agent's left out: %+v", sum.Turns)
+	}
+	talk, failed, first := sum.Turns[0], sum.Turns[1], sum.Turns[2]
+	if len(talk.Capabilities) != 0 || len(talk.Steps) != 0 || talk.Failed || talk.At == "" {
+		t.Errorf("newest first, just talking: %+v", talk)
+	}
+	if !failed.Failed || len(failed.Steps) != 2 || failed.Steps[0].State != domain.StepFailed {
+		t.Errorf("a reply that didn't go through keeps its steps: %+v", failed)
+	}
+	if len(first.Capabilities) != 1 || first.Capabilities[0] != "sk_fpl" || first.Steps[1].Tool != "fpl.transfer" || first.Steps[1].State != domain.StepDeclined {
+		t.Errorf("capabilities and steps in order: %+v", first)
+	}
+	uses := map[string]domain.ActivityToolUse{}
+	for _, u := range sum.ToolUses {
+		uses[u.Tool] = u
+	}
+	if len(sum.ToolUses) != 3 || sum.ToolUses[0].Tool != "fpl.my_team" {
+		t.Errorf("each ability, most used first: %+v", sum.ToolUses)
+	}
+	if u := uses["fpl.my_team"]; u.Done != 1 || u.Stopped != 1 || u.Total() != 2 {
+		t.Errorf("a use still going when the message ended counts as stopped: %+v", u)
+	}
+	if uses["fpl.transfer"].Declined != 1 || uses["fpl.status"].Failed != 1 {
+		t.Errorf("by how they went: %+v", uses)
+	}
+
+	// Older than the period: not counted; older than kept: removed with the rest of the activity.
+	if err := s.AgeToolsForTest(ctx, "ag_a", 10); err != nil {
+		t.Fatal(err)
+	}
+	if sum, _ = s.ActivitySummary(ctx, []string{"ag_a"}, 7, time.Now()); len(sum.ToolUses) != 0 || len(sum.Turns) != 3 {
+		t.Errorf("only this period's uses: %+v", sum.ToolUses)
+	}
+}

@@ -122,6 +122,10 @@ type ActivitySummary struct {
 	// have connected their own account to it; SignedInPeople is how many have connected at least one. Counts only.
 	SignedIn       []ActivityCount `json:"signed_in"`
 	SignedInPeople int             `json:"signed_in_people"`
+	// Turns are the latest messages people sent that the agents handled, newest first: with which capabilities, the
+	// abilities used and how each went. ToolUses is each ability's uses over the period by how they went, most first.
+	Turns    []ActivityTurn    `json:"turns"`
+	ToolUses []ActivityToolUse `json:"tool_uses"`
 }
 
 // ActivitySeries is a name with a count for each day of the period, in the order of ActivitySummary.Daily.

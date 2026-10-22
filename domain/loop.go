@@ -245,7 +245,9 @@ func (l *NativeLoop) Run(ctx context.Context, messages []Message, actions []*Bou
 				}
 			}
 
+			noteStep(ctx, call.Name, StepRunning)
 			output, err := action.Invoke(ctx, call.Arguments)
+			noteStep(ctx, call.Name, StepStateOf(output, err))
 			done, msg, why := OutcomeOf(output, err)
 			records = append(records, ActionRecord{Name: call.Name, Changes: action.Spec.Changes, Done: done, Message: msg, Reason: why})
 			if errors.Is(err, ErrSuperseded) && !changedAnything(records) {

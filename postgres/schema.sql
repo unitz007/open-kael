@@ -488,6 +488,30 @@ CREATE TABLE IF NOT EXISTS agent_activity_uses (
     PRIMARY KEY (agent_id, day, skill_id)
 );
 
+-- One row per message a person sent that an agent handled: with which capabilities (ids), which abilities it used and
+-- how each went ([{tool, state}], ids and states only), and whether the reply went through. Never what anyone wrote,
+-- what went in or came back, or who it was for. Kept as long as the other activity.
+CREATE TABLE IF NOT EXISTS agent_activity_turns (
+    id           BIGSERIAL PRIMARY KEY,
+    agent_id     TEXT NOT NULL REFERENCES agents (id) ON DELETE CASCADE,
+    at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    capabilities TEXT[] NOT NULL DEFAULT '{}',
+    steps        JSONB NOT NULL DEFAULT '[]',
+    failed       BOOLEAN NOT NULL DEFAULT FALSE
+);
+CREATE INDEX IF NOT EXISTS idx_agent_activity_turns_agent ON agent_activity_turns (agent_id, id DESC);
+CREATE INDEX IF NOT EXISTS idx_agent_activity_turns_at ON agent_activity_turns (at);
+
+-- How many times an agent used each ability each day, by how it went (done, failed, declined, signin, stopped).
+CREATE TABLE IF NOT EXISTS agent_activity_tools (
+    agent_id TEXT NOT NULL REFERENCES agents (id) ON DELETE CASCADE,
+    day      DATE NOT NULL,
+    tool_id  TEXT NOT NULL,
+    state    TEXT NOT NULL,
+    uses     INT NOT NULL DEFAULT 0,
+    PRIMARY KEY (agent_id, day, tool_id, state)
+);
+
 -- One-time split of the old users table into persons and accounts. Every old user becomes a person
 -- with the same id. One that acts as a login (it has an email or password, a session, or owns something
 -- a creator built) also becomes an account with that same id, linked to the person, so created_by and

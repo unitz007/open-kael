@@ -271,7 +271,13 @@ func (s *Server) streamWorking(w http.ResponseWriter, r *http.Request) {
 		return rc.Flush() == nil
 	}
 	send := func() bool {
-		raw, err := json.Marshal(map[string][]string{"working": s.work.Working(ids)})
+		// Who is at work and, for each, what it is handling right now: its capabilities and the abilities it has used
+		// with how each went (ids and states only, never what went in or came back).
+		payload := map[string]any{"working": s.work.Working(ids)}
+		if sw, ok := s.work.(domain.StepWatcher); ok {
+			payload["turns"] = sw.LiveTurns(ids)
+		}
+		raw, err := json.Marshal(payload)
 		if err != nil {
 			return true
 		}

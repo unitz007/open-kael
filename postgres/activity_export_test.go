@@ -74,3 +74,9 @@ func (s *Store) AgeUsesForTest(ctx context.Context, agentID string, days int) er
 	_, err := s.pool.Exec(ctx, `UPDATE agent_activity_uses SET day = day - $2::int WHERE agent_id = $1`, agentID, days)
 	return err
 }
+
+// AgeToolsForTest moves an agent's counted ability uses the given number of days back.
+func (s *Store) AgeToolsForTest(ctx context.Context, agentID string, days int) error {
+	_, err := s.pool.Exec(ctx, `UPDATE agent_activity_tools SET day = day - $2::int WHERE agent_id = $1`, agentID, days)
+	return err
+}
