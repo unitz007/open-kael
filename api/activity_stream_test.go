@@ -85,7 +85,7 @@ func (c *sseClient) next(t *testing.T, within time.Duration) (domain.ActivitySum
 	}
 }
 
-func streamRig(t *testing.T, refresh time.Duration) (*postgres.Store, *httptest.Server, func()) {
+func streamRig(t *testing.T, refresh time.Duration, opts ...api.Option) (*postgres.Store, *httptest.Server, func()) {
 	t.Helper()
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
@@ -104,7 +104,7 @@ func streamRig(t *testing.T, refresh time.Duration) (*postgres.Store, *httptest.
 		t.Fatal(err)
 	}
 	store := postgres.New(pool)
-	srv := httptest.NewServer(api.NewServer(store, api.WithActivity(store), api.WithActivityRefresh(refresh)))
+	srv := httptest.NewServer(api.NewServer(store, append([]api.Option{api.WithActivity(store), api.WithActivityRefresh(refresh)}, opts...)...))
 	t.Cleanup(srv.Close)
 
 	users := []string{"stm_a", "stm_b"}

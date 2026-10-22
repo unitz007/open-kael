@@ -17,6 +17,11 @@ func WithActivity(r domain.ActivityReader) Option {
 	return func(s *Server) { s.activity = r }
 }
 
+// WithWorkWatcher lets a creator's screens show their agents at work, as it happens.
+func WithWorkWatcher(w domain.WorkWatcher) Option {
+	return func(s *Server) { s.work = w }
+}
+
 // activityScope reads and checks what a request asks about: which agents and how many days. It has
 // already answered the request when ok is false. A creator only ever sees agents they created: an
 // agent the platform provides, or someone else's, is not theirs to look at.
@@ -219,6 +224,79 @@ func (s *Server) streamActivity(w http.ResponseWriter, r *http.Request) {
 			default:
 			}
 			if !summary() {
+				return
+			}
+		}
+	}
+}
+
+// streamWorking pushes which of the creator's agents are working right now (handling a message, a person's alert or a
+// repeating task), as server-sent events: once at once, then each time one starts or stops. It says only who is busy,
+// never with what. The same scope and limits as streamActivity: a creator only sees their own agents.
+func (s *Server) streamWorking(w http.ResponseWriter, r *http.Request) {
+	if s.work == nil {
+		writeError(w, http.StatusNotImplemented, errors.New("live working is not available"))
+		return
+	}
+	ids, _, ok := s.activityScope(w, r)
+	if !ok {
+		return
+	}
+	rc := http.NewResponseController(w)
+	key := "server"
+	if user, signedIn := AccountFromContext(r.Context()); signedIn {
+		key = user.ID
+	}
+	if !s.streams.take(key) {
+		writeError(w, http.StatusTooManyRequests, errors.New("too many live views are open: close one and try again"))
+		return
+	}
+	defer s.streams.release(key)
+
+	h := w.Header()
+	h.Set("Content-Type", "text/event-stream")
+	h.Set("Cache-Control", "no-cache, no-transform")
+	h.Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	if err := rc.Flush(); err != nil {
+		return
+	}
+	changed, stop := s.work.WatchWork(ids)
+	defer stop()
+
+	write := func(text string) bool {
+		if _, err := fmt.Fprint(w, text); err != nil {
+			return false
+		}
+		return rc.Flush() == nil
+	}
+	send := func() bool {
+		raw, err := json.Marshal(map[string][]string{"working": s.work.Working(ids)})
+		if err != nil {
+			return true
+		}
+		return write("event: working\ndata: " + string(raw) + "\n\n")
+	}
+	if !send() {
+		return
+	}
+	ping := time.NewTicker(defaultActivityRefresh)
+	defer ping.Stop()
+	end := time.NewTimer(maxActivityStream)
+	defer end.Stop()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-end.C:
+			write("event: bye\ndata: {\"reason\":\"reconnect\"}\n\n")
+			return
+		case <-ping.C:
+			if !write(": ping\n\n") {
+				return
+			}
+		case <-changed:
+			if !send() {
 				return
 			}
 		}

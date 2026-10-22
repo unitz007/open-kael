@@ -105,6 +105,16 @@ type ActivityWatcher interface {
 	WatchActivity(agentIDs []string) (changed <-chan struct{}, stop func())
 }
 
+// WorkWatcher says which agents are in the middle of something right now (handling a message, or a person's alert or
+// repeating task), so a screen can show the agent at work. It is about this moment only and keeps nothing.
+type WorkWatcher interface {
+	// Working returns those of these agents that are working now.
+	Working(agentIDs []string) []string
+	// WatchWork returns a channel that receives (at most one pending signal, never blocking the sender) when any of
+	// these agents starts or stops working, and a function that stops watching.
+	WatchWork(agentIDs []string) (changed <-chan struct{}, stop func())
+}
+
 const maxActivityDetail = 40
 
 // CleanActivityDetail makes a detail safe to keep and to show: lower-case words only (letters,

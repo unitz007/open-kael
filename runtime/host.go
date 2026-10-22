@@ -123,6 +123,9 @@ type Host struct {
 	mu     sync.RWMutex
 	agents map[string]*HostedAgent
 
+	// work is which agents are in the middle of a turn right now (see Working, WatchWork).
+	work workBoard
+
 	// listenerCancels stores a cancel func for each running listener goroutine,
 	// keyed by "agentID:identityID". Allows individual listeners to be stopped
 	// when an identity is removed from an agent (see StopIdentityListeners).
@@ -1237,6 +1240,7 @@ const unattendedFailure = "I couldn't finish your repeating task just now. I'll 
 // persist new turns, and guarantee the user gets a reply even if the model
 // never explicitly used a send action along the way.
 func (h *Host) HandleTurn(ctx context.Context, hosted *HostedAgent, conv domain.ConversationRef, userText string) (*domain.LoopResult, error) {
+	defer h.beginWork(hosted.Agent.ID)() // a screen can show the agent at work while this runs
 	// Inject user's per-identity connection refs into ctx when the user is
 	// known — makes their AppAuthorization credentials available for tool
 	// execution this turn via domain.ConnectionRefFromContext.
