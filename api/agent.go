@@ -43,7 +43,27 @@ func (s *Server) listAgents(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	// Each agent comes with its capabilities, so the list can tell which agents are ready to answer without opening each.
+	if sl, ok := s.store.(skillLister); ok && len(list) > 0 {
+		ids := make([]string, len(list))
+		for i, a := range list {
+			ids[i] = a.ID
+		}
+		skills, err := sl.ListSkillsByAgents(r.Context(), ids)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		for _, a := range list {
+			a.Skills = skills[a.ID]
+		}
+	}
 	writeJSONList(w, http.StatusOK, list)
+}
+
+// skillLister is a store that can load several agents' capabilities at once.
+type skillLister interface {
+	ListSkillsByAgents(ctx context.Context, agentIDs []string) (map[string][]*domain.Skill, error)
 }
 
 // getAgent returns the Agent with its Skills populated (via

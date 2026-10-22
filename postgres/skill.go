@@ -126,6 +126,56 @@ func (s *Store) ListSkillsByAgent(ctx context.Context, agentID string) ([]*domai
 	return out, nil
 }
 
+// ListSkillsByAgents returns the capabilities of several agents, keyed by agent id, in two queries however many there
+// are (the agent list shows them all at once).
+func (s *Store) ListSkillsByAgents(ctx context.Context, agentIDs []string) (map[string][]*domain.Skill, error) {
+	out := map[string][]*domain.Skill{}
+	if len(agentIDs) == 0 {
+		return out, nil
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, agent_id, name, description, instructions, input_schema, output_schema, visibility, schedulable, integrations, limited_integrations
+		FROM skills WHERE agent_id = ANY($1) ORDER BY agent_id, id
+	`, agentIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	byID := map[string]*domain.Skill{}
+	var ids []string
+	for rows.Next() {
+		skill, err := scanSkill(rows)
+		if err != nil {
+			return nil, err
+		}
+		out[skill.AgentID] = append(out[skill.AgentID], skill)
+		byID[skill.ID] = skill
+		ids = append(ids, skill.ID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	if len(ids) == 0 {
+		return out, nil
+	}
+	toolRows, err := s.pool.Query(ctx, `SELECT skill_id, tool_id FROM skill_tools WHERE skill_id = ANY($1) ORDER BY skill_id, tool_id`, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer toolRows.Close()
+	for toolRows.Next() {
+		var skillID, toolID string
+		if err := toolRows.Scan(&skillID, &toolID); err != nil {
+			return nil, err
+		}
+		if sk := byID[skillID]; sk != nil {
+			sk.Tools = append(sk.Tools, domain.ToolBinding{ToolID: toolID})
+		}
+	}
+	return out, toolRows.Err()
+}
+
 func (s *Store) DeleteSkill(ctx context.Context, id string) error {
 	_, err := s.pool.Exec(ctx, `DELETE FROM skills WHERE id = $1`, id)
 	return err
