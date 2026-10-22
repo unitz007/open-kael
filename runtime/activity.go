@@ -80,6 +80,26 @@ func (h *Host) noteMessage(hosted *HostedAgent) {
 	h.record(func(ctx context.Context) { h.activity.MessageHandled(ctx, agentID) })
 }
 
+// noteUses counts what a person's message was handled with: these capabilities (by name, as routing picked them), or
+// none. Only messages from a person count: an alert or repeating task is not someone using the agent.
+func (h *Host) noteUses(ctx context.Context, hosted *HostedAgent, skillNames []string) {
+	ur, ok := h.activity.(domain.UseRecorder)
+	if !ok || domain.IsUnattended(ctx) {
+		return
+	}
+	var ids []string
+	for _, name := range skillNames {
+		for _, s := range hosted.Agent.Skills {
+			if s.Name == name {
+				ids = append(ids, s.ID)
+				break
+			}
+		}
+	}
+	agentID := hosted.Agent.ID
+	h.record(func(ctx context.Context) { ur.CapabilitiesUsed(ctx, agentID, ids) })
+}
+
 func (h *Host) noteEvent(hosted *HostedAgent, kind domain.ActivityKind, detail string) {
 	if h.activity == nil {
 		return

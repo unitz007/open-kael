@@ -68,3 +68,9 @@ func (s *Store) MinuteRowsForTest(ctx context.Context, agentID string) int {
 	_ = s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM agent_activity_minutes WHERE agent_id = $1`, agentID).Scan(&n)
 	return n
 }
+
+// AgeUsesForTest moves an agent's counted uses the given number of days back.
+func (s *Store) AgeUsesForTest(ctx context.Context, agentID string, days int) error {
+	_, err := s.pool.Exec(ctx, `UPDATE agent_activity_uses SET day = day - $2::int WHERE agent_id = $1`, agentID, days)
+	return err
+}

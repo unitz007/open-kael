@@ -131,6 +131,33 @@ func (s *Store) MessageHandled(ctx context.Context, agentID string) {
 	s.pruneActivity(ctx, minute)
 }
 
+// CapabilitiesUsed implements domain.UseRecorder: one more use today of each capability (or of none).
+func (s *Store) CapabilitiesUsed(ctx context.Context, agentID string, skillIDs []string) {
+	if agentID == "" {
+		return
+	}
+	now := time.Now().UTC()
+	ids := skillIDs
+	if len(ids) == 0 {
+		ids = []string{""}
+	}
+	seen := map[string]bool{}
+	for _, id := range ids {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		if _, err := s.pool.Exec(ctx, `
+			INSERT INTO agent_activity_uses (agent_id, day, skill_id, uses) VALUES ($1, $2, $3, 1)
+			ON CONFLICT (agent_id, day, skill_id) DO UPDATE SET uses = agent_activity_uses.uses + 1`, agentID, now.Format("2006-01-02"), id); err != nil {
+			log.Printf("activity: count a use: %v", err)
+			return
+		}
+	}
+	s.notifyActivity(agentID)
+	s.pruneActivity(ctx, now)
+}
+
 // ActivityEvent implements domain.ActivityRecorder.
 func (s *Store) ActivityEvent(ctx context.Context, agentID string, kind domain.ActivityKind, detail string) {
 	if agentID == "" || kind == "" {
@@ -159,6 +186,7 @@ func (s *Store) pruneActivity(ctx context.Context, now time.Time) {
 		args []any
 	}{
 		{`DELETE FROM agent_activity_people WHERE day < $1`, []any{cutoff.Format("2006-01-02")}},
+		{`DELETE FROM agent_activity_uses WHERE day < $1`, []any{cutoff.Format("2006-01-02")}},
 		{`DELETE FROM agent_activity_events WHERE at < $1`, []any{cutoff}},
 		{`DELETE FROM agent_activity_minutes WHERE minute < $1`, []any{now.Add(-24 * time.Hour)}},
 		{`DELETE FROM agent_activity_events e USING (
@@ -202,7 +230,7 @@ func (s *Store) ActivitySummary(ctx context.Context, agentIDs []string, days int
 	if days > 30 {
 		days = 30
 	}
-	out := domain.ActivitySummary{RecentWindowMinutes: int(domain.RecentMessagesWindow / time.Minute), Daily: []domain.ActivityDay{}, ChatApps: []domain.ActivityCount{}, Topics: []domain.ActivityCount{}, Problems: []domain.ActivityProblem{}, Events: []domain.ActivityEvent{}}
+	out := domain.ActivitySummary{RecentWindowMinutes: int(domain.RecentMessagesWindow / time.Minute), Daily: []domain.ActivityDay{}, ChatApps: []domain.ActivityCount{}, Topics: []domain.ActivityCount{}, Uses: []domain.ActivityCount{}, Problems: []domain.ActivityProblem{}, Events: []domain.ActivityEvent{}}
 	now = now.UTC()
 	today := now.Format("2006-01-02")
 	first := now.AddDate(0, 0, -(days - 1)).Format("2006-01-02")
@@ -237,8 +265,38 @@ func (s *Store) ActivitySummary(ctx context.Context, agentIDs []string, days int
 		return out, err
 	}
 
+	// People who came back: active on more than one of the last seven days.
+	if err := one(`SELECT COUNT(*) FROM (
+			SELECT person FROM agent_activity_people WHERE agent_id = ANY($1) AND day > $2::date - 7
+			GROUP BY person HAVING COUNT(DISTINCT day) > 1) back`, &out.ReturningWeek, agentIDs, today); err != nil {
+		return out, err
+	}
+
+	// What messages were handled with, over the period, and since when that has been counted.
+	rows, err := s.pool.Query(ctx, `SELECT skill_id, SUM(uses)::int AS n FROM agent_activity_uses
+		WHERE agent_id = ANY($1) AND day >= $2 AND day <= $3 GROUP BY skill_id ORDER BY n DESC, skill_id`, agentIDs, first, today)
+	if err != nil {
+		return out, err
+	}
+	for rows.Next() {
+		var c domain.ActivityCount
+		if err := rows.Scan(&c.Name, &c.Count); err != nil {
+			rows.Close()
+			return out, err
+		}
+		out.Uses = append(out.Uses, c)
+	}
+	rows.Close()
+	var since *string
+	if err := one(`SELECT to_char(MIN(day), 'YYYY-MM-DD') FROM agent_activity_uses WHERE agent_id = ANY($1)`, &since, agentIDs); err != nil {
+		return out, err
+	}
+	if since != nil {
+		out.UsesSince = *since
+	}
+
 	// People active each day.
-	rows, err := s.pool.Query(ctx, `SELECT to_char(day, 'YYYY-MM-DD'), COUNT(DISTINCT person) FROM agent_activity_people WHERE agent_id = ANY($1) AND day >= $2 AND day <= $3 GROUP BY day`, agentIDs, first, today)
+	rows, err = s.pool.Query(ctx, `SELECT to_char(day, 'YYYY-MM-DD'), COUNT(DISTINCT person) FROM agent_activity_people WHERE agent_id = ANY($1) AND day >= $2 AND day <= $3 GROUP BY day`, agentIDs, first, today)
 	if err != nil {
 		return out, err
 	}

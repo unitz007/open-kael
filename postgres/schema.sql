@@ -476,6 +476,16 @@ CREATE TABLE IF NOT EXISTS agent_activity_minutes (
     PRIMARY KEY (agent_id, minute)
 );
 
+-- How many messages an agent handled with each of its capabilities each day ('' = with none of them: talking or
+-- answering from what it knows). A count and nothing else, kept as long as the other activity.
+CREATE TABLE IF NOT EXISTS agent_activity_uses (
+    agent_id TEXT NOT NULL REFERENCES agents (id) ON DELETE CASCADE,
+    day      DATE NOT NULL,
+    skill_id TEXT NOT NULL DEFAULT '',
+    uses     INT NOT NULL DEFAULT 0,
+    PRIMARY KEY (agent_id, day, skill_id)
+);
+
 -- One-time split of the old users table into persons and accounts. Every old user becomes a person
 -- with the same id. One that acts as a login (it has an email or password, a session, or owns something
 -- a creator built) also becomes an account with that same id, linked to the person, so created_by and

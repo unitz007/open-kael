@@ -296,3 +296,81 @@ func TestActivity_AnOutOfCreditOrUnavailableServiceIsSaidPlainlyToThePersonAndCo
 		}
 	}
 }
+
+// useLog is a recorder that also counts what each message was handled with.
+type useLog struct {
+	activityLog
+	uses []string // agent|ids joined by ","; "" = with none
+}
+
+func (u *useLog) CapabilitiesUsed(_ context.Context, agentID string, skillIDs []string) {
+	u.mu.Lock()
+	u.uses = append(u.uses, agentID+"|"+strings.Join(skillIDs, ","))
+	u.mu.Unlock()
+}
+
+func (u *useLog) waitUses(n int) []string {
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		u.mu.Lock()
+		got := append([]string(nil), u.uses...)
+		u.mu.Unlock()
+		if len(got) >= n || time.Now().After(deadline) {
+			return got
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// Each message a person sends is counted against the capability it was handled with (by id, not name), or against none
+// when the agent only talked or answered from what it knows. An alert or repeating task is not someone using it.
+func TestActivity_EachMessageCountsWhatItWasHandledWith(t *testing.T) {
+	router := &intentRouter{
+		intents:      map[string]domain.Intent{"thanks!": domain.IntentChat, "Check audusd": domain.IntentRecommend, "Is the market open?": domain.IntentRecommend},
+		followRouter: followRouter{byText: map[string][]string{"Check audusd": {"analyse_pair"}}},
+	}
+	r := newIntentRig(t, router)
+	log := &useLog{}
+	r.host.SetActivityRecorder(log)
+
+	r.say(t, "C1", "Check audusd")
+	r.say(t, "C2", "thanks!")
+	r.say(t, "C3", "Is the market open?")
+	got := log.waitUses(3)
+	want := map[string]bool{"a1|s1": true, "a1|": true}
+	if len(got) != 3 {
+		t.Fatalf("one count per message: %q", got)
+	}
+	none := 0
+	for _, g := range got {
+		if !want[g] {
+			t.Errorf("unexpected: %q", g)
+		}
+		if g == "a1|" {
+			none++
+		}
+	}
+	if none != 2 {
+		t.Errorf("talking and answering from what it knows count as handled with none: %q", got)
+	}
+
+	if err := r.host.RunScheduledTask(context.Background(), "a1", "u1", "id_slack", "C1", "Check audusd"); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if after := log.waitUses(0); len(after) != 3 {
+		t.Errorf("a repeating task is not a person using it: %q", after)
+	}
+}
+
+// A recorder that does not count uses is fine: nothing is counted and nothing breaks.
+func TestActivity_ARecorderThatDoesNotCountUsesIsLeftAlone(t *testing.T) {
+	router := &intentRouter{intents: map[string]domain.Intent{"thanks!": domain.IntentChat}}
+	r := newIntentRig(t, router)
+	log := &activityLog{}
+	r.host.SetActivityRecorder(log)
+	r.say(t, "C1", "thanks!")
+	if got := log.waitMessages(1); len(got) != 1 {
+		t.Fatalf("the message is still counted: %q", got)
+	}
+}

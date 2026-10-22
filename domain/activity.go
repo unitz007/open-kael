@@ -36,6 +36,13 @@ type ActivityRecorder interface {
 	MessageHandled(ctx context.Context, agentID string)
 }
 
+// UseRecorder counts what a person's message was handled with: which of the agent's capabilities (by id), or none
+// (an empty list: talking, or answering from what it knows). Only the count per capability per day is kept. A recorder
+// that is not one simply does not count uses.
+type UseRecorder interface {
+	CapabilitiesUsed(ctx context.Context, agentID string, skillIDs []string)
+}
+
 // ActivityEvent is one thing that happened, with no identity in it.
 type ActivityEvent struct {
 	ID      int64        `json:"id"`
@@ -84,6 +91,13 @@ type ActivitySummary struct {
 	// shown as one line in the feed, not one line per message.
 	RecentMessages      int `json:"recent_messages"`
 	RecentWindowMinutes int `json:"recent_window_minutes"`
+	// ReturningWeek is how many of the people active in the last seven days were active on more than one of them.
+	ReturningWeek int `json:"returning_week"`
+	// Uses is how many messages were handled with each capability over the period, by capability id ("" = with none),
+	// most first. UsesSince is the first day anything was counted for these agents ("" when nothing has been), so a
+	// screen can say the counting is newer than the period.
+	Uses      []ActivityCount `json:"uses"`
+	UsesSince string          `json:"uses_since"`
 }
 
 // RecentMessagesWindow is how far back "messages handled lately" looks.

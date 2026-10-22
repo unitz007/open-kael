@@ -1520,6 +1520,7 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 			switch intent {
 			case domain.IntentChat:
 				log.Printf("skill-router: just being friendly — answering without tools")
+				h.noteUses(ctx, hosted, nil)
 				return h.chatReply(ctx, hosted, messages, actions)
 			case domain.IntentOffTopic:
 				if len(hosted.Agent.Skills) > 0 {
@@ -1573,6 +1574,7 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 	// No ability is run and none is remembered for a follow-up.
 	if intent == domain.IntentChat {
 		log.Printf("skill-router: just being friendly — answering without tools")
+		h.noteUses(ctx, hosted, nil)
 		return h.chatReply(ctx, hosted, messages, actions)
 	}
 
@@ -1627,6 +1629,7 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 			// something it has no ability for is told what it can do instead.
 			if classified && intent == domain.IntentRecommend {
 				log.Printf("skill-router: a question no ability covers — answering without tools")
+				h.noteUses(ctx, hosted, nil)
 				result, final, rerr := h.respondDirectly(ctx, hosted, withHint(messages, inAreaHint), actions)
 				if rerr != nil || !promisesLookup(result) {
 					return result, withoutHint(final, inAreaHint), rerr
@@ -1672,6 +1675,8 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 		log.Printf("skill-router: no skills — running NativeLoop with full actions")
 		return h.runNativeLoop(ctx, hosted, messages, actions)
 	}
+
+	h.noteUses(ctx, hosted, skillNames)
 
 	// Hydrate and merge tools from all selected skills, deduplicating by name.
 	seen := map[string]bool{}

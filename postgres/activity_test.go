@@ -277,3 +277,75 @@ func TestActivity_MessagesAreCountedByTheMinuteAndOnlyRecentOnesShow(t *testing.
 		t.Errorf("the agent's counts go with it: %d", n)
 	}
 }
+
+// What messages were handled with is counted per capability per day, summed over the period most first, with the day
+// counting began; nothing else about the message is kept.
+func TestActivity_UsesAreCountedPerCapabilityAndSummedOverThePeriod(t *testing.T) {
+	s, ctx := activityRig(t)
+	if sum, err := s.ActivitySummary(ctx, []string{"ag_a"}, 7, time.Now()); err != nil || sum.Uses == nil || len(sum.Uses) != 0 || sum.UsesSince != "" {
+		t.Fatalf("nothing counted yet: %+v %v", sum, err)
+	}
+	for i := 0; i < 3; i++ {
+		s.CapabilitiesUsed(ctx, "ag_a", []string{"sk_prs"})
+	}
+	s.CapabilitiesUsed(ctx, "ag_a", []string{"sk_prs", "sk_mail", "sk_prs"}) // one message, two capabilities: each once
+	s.CapabilitiesUsed(ctx, "ag_a", nil)                                     // just talking
+	s.CapabilitiesUsed(ctx, "ag_a", []string{})
+	s.CapabilitiesUsed(ctx, "ag_b", []string{"sk_other"})
+	s.CapabilitiesUsed(ctx, "", []string{"sk_prs"}) // no agent: ignored
+
+	sum, err := s.ActivitySummary(ctx, []string{"ag_a"}, 7, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]int{}
+	for _, u := range sum.Uses {
+		got[u.Name] = u.Count
+	}
+	if len(sum.Uses) != 3 || sum.Uses[0].Name != "sk_prs" || got["sk_prs"] != 4 || got["sk_mail"] != 1 || got[""] != 2 {
+		t.Errorf("per capability, most first, another agent's left out: %+v", sum.Uses)
+	}
+	if sum.UsesSince != time.Now().UTC().Format("2006-01-02") {
+		t.Errorf("counted since today: %q", sum.UsesSince)
+	}
+
+	// Older than the period: not in the sum, but counting still began then. Older than kept: removed.
+	if err := s.AgeUsesForTest(ctx, "ag_a", 10); err != nil {
+		t.Fatal(err)
+	}
+	s.CapabilitiesUsed(ctx, "ag_a", []string{"sk_mail"})
+	sum, _ = s.ActivitySummary(ctx, []string{"ag_a"}, 7, time.Now())
+	if len(sum.Uses) != 1 || sum.Uses[0].Name != "sk_mail" || sum.Uses[0].Count != 1 {
+		t.Errorf("only the period: %+v", sum.Uses)
+	}
+	if want := time.Now().UTC().AddDate(0, 0, -10).Format("2006-01-02"); sum.UsesSince != want {
+		t.Errorf("counting began ten days ago: %q, want %q", sum.UsesSince, want)
+	}
+	if err := s.AgeUsesForTest(ctx, "ag_a", 400); err != nil {
+		t.Fatal(err)
+	}
+	_ = s.PruneActivityForTest(ctx)
+	if sum, _ := s.ActivitySummary(ctx, []string{"ag_a"}, 30, time.Now()); sum.UsesSince != "" {
+		t.Errorf("old counts are removed like the rest of the activity: %q", sum.UsesSince)
+	}
+}
+
+// Someone who came back is someone active on more than one of the last seven days, counted once.
+func TestActivity_PeopleWhoCameBackAreThoseActiveOnMoreThanOneDayThisWeek(t *testing.T) {
+	s, ctx := activityRig(t)
+	now := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
+	s.SetActivityDaysForTest(ctx, "ag_a", map[string][]string{
+		"2026-10-19": {"p1", "p2", "p4"},
+		"2026-10-18": {"p1"},
+		"2026-10-15": {"p1", "p2"},
+		"2026-10-13": {"p3"}, // the first of the seven days
+		"2026-10-12": {"p4"}, // outside the week: p4 came once this week
+	})
+	sum, err := s.ActivitySummary(ctx, []string{"ag_a"}, 7, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum.ActiveWeek != 4 || sum.ReturningWeek != 2 {
+		t.Errorf("4 people this week, 2 of them (p1, p2) on more than one day: %+v", sum)
+	}
+}
