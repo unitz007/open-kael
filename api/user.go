@@ -5,9 +5,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -47,12 +47,17 @@ func (s *Server) registerUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Email = domain.NormalizeEmail(req.Email)
+	req.FirstName, req.LastName = strings.TrimSpace(req.FirstName), strings.TrimSpace(req.LastName)
 	switch {
-	case req.Email == "" || req.Password == "" || req.FirstName == "" || req.LastName == "":
-		writeError(w, http.StatusBadRequest, errors.New("email, password, first_name, and last_name are required"))
+	case req.Email == "" || req.Password == "" || req.FirstName == "":
+		writeError(w, http.StatusBadRequest, errors.New("Fill in your name, your email and a password."))
 		return
 	case !emailRE.MatchString(req.Email):
-		writeError(w, http.StatusBadRequest, errors.New("invalid email address"))
+		writeError(w, http.StatusBadRequest, errors.New("That doesn’t look like an email address."))
+		return
+	}
+	if err := validPassword(req.Password); err != nil {
+		writeError(w, http.StatusBadRequest, err)
 		return
 	}
 
@@ -60,6 +65,16 @@ func (s *Server) registerUser(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
+	}
+
+	// With email on, an address that already has a login gets the same answer as a new one ("check your inbox"), so
+	// registering never tells anyone which addresses have logins; its owner is told by email instead.
+	if s.mailer != nil {
+		if existing, err := s.store.GetAccountByEmail(r.Context(), req.Email); err == nil {
+			s.answerTakenRegistration(r, existing, string(hash), req.FirstName)
+			checkInbox(w, req.Email)
+			return
+		}
 	}
 
 	verificationToken, err := newToken()
@@ -86,7 +101,11 @@ func (s *Server) registerUser(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.SaveAccount(r.Context(), account); err != nil {
 		_ = s.store.DeletePerson(r.Context(), person.ID) // nobody is left behind by a refused sign-up
 		if isUniqueViolation(err) {
-			writeError(w, http.StatusConflict, errors.New("an account with this email already exists"))
+			if s.mailer != nil { // registered at the same moment: still the same answer
+				checkInbox(w, req.Email)
+				return
+			}
+			writeError(w, http.StatusConflict, errors.New("There’s already an account with this email. Sign in instead."))
 			return
 		}
 		writeError(w, http.StatusInternalServerError, err)
@@ -94,13 +113,12 @@ func (s *Server) registerUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if s.mailer != nil {
-		link := fmt.Sprintf("%s/verify?token=%s", s.appURL, verificationToken)
-		body := verificationEmailHTML(req.FirstName, link)
-		if err := s.mailer.Send(r.Context(), req.Email, "Verify your email address", body); err != nil {
-			log.Printf("email verification: send to %s: %v", req.Email, err)
+		if s.mayMail(r, req.Email) {
+			s.sendVerification(r.Context(), account, req.FirstName)
 		}
+		checkInbox(w, req.Email)
+		return
 	}
-
 	writeJSON(w, http.StatusCreated, meResponse(account, person))
 }
 
@@ -150,21 +168,33 @@ func (s *Server) loginUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	account, err := s.store.GetAccountByEmail(r.Context(), domain.NormalizeEmail(req.Email))
-	if err != nil {
-		// Return the same error for wrong email or wrong password to prevent
-		// user enumeration.
-		writeError(w, http.StatusUnauthorized, errors.New("invalid credentials"))
+	email := domain.NormalizeEmail(req.Email)
+	now := time.Now()
+	from := "from:" + requestFrom(r)
+	if s.signins.count("email:"+email, signinWindow, now) >= signinMaxPerEmail || s.signins.count(from, signinWindow, now) >= signinMaxPerFrom {
+		writeError(w, http.StatusTooManyRequests, errTooManySignins)
 		return
 	}
-	if err := bcrypt.CompareHashAndPassword([]byte(account.PasswordHash), []byte(req.Password)); err != nil {
-		writeError(w, http.StatusUnauthorized, errors.New("invalid credentials"))
+	failed := func() {
+		s.signins.add("email:"+email, now)
+		s.signins.add(from, now)
+		// The same answer for an unknown address or a wrong password, so it never says which addresses have logins.
+		writeError(w, http.StatusUnauthorized, errors.New("That email and password don’t match."))
+	}
+	account, err := s.store.GetAccountByEmail(r.Context(), email)
+	if err != nil {
+		failed()
+		return
+	}
+	if account.PasswordHash == "" || bcrypt.CompareHashAndPassword([]byte(account.PasswordHash), []byte(req.Password)) != nil {
+		failed()
 		return
 	}
 	if !account.EmailVerified {
-		writeError(w, http.StatusForbidden, errors.New("email address not verified — check your inbox"))
+		writeError(w, http.StatusForbidden, errors.New("Confirm your email first: open the link we sent you."))
 		return
 	}
+	s.signins.clear("email:" + email)
 
 	token, err := newToken()
 	if err != nil {

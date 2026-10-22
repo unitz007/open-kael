@@ -23,6 +23,11 @@ type Server struct {
 	store domain.Store
 	mux   *http.ServeMux
 
+	// signins and mails count recent tries, so guessing passwords and sending email to someone over and over is slow
+	// (account_recovery.go).
+	signins attempts
+	mails   attempts
+
 	// activity, when set, serves GET /activity: how a creator's agents are doing (counts only).
 	activity domain.ActivityReader
 	work     domain.WorkWatcher
@@ -346,6 +351,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /users", s.registerUser)
 	s.mux.HandleFunc("GET /users/verify", s.verifyEmail)
 	s.mux.HandleFunc("POST /sessions", s.loginUser)
+	s.mux.HandleFunc("POST /users/verify/resend", s.resendVerification)
+	s.mux.HandleFunc("POST /users/password/forgot", s.forgotPassword)
+	s.mux.HandleFunc("POST /users/password/reset", s.resetPassword)
 	s.mux.HandleFunc("GET /users/me", s.userAuth(s.getMe))
 	s.mux.HandleFunc("POST /users/me/timezone-hint", s.userAuth(s.rememberMyTimezone))
 	s.mux.HandleFunc("DELETE /sessions", s.userAuth(s.logoutUser))

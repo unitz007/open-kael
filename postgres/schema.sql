@@ -41,6 +41,14 @@ CREATE TABLE IF NOT EXISTS accounts (
     person_id          TEXT REFERENCES persons (id) ON DELETE SET NULL,
     created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- One-time links to choose a new password: only a hash of each, one per login at a time, for an hour.
+CREATE TABLE IF NOT EXISTS password_resets (
+    token_hash TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts (id) ON DELETE CASCADE,
+    expires_at TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_password_resets_account ON password_resets (account_id);
 CREATE INDEX IF NOT EXISTS idx_accounts_person_id ON accounts (person_id);
 
 -- Replaced by messenger_channels; kept so existing DBs don't error on startup.
