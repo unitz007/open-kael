@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -98,5 +99,62 @@ func TestListAgents_CarriesEachAgentsCapabilities(t *testing.T) {
 	}
 	if len(got["lst_2"].Skills) != 0 {
 		t.Fatalf("an agent with no capabilities has none: %+v", got["lst_2"].Skills)
+	}
+}
+
+// A capability's name is tidied when it is saved, and one that is far too long is refused.
+func TestSkillTitle_IsTidiedAndKeptShort(t *testing.T) {
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		t.Skip("DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	if err := pool.Ping(ctx); err != nil {
+		t.Skipf("postgres not reachable: %v", err)
+	}
+	if err := postgres.Migrate(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	store := postgres.New(pool)
+	if err := store.SaveAccount(ctx, &domain.Account{ID: "ttl_a", Email: "ttl_a@example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveSession(ctx, &domain.Session{Token: "tok_ttl_a", AccountID: "ttl_a", ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, `TRUNCATE skill_tools, skills, agents CASCADE`)
+		_ = store.DeleteSession(ctx, "tok_ttl_a")
+		_ = store.DeleteAccount(ctx, "ttl_a")
+	})
+	if err := store.SaveAgent(ctx, &domain.Agent{ID: "ttl_ag", Name: "A", CreatedBy: "ttl_a"}); err != nil {
+		t.Fatal(err)
+	}
+	srv := api.NewServer(store)
+	send := func(method, path, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer tok_ttl_a")
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		return rec
+	}
+	if rec := send(http.MethodPost, "/agents/ttl_ag/skills", `{"id":"ttl_s","name":"calendar_helper","title":"  Calendar \n  helper ","description":"Checks my calendar"}`); rec.Code != http.StatusOK {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	if got, _ := store.GetSkill(ctx, "ttl_s"); got.Title != "Calendar helper" {
+		t.Errorf("tidied: %q", got.Title)
+	}
+	long := strings.Repeat("x", domain.MaxSkillTitle+1)
+	if rec := send(http.MethodPut, "/skills/ttl_s", `{"name":"calendar_helper","title":"`+long+`","description":"Checks my calendar"}`); rec.Code != http.StatusBadRequest {
+		t.Errorf("too long: %d", rec.Code)
+	}
+	if got, _ := store.GetSkill(ctx, "ttl_s"); got.Title != "Calendar helper" {
+		t.Errorf("a refused change leaves it as it was: %q", got.Title)
 	}
 }

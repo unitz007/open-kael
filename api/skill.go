@@ -3,7 +3,9 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"unicode/utf8"
 
 	"github.com/unitz007/open-kael/domain"
 )
@@ -22,6 +24,9 @@ func (s *Server) createSkill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	skill.AgentID = r.PathValue("agentID")
+	if !cleanSkillTitle(w, &skill) {
+		return
+	}
 
 	agent, err := s.store.GetAgent(r.Context(), skill.AgentID)
 	if err != nil {
@@ -110,6 +115,9 @@ func (s *Server) updateSkill(w http.ResponseWriter, r *http.Request) {
 	}
 	skill.ID = existing.ID
 	skill.AgentID = existing.AgentID
+	if !cleanSkillTitle(w, &skill) {
+		return
+	}
 	if !s.skillRefsAccessible(w, r, &skill) {
 		return
 	}
@@ -121,6 +129,16 @@ func (s *Server) updateSkill(w http.ResponseWriter, r *http.Request) {
 		s.onSkillChange(skill.AgentID)
 	}
 	writeJSON(w, http.StatusOK, skill)
+}
+
+// cleanSkillTitle tidies a capability's title and refuses one that is too long.
+func cleanSkillTitle(w http.ResponseWriter, skill *domain.Skill) bool {
+	skill.Title = domain.CleanSkillTitle(skill.Title)
+	if utf8.RuneCountInString(skill.Title) > domain.MaxSkillTitle {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("keep the name short: %d characters at most", domain.MaxSkillTitle))
+		return false
+	}
+	return true
 }
 
 func (s *Server) deleteSkill(w http.ResponseWriter, r *http.Request) {

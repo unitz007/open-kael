@@ -59,3 +59,31 @@ func TestSkill_ALimitToSomeAbilitiesSurvivesSavingAndLoading(t *testing.T) {
 		t.Errorf("the limit is removed when the capability is saved without it: %+v", got.LimitedIntegrations)
 	}
 }
+
+// The name a creator gives a capability is kept, read back however it is read, and is separate from its internal name.
+func TestSkill_TitleIsKeptApartFromTheInternalName(t *testing.T) {
+	ctx := context.Background()
+	pool := scratchDB(t)
+	if err := postgres.Migrate(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	st := postgres.New(pool)
+	if err := st.SaveAgent(ctx, &domain.Agent{ID: "a1", Name: "A"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveSkill(ctx, &domain.Skill{ID: "s1", AgentID: "a1", Name: "calendar_helper", Title: "Calendar helper", Description: "Checks my calendar"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveSkill(ctx, &domain.Skill{ID: "s2", AgentID: "a1", Name: "old_one", Description: "Made before titles"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.GetSkill(ctx, "s1")
+	if err != nil || got.Title != "Calendar helper" || got.Name != "calendar_helper" {
+		t.Fatalf("read back by id: %+v %v", got, err)
+	}
+	list, _ := st.ListSkillsByAgent(ctx, "a1")
+	byAgents, _ := st.ListSkillsByAgents(ctx, []string{"a1"})
+	if len(list) != 2 || list[0].Title != "Calendar helper" || list[1].Title != "" || len(byAgents["a1"]) != 2 || byAgents["a1"][0].Title != "Calendar helper" {
+		t.Errorf("with the agent's capabilities, an old one with none: %+v / %+v", list, byAgents)
+	}
+}

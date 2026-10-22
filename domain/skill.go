@@ -24,8 +24,12 @@ type ToolBinding struct {
 // another agent's delegate call) AND, when Trigger is set, something that
 // also fires on its own. See BindSkill (action.go) for execution mechanics.
 type Skill struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// Title is the short name the creator gave it, in their own words ("Calendar helper"), shown wherever the
+	// capability is shown. Name stays the internal, model-safe key the router and tool listings use. Empty for
+	// capabilities made before titles existed: screens fall back to the Description.
+	Title       string `json:"title,omitempty"`
 	Description string `json:"description"`
 
 	// AgentID is the owning Agent's ID — the explicit back-reference for
@@ -100,4 +104,12 @@ func SkillLabel(s *Skill) string {
 		return w
 	}
 	return "your task"
+}
+
+// MaxSkillTitle is the longest a capability's title may be.
+const MaxSkillTitle = 60
+
+// CleanSkillTitle trims a title and folds its whitespace (line breaks included) to single spaces.
+func CleanSkillTitle(title string) string {
+	return strings.Join(strings.Fields(title), " ")
 }
