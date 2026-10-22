@@ -5,9 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 
 	"github.com/unitz007/open-kael/domain"
 )
+
+// proposedID is the form of an id a screen may choose for a new agent: like domain.NewID's.
+var proposedID = regexp.MustCompile(`^[0-9a-f]{32}$`)
 
 // createAgent only persists domain.Agent's storable fields (ID, Name,
 // Description, Instructions, MaxIterations) — LLMs/Loop/Directory are live
@@ -18,7 +22,15 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	// A screen may choose the id in advance (so it can show the agent as it will look); it is used only when it is a
+	// fresh id of the usual form that no agent has, and never to reach an existing agent.
+	proposed := agent.ID
 	agent.ID = domain.NewID()
+	if proposedID.MatchString(proposed) {
+		if _, err := s.store.GetAgent(r.Context(), proposed); errors.Is(err, domain.ErrNotFound) {
+			agent.ID = proposed
+		}
+	}
 	if user, ok := AccountFromContext(r.Context()); ok {
 		agent.CreatedBy = user.ID
 	}
