@@ -515,15 +515,6 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 		}
 	}
 
-	// Custom bot commands: if the message is a registered command, replace the
-	// text with the command's Message before running HandleTurn. This lets
-	// creators map /help → "What can you do?" without any listener-side code.
-	if cmdText := msg.Text; len(hosted.Agent.Commands) > 0 {
-		if mapped := matchBotCommand(cmdText, hosted.Agent.Commands); mapped != "" {
-			msg.Text = mapped
-		}
-	}
-
 	// Carry the inbound message ID into the ConversationRef so
 	// ConversationActionProvider implementations can react to the triggering
 	// message without the model needing to know or supply the ID.
@@ -853,27 +844,6 @@ func (h *Host) handleLinkAccountCallback(ctx context.Context, hosted *HostedAgen
 func isSettingsCommand(text string) bool {
 	t := strings.ToLower(strings.TrimSpace(text))
 	return t == "/settings" || t == "settings"
-}
-
-// matchBotCommand checks whether text matches one of the agent's registered
-// BotCommands (with or without a leading "/"). Returns the command's Message
-// when there is a match and Message is non-empty, otherwise returns "".
-func matchBotCommand(text string, commands []domain.BotCommand) string {
-	t := strings.TrimSpace(text)
-	if strings.HasPrefix(t, "/") {
-		t = t[1:]
-	}
-	// Strip any parameters (e.g. "/help arg1" → "help")
-	if i := strings.IndexByte(t, ' '); i >= 0 {
-		t = t[:i]
-	}
-	t = strings.ToLower(t)
-	for _, cmd := range commands {
-		if strings.ToLower(cmd.Command) == t && cmd.Message != "" {
-			return cmd.Message
-		}
-	}
-	return ""
 }
 
 // executorForMessage returns the Executor registered for the integration that

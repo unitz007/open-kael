@@ -206,38 +206,6 @@ func (s *Server) setAgentIdentities(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, agent)
 }
 
-// setAgentCommands replaces the full set of bot commands for an agent.
-// PUT /agents/{id}/commands — body: [{"command":"help","description":"...","message":"..."}]
-func (s *Server) setAgentCommands(w http.ResponseWriter, r *http.Request) {
-	agent, err := s.store.GetAgent(r.Context(), r.PathValue("id"))
-	if err != nil {
-		if errors.Is(err, domain.ErrNotFound) {
-			writeError(w, http.StatusNotFound, err)
-			return
-		}
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
-	if !agentAccessible(r.Context(), agent) {
-		writeError(w, http.StatusNotFound, domain.ErrNotFound)
-		return
-	}
-	var commands []domain.BotCommand
-	if err := decodeJSON(r, &commands); err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	agent.Commands = commands
-	if err := s.store.SaveAgent(r.Context(), agent); err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
-	if s.onAgentCommandChange != nil {
-		s.onAgentCommandChange(agent.ID, commands)
-	}
-	writeJSON(w, http.StatusOK, agent)
-}
-
 // getAgentRules returns the rules the creator has set on how this agent uses its tools.
 // GET /agents/{id}/rules
 func (s *Server) getAgentRules(w http.ResponseWriter, r *http.Request) {

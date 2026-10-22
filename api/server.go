@@ -63,11 +63,6 @@ type Server struct {
 	// the runtime can stop their listener goroutines immediately.
 	onAgentDelete func(agentID string, identityIDs []string)
 
-	// onAgentCommandChange, when set, is called after PUT /agents/{id}/commands
-	// saves a new command list. Receives the agent ID and the new command slice
-	// so the runtime (or messenger adapters) can update the platform command menu.
-	onAgentCommandChange func(agentID string, commands []domain.BotCommand)
-
 	// onAgentUpdate, when set, is called after PATCH /agents/{id} saves any
 	// mutable agent fields (e.g. Greeting). Receives the agent ID so the
 	// runtime can reload the in-memory agent.
@@ -165,14 +160,6 @@ func WithAgentDeleteHook(f func(agentID string, identityIDs []string)) Option {
 // runtime Host to reload its in-memory agent when skills change.
 func WithSkillChangeHook(f func(agentID string)) Option {
 	return func(s *Server) { s.onSkillChange = f }
-}
-
-// WithAgentCommandChangeHook registers a callback invoked when
-// PUT /agents/{id}/commands updates an agent's command list. The callback
-// receives the agent ID and new commands so the runtime (or messenger adapters)
-// can update the platform's bot command menu.
-func WithAgentCommandChangeHook(f func(agentID string, commands []domain.BotCommand)) Option {
-	return func(s *Server) { s.onAgentCommandChange = f }
 }
 
 // WithAgentUpdateHook registers a callback invoked after PATCH /agents/{id}
@@ -346,7 +333,6 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PATCH /agents/{id}", ca(s.patchAgent))
 	s.mux.HandleFunc("DELETE /agents/{id}", ca(s.deleteAgent))
 	s.mux.HandleFunc("PUT /agents/{id}/identities", ca(s.setAgentIdentities))
-	s.mux.HandleFunc("PUT /agents/{id}/commands", ca(s.setAgentCommands))
 	s.mux.HandleFunc("GET /agents/{id}/rules", ca(s.getAgentRules))
 	s.mux.HandleFunc("PUT /agents/{id}/rules", ca(s.setAgentRules))
 
