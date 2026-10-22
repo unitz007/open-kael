@@ -16,6 +16,11 @@ import (
 // whose Executor implements Listener, and one processing goroutine per agent
 // that serializes every inbound message for that agent through HandleTurn
 // one at a time. Blocks until ctx is cancelled and all goroutines return.
+//
+// Cancelling ctx stops the listeners: nothing new is taken in. Messages already being handled, and any already
+// received and waiting, carry on (they run under turnContext, not ctx) until they finish or CancelTurns is called,
+// and ListenAndServe returns once they have. A server stopping for a deploy therefore lets a reply that is being
+// written reach the person, instead of dropping it half way.
 func (h *Host) ListenAndServe(ctx context.Context) error {
 	h.serveCtx = ctx
 
@@ -52,8 +57,9 @@ func (h *Host) ListenAndServe(ctx context.Context) error {
 			for {
 				select {
 				case msg := <-inbox:
-					h.dispatchInbound(ctx, hosted, msg)
+					h.dispatchInbound(h.turnContext(ctx), hosted, msg)
 				case <-ctx.Done():
+					h.handleWaiting(ctx, hosted, inbox)
 					return
 				}
 			}
@@ -143,6 +149,43 @@ func (h *Host) startOneListener(ctx context.Context, agentID string, identity *d
 	}(identity, listener, listenerCtx, cancel, key)
 }
 
+// turnContext is what a message being handled runs under: serve's values, but not its cancellation, so stopping the
+// server does not cut a reply short. It ends only when CancelTurns is called.
+func (h *Host) turnContext(serve context.Context) context.Context {
+	h.turnsMu.Lock()
+	defer h.turnsMu.Unlock()
+	if h.turnsCtx == nil {
+		h.turnsCtx, h.cancelTurns = context.WithCancel(context.WithoutCancel(serve))
+	}
+	return h.turnsCtx
+}
+
+// CancelTurns ends every message still being handled: what a stopping server calls when its grace runs out.
+func (h *Host) CancelTurns() {
+	h.turnsMu.Lock()
+	defer h.turnsMu.Unlock()
+	if h.cancelTurns != nil {
+		h.cancelTurns()
+	}
+}
+
+// handleWaiting handles the messages an agent had already received when the server began stopping, so they are not
+// lost with the process; it stops early once CancelTurns has been called.
+func (h *Host) handleWaiting(serve context.Context, hosted *HostedAgent, inbox chan domain.InboundMessage) {
+	for {
+		select {
+		case msg := <-inbox:
+			turns := h.turnContext(serve)
+			if turns.Err() != nil {
+				return
+			}
+			h.dispatchInbound(turns, hosted, msg)
+		default:
+			return
+		}
+	}
+}
+
 // StartListenerForAgent starts a listener goroutine for the given identity on
 // agentID. If the agent has no inbox yet (it had no listeners at boot), one is
 // created along with a processing goroutine. The HostedAgent's in-memory Deps
@@ -197,8 +240,9 @@ func (h *Host) StartListenerForAgent(agentID string, identity *domain.Identity, 
 			for {
 				select {
 				case msg := <-inbox:
-					h.dispatchInbound(ctx, hosted, msg)
+					h.dispatchInbound(h.turnContext(ctx), hosted, msg)
 				case <-ctx.Done():
+					h.handleWaiting(ctx, hosted, inbox)
 					return
 				}
 			}

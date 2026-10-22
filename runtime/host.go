@@ -145,6 +145,12 @@ type Host struct {
 	// StartListenerForAgent can start goroutines on the same lifecycle.
 	serveCtx context.Context
 
+	// turnsCtx is what messages being handled run under (see turnContext): it is not cancelled when the server starts
+	// stopping, so a reply that is being written still reaches the person; CancelTurns ends it.
+	turnsMu     sync.Mutex
+	turnsCtx    context.Context
+	cancelTurns context.CancelFunc
+
 	// serveWG tracks all goroutines started by ListenAndServe and by
 	// StartListenerForAgent. A sentinel goroutine keeps it non-zero while
 	// ctx is live, so dynamically added goroutines never race with Wait.
