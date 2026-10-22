@@ -62,6 +62,21 @@ type ActivityDay struct {
 type ActivityCount struct {
 	Name  string `json:"name"`
 	Count int    `json:"count"`
+	// Agents are the agents it was counted for, where that is worth saying (what people asked for that an agent
+	// couldn't do).
+	Agents []string `json:"agents,omitempty"`
+}
+
+// ActivityAgent is one agent's own numbers, so a creator with several can compare them. Counts only.
+type ActivityAgent struct {
+	AgentID     string `json:"agent_id"`
+	ActiveToday int    `json:"active_today"`
+	ActiveWeek  int    `json:"active_week"`
+	FailedToday int    `json:"failed_today"`
+	// Daily is how many people were active each day, in the same order as ActivitySummary.Daily.
+	Daily []int `json:"daily"`
+	// TopUse is its most used capability over the period (Name is the capability id), when anything was counted.
+	TopUse *ActivityCount `json:"top_use,omitempty"`
 }
 
 // ActivityProblem is something that went wrong lately (the last day), grouped.
@@ -98,6 +113,8 @@ type ActivitySummary struct {
 	// screen can say the counting is newer than the period.
 	Uses      []ActivityCount `json:"uses"`
 	UsesSince string          `json:"uses_since"`
+	// ByAgent is each agent's own numbers, in the order the agents were asked for.
+	ByAgent []ActivityAgent `json:"by_agent"`
 }
 
 // RecentMessagesWindow is how far back "messages handled lately" looks.

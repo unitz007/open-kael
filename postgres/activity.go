@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/jackc/pgx/v5"
 	"log"
 	"sync"
 	"time"
@@ -230,7 +231,7 @@ func (s *Store) ActivitySummary(ctx context.Context, agentIDs []string, days int
 	if days > 30 {
 		days = 30
 	}
-	out := domain.ActivitySummary{RecentWindowMinutes: int(domain.RecentMessagesWindow / time.Minute), Daily: []domain.ActivityDay{}, ChatApps: []domain.ActivityCount{}, Topics: []domain.ActivityCount{}, Uses: []domain.ActivityCount{}, Problems: []domain.ActivityProblem{}, Events: []domain.ActivityEvent{}}
+	out := domain.ActivitySummary{RecentWindowMinutes: int(domain.RecentMessagesWindow / time.Minute), Daily: []domain.ActivityDay{}, ChatApps: []domain.ActivityCount{}, Topics: []domain.ActivityCount{}, Uses: []domain.ActivityCount{}, ByAgent: []domain.ActivityAgent{}, Problems: []domain.ActivityProblem{}, Events: []domain.ActivityEvent{}}
 	now = now.UTC()
 	today := now.Format("2006-01-02")
 	first := now.AddDate(0, 0, -(days - 1)).Format("2006-01-02")
@@ -338,7 +339,7 @@ func (s *Store) ActivitySummary(ctx context.Context, agentIDs []string, days int
 
 	// What was asked for and isn't possible: only topics asked for several times.
 	rows, err = s.pool.Query(ctx, `
-		SELECT detail, COUNT(*) AS n FROM agent_activity_events
+		SELECT detail, COUNT(*) AS n, array_agg(DISTINCT agent_id ORDER BY agent_id) FROM agent_activity_events
 		WHERE agent_id = ANY($1) AND kind = 'unsupported' AND detail <> '' AND at >= $2
 		GROUP BY detail HAVING COUNT(*) >= $3 ORDER BY n DESC, detail LIMIT 5`, agentIDs, now.AddDate(0, 0, -days), domain.MinTopicCount)
 	if err != nil {
@@ -346,7 +347,7 @@ func (s *Store) ActivitySummary(ctx context.Context, agentIDs []string, days int
 	}
 	for rows.Next() {
 		var c domain.ActivityCount
-		if err := rows.Scan(&c.Name, &c.Count); err != nil {
+		if err := rows.Scan(&c.Name, &c.Count, &c.Agents); err != nil {
 			rows.Close()
 			return out, err
 		}
@@ -380,6 +381,10 @@ func (s *Store) ActivitySummary(ctx context.Context, agentIDs []string, days int
 		return out, err
 	}
 
+	if err := s.byAgent(ctx, &out, agentIDs, first, today, dayStart); err != nil {
+		return out, err
+	}
+
 	// The latest things that happened.
 	rows, err = s.pool.Query(ctx, `SELECT id, agent_id, kind, detail, at FROM agent_activity_events WHERE agent_id = ANY($1) ORDER BY id DESC LIMIT 30`, agentIDs)
 	if err != nil {
@@ -397,4 +402,91 @@ func (s *Store) ActivitySummary(ctx context.Context, agentIDs []string, days int
 	}
 	rows.Close()
 	return out, rows.Err()
+}
+
+// byAgent fills in each agent's own numbers, for comparing them: people today, this week and each day of the period,
+// replies that didn't go through today, and its most used capability over the period. Counts only, like the rest.
+func (s *Store) byAgent(ctx context.Context, out *domain.ActivitySummary, agentIDs []string, first, today string, dayStart time.Time) error {
+	by := make(map[string]*domain.ActivityAgent, len(agentIDs))
+	for _, id := range agentIDs {
+		by[id] = &domain.ActivityAgent{AgentID: id, Daily: make([]int, len(out.Daily))}
+	}
+	index := make(map[string]int, len(out.Daily))
+	for i, d := range out.Daily {
+		index[d.Day] = i
+	}
+	each := func(sql string, scan func(rows pgx.Rows) error, args ...any) error {
+		rows, err := s.pool.Query(ctx, sql, args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			if err := scan(rows); err != nil {
+				return err
+			}
+		}
+		return rows.Err()
+	}
+	if err := each(`SELECT agent_id, to_char(day, 'YYYY-MM-DD'), COUNT(DISTINCT person) FROM agent_activity_people
+		WHERE agent_id = ANY($1) AND day >= $2 AND day <= $3 GROUP BY agent_id, day`, func(rows pgx.Rows) error {
+		var id, day string
+		var n int
+		if err := rows.Scan(&id, &day, &n); err != nil {
+			return err
+		}
+		if i, known := index[day]; known && by[id] != nil {
+			by[id].Daily[i] = n
+		}
+		return nil
+	}, agentIDs, first, today); err != nil {
+		return err
+	}
+	if err := each(`SELECT agent_id, COUNT(DISTINCT person) FILTER (WHERE day = $2::date), COUNT(DISTINCT person)
+		FROM agent_activity_people WHERE agent_id = ANY($1) AND day > $2::date - 7 GROUP BY agent_id`, func(rows pgx.Rows) error {
+		var id string
+		var t, w int
+		if err := rows.Scan(&id, &t, &w); err != nil {
+			return err
+		}
+		if a := by[id]; a != nil {
+			a.ActiveToday, a.ActiveWeek = t, w
+		}
+		return nil
+	}, agentIDs, today); err != nil {
+		return err
+	}
+	if err := each(`SELECT agent_id, COUNT(*) FROM agent_activity_events WHERE agent_id = ANY($1) AND kind = 'failed' AND at >= $2 GROUP BY agent_id`,
+		func(rows pgx.Rows) error {
+			var id string
+			var n int
+			if err := rows.Scan(&id, &n); err != nil {
+				return err
+			}
+			if a := by[id]; a != nil {
+				a.FailedToday = n
+			}
+			return nil
+		}, agentIDs, dayStart); err != nil {
+		return err
+	}
+	if err := each(`SELECT DISTINCT ON (agent_id) agent_id, skill_id, SUM(uses)::int AS n FROM agent_activity_uses
+		WHERE agent_id = ANY($1) AND skill_id <> '' AND day >= $2 AND day <= $3
+		GROUP BY agent_id, skill_id ORDER BY agent_id, n DESC, skill_id`, func(rows pgx.Rows) error {
+		var id string
+		var c domain.ActivityCount
+		if err := rows.Scan(&id, &c.Name, &c.Count); err != nil {
+			return err
+		}
+		if a := by[id]; a != nil {
+			a.TopUse = &c
+		}
+		return nil
+	}, agentIDs, first, today); err != nil {
+		return err
+	}
+	for _, id := range agentIDs {
+		out.ByAgent = append(out.ByAgent, *by[id])
+	}
+	return nil
 }

@@ -349,3 +349,47 @@ func TestActivity_PeopleWhoCameBackAreThoseActiveOnMoreThanOneDayThisWeek(t *tes
 		t.Errorf("4 people this week, 2 of them (p1, p2) on more than one day: %+v", sum)
 	}
 }
+
+// Each agent's own numbers, for comparing them: people each day, today and this week, what didn't go through today
+// and its most used capability; and what was asked for says which agents were asked.
+func TestActivity_EachAgentHasItsOwnNumbers(t *testing.T) {
+	s, ctx := activityRig(t)
+	now := time.Now().UTC()
+	today := now.Format("2006-01-02")
+	yesterday := now.AddDate(0, 0, -1).Format("2006-01-02")
+	s.SetActivityDaysForTest(ctx, "ag_a", map[string][]string{today: {"p1", "p2"}, yesterday: {"p1"}})
+	s.SetActivityDaysForTest(ctx, "ag_b", map[string][]string{yesterday: {"p3"}})
+	s.ActivityEvent(ctx, "ag_a", domain.ActivityFailed, "unavailable")
+	for i := 0; i < domain.MinTopicCount; i++ {
+		agent := "ag_a"
+		if i == 0 {
+			agent = "ag_b"
+		}
+		s.ActivityEvent(ctx, agent, domain.ActivityUnsupported, "book a flight")
+	}
+	s.CapabilitiesUsed(ctx, "ag_a", []string{"sk_mail"})
+	s.CapabilitiesUsed(ctx, "ag_a", []string{"sk_mail"})
+	s.CapabilitiesUsed(ctx, "ag_a", []string{"sk_cal"})
+	s.CapabilitiesUsed(ctx, "ag_a", nil) // talking is not a capability
+
+	sum, err := s.ActivitySummary(ctx, []string{"ag_b", "ag_a"}, 7, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sum.ByAgent) != 2 || sum.ByAgent[0].AgentID != "ag_b" || sum.ByAgent[1].AgentID != "ag_a" {
+		t.Fatalf("one entry per agent, in the order asked: %+v", sum.ByAgent)
+	}
+	a, b := sum.ByAgent[1], sum.ByAgent[0]
+	if a.ActiveToday != 2 || a.ActiveWeek != 2 || a.FailedToday != 1 || len(a.Daily) != 7 || a.Daily[6] != 2 || a.Daily[5] != 1 {
+		t.Errorf("A: %+v", a)
+	}
+	if a.TopUse == nil || a.TopUse.Name != "sk_mail" || a.TopUse.Count != 2 {
+		t.Errorf("A's most used: %+v", a.TopUse)
+	}
+	if b.ActiveToday != 0 || b.ActiveWeek != 1 || b.FailedToday != 0 || b.Daily[5] != 1 || b.TopUse != nil {
+		t.Errorf("B, quiet today and nothing used: %+v", b)
+	}
+	if len(sum.Topics) != 1 || len(sum.Topics[0].Agents) != 2 || sum.Topics[0].Agents[0] != "ag_a" {
+		t.Errorf("which agents were asked: %+v", sum.Topics)
+	}
+}

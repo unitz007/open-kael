@@ -126,7 +126,7 @@ func TestActivity_ACreatorSeesOnlyTheirOwnAgents(t *testing.T) {
 	for k := range raw {
 		switch k {
 		case "connected", "connected_this_week", "active_today", "active_week", "failed_today", "daily", "chat_apps", "topics", "problems", "events", "recent_messages", "recent_window_minutes",
-			"returning_week", "uses", "uses_since": // counts, and the ids of the agent's own capabilities
+			"returning_week", "uses", "uses_since", "by_agent": // counts, and the ids of the agent's own capabilities
 		default:
 			t.Errorf("unexpected field in the activity answer: %q", k)
 		}
