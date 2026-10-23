@@ -5,37 +5,19 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/unitz007/open-kael/api"
 	"github.com/unitz007/open-kael/domain"
-	"github.com/unitz007/open-kael/postgres"
+	"github.com/unitz007/open-kael/postgres/pgtest"
 )
 
 // A creator sees how their own agents are doing, and only those: not someone else's, not the
 // platform's. The answer is counts, never anyone's words or identity.
 func TestActivity_ACreatorSeesOnlyTheirOwnAgents(t *testing.T) {
-	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" {
-		t.Skip("DATABASE_URL not set")
-	}
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
-	if err := pool.Ping(ctx); err != nil {
-		t.Skipf("postgres not reachable: %v", err)
-	}
-	if err := postgres.Migrate(ctx, pool); err != nil {
-		t.Fatal(err)
-	}
-	store := postgres.New(pool)
+	store, _ := pgtest.Store(t)
 	srv := api.NewServer(store, api.WithActivity(store))
 
 	users := []string{"act_a", "act_b"}
@@ -47,13 +29,6 @@ func TestActivity_ACreatorSeesOnlyTheirOwnAgents(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	t.Cleanup(func() {
-		_, _ = pool.Exec(ctx, `TRUNCATE agents CASCADE`)
-		for _, u := range users {
-			_ = store.DeleteSession(ctx, "tok_"+u)
-			_ = store.DeleteAccount(ctx, u)
-		}
-	})
 	for _, a := range []*domain.Agent{
 		{ID: "act_ag_a", Name: "A's", CreatedBy: "act_a", MaxIterations: 5},
 		{ID: "act_ag_b", Name: "B's", CreatedBy: "act_b", MaxIterations: 5},

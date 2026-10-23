@@ -3,53 +3,16 @@ package postgres_test
 import (
 	"context"
 	_ "embed"
-	"fmt"
-	"os"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/unitz007/open-kael/postgres"
+	"github.com/unitz007/open-kael/postgres/pgtest"
 )
 
 //go:embed testdata/schema_before_split.sql
 var schemaBeforeSplit string
-
-// scratchDB makes an empty database of its own, so a test can start from any schema it likes.
-func scratchDB(t *testing.T) *pgxpool.Pool {
-	t.Helper()
-	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" {
-		t.Skip("DATABASE_URL not set — skipping postgres integration tests")
-	}
-	ctx := context.Background()
-	admin, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := admin.Ping(ctx); err != nil {
-		admin.Close()
-		t.Skipf("postgres not reachable: %v", err)
-	}
-	name := fmt.Sprintf("kael_split_%d", time.Now().UnixNano())
-	if _, err := admin.Exec(ctx, `CREATE DATABASE `+name); err != nil {
-		admin.Close()
-		t.Fatal(err)
-	}
-	cfg := admin.Config()
-	cfg.ConnConfig.Database = name
-	pool, err := pgxpool.NewWithConfig(ctx, cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		pool.Close()
-		_, _ = admin.Exec(context.Background(), `DROP DATABASE IF EXISTS `+name+` WITH (FORCE)`)
-		admin.Close()
-	})
-	return pool
-}
 
 func exec(t *testing.T, pool *pgxpool.Pool, sql string, args ...any) {
 	t.Helper()
@@ -70,7 +33,7 @@ func count(t *testing.T, pool *pgxpool.Pool, sql string, args ...any) int {
 // An older database, with the single users table, is split into persons and accounts without losing
 // or rewriting anything that pointed at a user.
 func TestMigrate_SplitsOldUsersIntoPersonsAndAccounts(t *testing.T) {
-	pool := scratchDB(t)
+	pool := pgtest.Empty(t)
 	ctx := context.Background()
 	exec(t, pool, schemaBeforeSplit)
 
@@ -191,7 +154,7 @@ func TestMigrate_SplitsOldUsersIntoPersonsAndAccounts(t *testing.T) {
 
 // A new database starts with persons and accounts and never has a users table.
 func TestMigrate_NewDatabaseHasNoUsersTable(t *testing.T) {
-	pool := scratchDB(t)
+	pool := pgtest.Empty(t)
 	if err := postgres.Migrate(context.Background(), pool); err != nil {
 		t.Fatal(err)
 	}

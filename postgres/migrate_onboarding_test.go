@@ -2,26 +2,19 @@ package postgres_test
 
 import (
 	"context"
-	"os"
 	"testing"
-
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/unitz007/open-kael/domain"
 	"github.com/unitz007/open-kael/postgres"
+	"github.com/unitz007/open-kael/postgres/pgtest"
 )
 
 // A restart (Migrate) must never mark a person as welcomed: NULL onboarded_at means they
 // still have to be welcomed, or were reset on purpose. The backfill for channels that
 // predate onboarding runs only when the column is first created.
 func TestMigrate_RestartsNeverMarkAPersonWelcomed(t *testing.T) {
-	s := newTestStore(t)
+	s, pool := pgtest.Store(t)
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, os.Getenv("DATABASE_URL"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pool.Close()
 
 	if err := s.SavePerson(ctx, &domain.Person{ID: "u_mig"}); err != nil {
 		t.Fatal(err)
@@ -35,7 +28,6 @@ func TestMigrate_RestartsNeverMarkAPersonWelcomed(t *testing.T) {
 	if err := s.SaveMessengerChannel(ctx, &domain.MessengerChannel{ID: "mc_mig", IdentityID: "id_mig", UserID: "u_mig", ChannelRef: "42"}); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = s.DeletePerson(ctx, "u_mig") })
 
 	welcomed := func() bool {
 		ch, err := s.GetMessengerChannelByIdentityAndRef(ctx, "id_mig", "42")

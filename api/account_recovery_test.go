@@ -51,7 +51,7 @@ func linkIn(t *testing.T, m sentMail, kind string) string {
 
 func mailRig(t *testing.T) (*api.Server, *inbox) {
 	t.Helper()
-	store, _ := openDB(t)
+	store := openDB(t)
 	box := &inbox{}
 	return api.NewServer(store, api.WithMailer(box, "https://app.test")), box
 }

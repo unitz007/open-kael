@@ -83,7 +83,7 @@ func nextWorking(t *testing.T, c *sseClient) []string {
 func TestWorkingStream_TellsWhoIsWorkingAndWhenThatChanges(t *testing.T) {
 	work := &fakeWork{}
 	work.set("stm_ag_b", true) // someone else's agent, busy
-	_, srv, _ := streamRig(t, time.Minute, api.WithWorkWatcher(work))
+	_, srv := streamRig(t, time.Minute, api.WithWorkWatcher(work))
 
 	c := openStream(t, srv.URL, "tok_stm_a", "/activity/working/stream")
 	if c.resp.StatusCode != http.StatusOK {
@@ -111,7 +111,7 @@ func TestWorkingStream_TellsWhoIsWorkingAndWhenThatChanges(t *testing.T) {
 }
 
 func TestWorkingStream_NotAvailableWithoutAWatcher(t *testing.T) {
-	_, srv, _ := streamRig(t, time.Minute)
+	_, srv := streamRig(t, time.Minute)
 	c := openStream(t, srv.URL, "tok_stm_a", "/activity/working/stream")
 	if c.resp.StatusCode != http.StatusNotImplemented {
 		t.Fatalf("%d", c.resp.StatusCode)

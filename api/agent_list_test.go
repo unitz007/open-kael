@@ -5,38 +5,20 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/unitz007/open-kael/api"
 	"github.com/unitz007/open-kael/domain"
-	"github.com/unitz007/open-kael/postgres"
+	"github.com/unitz007/open-kael/postgres/pgtest"
 )
 
 // The agent list carries each agent's capabilities (with their connections, limits and abilities), so a creator's
 // screen can tell which agents are ready to answer without opening each one; and only their own agents.
 func TestListAgents_CarriesEachAgentsCapabilities(t *testing.T) {
-	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" {
-		t.Skip("DATABASE_URL not set")
-	}
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
-	if err := pool.Ping(ctx); err != nil {
-		t.Skipf("postgres not reachable: %v", err)
-	}
-	if err := postgres.Migrate(ctx, pool); err != nil {
-		t.Fatal(err)
-	}
-	store := postgres.New(pool)
+	store, _ := pgtest.Store(t)
 	users := []string{"lst_a", "lst_b"}
 	for _, u := range users {
 		if err := store.SaveAccount(ctx, &domain.Account{ID: u, Email: u + "@example.com"}); err != nil {
@@ -46,13 +28,6 @@ func TestListAgents_CarriesEachAgentsCapabilities(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	t.Cleanup(func() {
-		_, _ = pool.Exec(ctx, `TRUNCATE skill_tools, skills, tools, agents, integrations CASCADE`)
-		for _, u := range users {
-			_ = store.DeleteSession(ctx, "tok_"+u)
-			_ = store.DeleteAccount(ctx, u)
-		}
-	})
 	if err := store.SaveIntegration(ctx, &domain.Integration{ID: "lst_gh", Name: "GitHub", Service: "github"}); err != nil {
 		t.Fatal(err)
 	}
@@ -104,34 +79,14 @@ func TestListAgents_CarriesEachAgentsCapabilities(t *testing.T) {
 
 // A capability's name is tidied when it is saved, and one that is far too long is refused.
 func TestSkillTitle_IsTidiedAndKeptShort(t *testing.T) {
-	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" {
-		t.Skip("DATABASE_URL not set")
-	}
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
-	if err := pool.Ping(ctx); err != nil {
-		t.Skipf("postgres not reachable: %v", err)
-	}
-	if err := postgres.Migrate(ctx, pool); err != nil {
-		t.Fatal(err)
-	}
-	store := postgres.New(pool)
+	store, _ := pgtest.Store(t)
 	if err := store.SaveAccount(ctx, &domain.Account{ID: "ttl_a", Email: "ttl_a@example.com"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.SaveSession(ctx, &domain.Session{Token: "tok_ttl_a", AccountID: "ttl_a", ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		_, _ = pool.Exec(ctx, `TRUNCATE skill_tools, skills, agents CASCADE`)
-		_ = store.DeleteSession(ctx, "tok_ttl_a")
-		_ = store.DeleteAccount(ctx, "ttl_a")
-	})
 	if err := store.SaveAgent(ctx, &domain.Agent{ID: "ttl_ag", Name: "A", CreatedBy: "ttl_a"}); err != nil {
 		t.Fatal(err)
 	}

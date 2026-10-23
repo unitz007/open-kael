@@ -11,12 +11,13 @@ import (
 
 	"github.com/unitz007/open-kael/domain"
 	"github.com/unitz007/open-kael/postgres"
+	"github.com/unitz007/open-kael/postgres/pgtest"
 )
 
 // world is an empty database with a few agents, bots and tools to hang things on.
 func world(t *testing.T) (*postgres.Store, *pgxpool.Pool) {
 	t.Helper()
-	pool := scratchDB(t)
+	pool := pgtest.Empty(t)
 	if err := postgres.Migrate(context.Background(), pool); err != nil {
 		t.Fatal(err)
 	}
@@ -490,7 +491,7 @@ func TestEmails_AreOneLoginWhateverTheCase(t *testing.T) {
 }
 
 func TestMigrate_OlderEmailsAreBroughtToLowerCaseAndCollisionsLeftAlone(t *testing.T) {
-	pool := scratchDB(t)
+	pool := pgtest.Empty(t)
 	ctx := context.Background()
 	if err := postgres.Migrate(ctx, pool); err != nil {
 		t.Fatal(err)

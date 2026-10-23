@@ -7,12 +7,13 @@ import (
 
 	"github.com/unitz007/open-kael/domain"
 	"github.com/unitz007/open-kael/postgres"
+	"github.com/unitz007/open-kael/postgres/pgtest"
 )
 
 // A capability limited to some of a connection's abilities keeps that limit across save and load, however it is read back.
 func TestSkill_ALimitToSomeAbilitiesSurvivesSavingAndLoading(t *testing.T) {
 	ctx := context.Background()
-	pool := scratchDB(t)
+	pool := pgtest.Empty(t)
 	if err := postgres.Migrate(ctx, pool); err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +64,7 @@ func TestSkill_ALimitToSomeAbilitiesSurvivesSavingAndLoading(t *testing.T) {
 // The name a creator gives a capability is kept, read back however it is read, and is separate from its internal name.
 func TestSkill_TitleIsKeptApartFromTheInternalName(t *testing.T) {
 	ctx := context.Background()
-	pool := scratchDB(t)
+	pool := pgtest.Empty(t)
 	if err := postgres.Migrate(ctx, pool); err != nil {
 		t.Fatal(err)
 	}

@@ -6,15 +6,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 	"time"
-
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/unitz007/open-kael/api"
 	"github.com/unitz007/open-kael/domain"
 	"github.com/unitz007/open-kael/postgres"
+	"github.com/unitz007/open-kael/postgres/pgtest"
 )
 
 // seedBot makes a Telegram bot the channels can belong to: a channel must be for a bot that exists.
@@ -80,34 +78,11 @@ func doJSONNoAuth(method, path string, body any) *http.Request {
 	return req
 }
 
-// openDB connects to DATABASE_URL and runs migrations, or skips the test.
-func openDB(t *testing.T) (*postgres.Store, func()) {
+// openDB is a migrated database of the test's own, or skips the test.
+func openDB(t *testing.T) *postgres.Store {
 	t.Helper()
-	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" {
-		t.Skip("DATABASE_URL not set")
-	}
-	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Fatalf("connect: %v", err)
-	}
-	if err := pool.Ping(ctx); err != nil {
-		pool.Close()
-		t.Skipf("postgres not reachable: %v", err)
-	}
-	if err := postgres.Migrate(ctx, pool); err != nil {
-		pool.Close()
-		t.Fatalf("migrate: %v", err)
-	}
-	store := postgres.New(pool)
-	cleanup := func() {
-		_, _ = pool.Exec(ctx, `TRUNCATE messenger_channels, channel_link_codes, user_sessions, persons, accounts CASCADE`)
-		pool.Close()
-	}
-	_, _ = pool.Exec(ctx, `TRUNCATE messenger_channels, channel_link_codes, user_sessions, persons, accounts CASCADE`)
-	t.Cleanup(cleanup)
-	return store, cleanup
+	store, _ := pgtest.Store(t)
+	return store
 }
 
 // TestRedeemChannelByCode_Unauthenticated_Returns401 verifies that the
@@ -147,7 +122,7 @@ func TestRedeemChannelByCode_InvalidCode_Returns401(t *testing.T) {
 // a code seeded with (identity_id, channel_ref) is redeemed by an authed user
 // and a MessengerChannel row is created.
 func TestRedeemChannelByCode_ValidCode_CreatesChannel(t *testing.T) {
-	store, _ := openDB(t)
+	store := openDB(t)
 	srv := api.NewServer(store)
 	user, token := seedUser(t, store)
 	seedBot(t, store, "id-tg-bot")
@@ -199,7 +174,7 @@ func TestRedeemChannelByCode_ValidCode_CreatesChannel(t *testing.T) {
 // TestRedeemChannelByCode_CodeIsOneTime_SecondRedeemReturns401 verifies that
 // the code is deleted after first use.
 func TestRedeemChannelByCode_CodeIsOneTime_SecondRedeemReturns401(t *testing.T) {
-	store, _ := openDB(t)
+	store := openDB(t)
 	srv := api.NewServer(store)
 	_, token := seedUser(t, store)
 	seedBot(t, store, "id-tg")
@@ -231,7 +206,7 @@ func TestRedeemChannelByCode_CodeIsOneTime_SecondRedeemReturns401(t *testing.T) 
 
 // TestListMyChannels_EmptyList verifies that a user with no channels gets [].
 func TestListMyChannels_EmptyList(t *testing.T) {
-	store, _ := openDB(t)
+	store := openDB(t)
 	srv := api.NewServer(store)
 	_, token := seedUser(t, store)
 
@@ -247,7 +222,7 @@ func TestListMyChannels_EmptyList(t *testing.T) {
 
 // TestDeleteMyChannel_RemovesChannel verifies that DELETE removes the channel.
 func TestDeleteMyChannel_RemovesChannel(t *testing.T) {
-	store, _ := openDB(t)
+	store := openDB(t)
 	srv := api.NewServer(store)
 	user, token := seedUser(t, store)
 	seedBot(t, store, "id-tg")
@@ -279,7 +254,7 @@ func TestDeleteMyChannel_RemovesChannel(t *testing.T) {
 
 // TestDeleteMyChannel_OtherUserChannel_Returns404 verifies channel ownership.
 func TestDeleteMyChannel_OtherUserChannel_Returns404(t *testing.T) {
-	store, _ := openDB(t)
+	store := openDB(t)
 	srv := api.NewServer(store)
 	ctx := context.Background()
 

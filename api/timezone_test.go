@@ -6,38 +6,20 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/unitz007/open-kael/api"
 	"github.com/unitz007/open-kael/domain"
-	"github.com/unitz007/open-kael/postgres"
+	"github.com/unitz007/open-kael/postgres/pgtest"
 )
 
 // The browser reports the person's own time zone and it is kept, but only when they have none: a
 // zone they chose is never overwritten by a guess, and nonsense is refused.
 func TestTimezoneHint(t *testing.T) {
-	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" {
-		t.Skip("DATABASE_URL not set")
-	}
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
-	if err := pool.Ping(ctx); err != nil {
-		t.Skipf("postgres not reachable: %v", err)
-	}
-	if err := postgres.Migrate(ctx, pool); err != nil {
-		t.Fatal(err)
-	}
-	store := postgres.New(pool)
+	store, _ := pgtest.Store(t)
 	srv := api.NewServer(store)
 
 	users := []string{"tzh_a", "tzh_b"}
@@ -49,14 +31,6 @@ func TestTimezoneHint(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	t.Cleanup(func() {
-		for _, u := range users {
-			_ = store.DeleteSession(ctx, "tok_"+u)
-			_ = store.DeleteAccount(ctx, u)
-			_ = store.DeletePerson(ctx, u)
-		}
-	})
-
 	post := func(token, zone string) (int, map[string]any) {
 		raw, _ := json.Marshal(map[string]string{"timezone": zone})
 		req := httptest.NewRequest(http.MethodPost, "/users/me/timezone-hint", bytes.NewReader(raw))

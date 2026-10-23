@@ -6,17 +6,15 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/unitz007/open-kael/api"
 	"github.com/unitz007/open-kael/domain"
 	"github.com/unitz007/open-kael/postgres"
+	"github.com/unitz007/open-kael/postgres/pgtest"
 )
 
 // sseClient reads the events of a live stream as they arrive.
@@ -85,25 +83,12 @@ func (c *sseClient) next(t *testing.T, within time.Duration) (domain.ActivitySum
 	}
 }
 
-func streamRig(t *testing.T, refresh time.Duration, opts ...api.Option) (*postgres.Store, *httptest.Server, func()) {
+// streamRig is a server with activity switched on, over a database of its own, with two creators
+// (stm_a with two agents, stm_b with one) signed in.
+func streamRig(t *testing.T, refresh time.Duration, opts ...api.Option) (*postgres.Store, *httptest.Server) {
 	t.Helper()
-	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" {
-		t.Skip("DATABASE_URL not set")
-	}
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
-	if err := pool.Ping(ctx); err != nil {
-		t.Skipf("postgres not reachable: %v", err)
-	}
-	if err := postgres.Migrate(ctx, pool); err != nil {
-		t.Fatal(err)
-	}
-	store := postgres.New(pool)
+	store, _ := pgtest.Store(t)
 	srv := httptest.NewServer(api.NewServer(store, append([]api.Option{api.WithActivity(store), api.WithActivityRefresh(refresh)}, opts...)...))
 	t.Cleanup(srv.Close)
 
@@ -125,33 +110,13 @@ func streamRig(t *testing.T, refresh time.Duration, opts ...api.Option) (*postgr
 			t.Fatal(err)
 		}
 	}
-	cleanup := func() {
-		_, _ = pool.Exec(ctx, `TRUNCATE agents CASCADE`)
-		for _, u := range users {
-			_ = store.DeleteSession(ctx, "tok_"+u)
-			_ = store.DeleteAccount(ctx, u)
-		}
-	}
-	cleanup()
-	for _, u := range users { // the cleanup above removed them; make them again
-		_ = store.SaveAccount(ctx, &domain.Account{ID: u, Email: u + "@example.com"})
-		_ = store.SaveSession(ctx, &domain.Session{Token: "tok_" + u, AccountID: u, ExpiresAt: time.Now().Add(time.Hour)})
-	}
-	for _, a := range []*domain.Agent{
-		{ID: "stm_ag_a", Name: "A's", CreatedBy: "stm_a", MaxIterations: 5},
-		{ID: "stm_ag_a2", Name: "A's second", CreatedBy: "stm_a", MaxIterations: 5},
-		{ID: "stm_ag_b", Name: "B's", CreatedBy: "stm_b", MaxIterations: 5},
-	} {
-		_ = store.SaveAgent(ctx, a)
-	}
-	t.Cleanup(cleanup)
-	return store, srv, cleanup
+	return store, srv
 }
 
 // The screen is told the moment something happens: one update at once, another within a moment of
 // anything being recorded for its agents, and none for agents that are not its own.
 func TestActivityStream_TellsTheScreenAtOnceAndWhenSomethingHappens(t *testing.T) {
-	store, srv, _ := streamRig(t, time.Minute) // a minute: the pushes below can only come from changes
+	store, srv := streamRig(t, time.Minute) // a minute: the pushes below can only come from changes
 	ctx := context.Background()
 	c := openStream(t, srv.URL, "tok_stm_a", "/activity/stream?days=7")
 	if c.resp.StatusCode != 200 || !strings.HasPrefix(c.resp.Header.Get("Content-Type"), "text/event-stream") || c.resp.Header.Get("X-Accel-Buffering") != "no" {
@@ -186,7 +151,7 @@ func TestActivityStream_TellsTheScreenAtOnceAndWhenSomethingHappens(t *testing.T
 
 // Changes that arrive together are one update, not a flood.
 func TestActivityStream_ManyChangesTogetherAreOneUpdate(t *testing.T) {
-	store, srv, _ := streamRig(t, time.Minute)
+	store, srv := streamRig(t, time.Minute)
 	ctx := context.Background()
 	c := openStream(t, srv.URL, "tok_stm_a", "/activity/stream?agent_id=stm_ag_a")
 	if _, ok := c.next(t, 3*time.Second); !ok {
@@ -213,7 +178,7 @@ func TestActivityStream_ManyChangesTogetherAreOneUpdate(t *testing.T) {
 
 // With nothing happening it still asks again, so numbers that fade with time stay true.
 func TestActivityStream_AsksAgainEvenWhenNothingHappens(t *testing.T) {
-	_, srv, _ := streamRig(t, 300*time.Millisecond)
+	_, srv := streamRig(t, 300*time.Millisecond)
 	c := openStream(t, srv.URL, "tok_stm_a", "/activity/stream")
 	for i := 0; i < 3; i++ {
 		if _, ok := c.next(t, 2*time.Second); !ok {
@@ -223,7 +188,7 @@ func TestActivityStream_AsksAgainEvenWhenNothingHappens(t *testing.T) {
 }
 
 func TestActivityStream_OnlyForTheCreatorsOwnAgentsAndNeverToAnAnonymousCaller(t *testing.T) {
-	_, srv, _ := streamRig(t, time.Minute)
+	_, srv := streamRig(t, time.Minute)
 	for path, want := range map[string]int{
 		"/activity/stream?agent_id=stm_ag_b": http.StatusNotFound,
 		"/activity/stream?agent_id=nope":     http.StatusNotFound,
@@ -245,7 +210,7 @@ func TestActivityStream_OnlyForTheCreatorsOwnAgentsAndNeverToAnAnonymousCaller(t
 
 // A closed screen stops being watched, and a person can only hold a few open.
 func TestActivityStream_ClosedScreensAreLetGoAndAPersonCannotHoldManyOpen(t *testing.T) {
-	store, srv, _ := streamRig(t, time.Minute)
+	store, srv := streamRig(t, time.Minute)
 	var open []*sseClient
 	for i := 0; i < 4; i++ {
 		c := openStream(t, srv.URL, "tok_stm_a", "/activity/stream")

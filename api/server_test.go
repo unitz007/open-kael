@@ -6,20 +6,16 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
-
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/unitz007/open-kael/api"
 	"github.com/unitz007/open-kael/domain"
 	"github.com/unitz007/open-kael/postgres"
+	"github.com/unitz007/open-kael/postgres/pgtest"
 )
 
-// newTestServer wires a real api.Server to a real Postgres via
-// DATABASE_URL — same integration-test-not-unit-test posture as
-// postgres/store_test.go: skip rather than fail when no database is
-// available.
+// newTestServer wires a real api.Server to a real Postgres database of the test's own (see
+// postgres/pgtest): skip rather than fail when no database is available.
 func newTestServer(t *testing.T) *api.Server {
 	srv, _ := newTestServerWithStore(t)
 	return srv
@@ -29,35 +25,7 @@ func newTestServer(t *testing.T) *api.Server {
 // (integrations and tools) and creators cannot create through the API.
 func newTestServerWithStore(t *testing.T) (*api.Server, *postgres.Store) {
 	t.Helper()
-	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" {
-		t.Skip("DATABASE_URL not set — skipping api integration tests")
-	}
-
-	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Fatalf("connect: %v", err)
-	}
-	if err := pool.Ping(ctx); err != nil {
-		t.Skipf("postgres not reachable at DATABASE_URL: %v", err)
-	}
-	t.Cleanup(pool.Close)
-
-	if err := postgres.Migrate(ctx, pool); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-	// Truncate both before AND after — see postgres/store_test.go's
-	// newTestStore for why (a prior manual/demo session's leftover rows in
-	// this same database shouldn't make an unrelated test's assertions
-	// flaky).
-	truncate := func() {
-		_, _ = pool.Exec(context.Background(), `TRUNCATE skill_tools, skills, tools, agents, integrations CASCADE`)
-	}
-	truncate()
-	t.Cleanup(truncate)
-
-	store := postgres.New(pool)
+	store, _ := pgtest.Store(t)
 	return api.NewServer(store), store
 }
 

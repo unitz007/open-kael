@@ -6,37 +6,19 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/unitz007/open-kael/api"
 	"github.com/unitz007/open-kael/domain"
-	"github.com/unitz007/open-kael/postgres"
+	"github.com/unitz007/open-kael/postgres/pgtest"
 )
 
 // A creator must not be able to run another creator's private connection (and
 // so its key) by naming it in a skill.
 func TestSkillCannotUseSomeoneElsesConnection(t *testing.T) {
-	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" {
-		t.Skip("DATABASE_URL not set")
-	}
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
-	if err := pool.Ping(ctx); err != nil {
-		t.Skipf("postgres not reachable: %v", err)
-	}
-	if err := postgres.Migrate(ctx, pool); err != nil {
-		t.Fatal(err)
-	}
-	store := postgres.New(pool)
+	store, _ := pgtest.Store(t)
 	srv := api.NewServer(store)
 
 	for _, u := range []string{"ten_a", "ten_b"} {
@@ -47,14 +29,6 @@ func TestSkillCannotUseSomeoneElsesConnection(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	t.Cleanup(func() {
-		_, _ = pool.Exec(ctx, `TRUNCATE skill_tools, skills, tools, agents, integrations CASCADE`)
-		for _, u := range []string{"ten_a", "ten_b"} {
-			_ = store.DeleteSession(ctx, "tok_"+u)
-			_ = store.DeleteAccount(ctx, u)
-		}
-	})
-
 	if err := store.SaveIntegration(ctx, &domain.Integration{ID: "ten_plat", Name: "Platform", Service: "plat"}); err != nil {
 		t.Fatal(err)
 	}

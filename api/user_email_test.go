@@ -23,7 +23,7 @@ func postJSON(t *testing.T, srv *api.Server, path string, body any) *httptest.Re
 // However a person types their email, it is the same login: they can sign in with a different case
 // from the one they registered with, and cannot register the same address twice by changing it.
 func TestRegisterAndLogin_EmailCaseDoesNotMatter(t *testing.T) {
-	store, _ := openDB(t)
+	store := openDB(t)
 	srv := api.NewServer(store)
 	reg := map[string]string{"email": "  Ada.Lovelace@Example.COM ", "password": "correct horse", "first_name": "Ada", "last_name": "Lovelace"}
 

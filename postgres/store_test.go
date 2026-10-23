@@ -2,50 +2,20 @@ package postgres_test
 
 import (
 	"context"
-	"os"
 	"testing"
-
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/unitz007/open-kael/domain"
 	"github.com/unitz007/open-kael/postgres"
+	"github.com/unitz007/open-kael/postgres/pgtest"
 )
 
-// newTestStore connects to DATABASE_URL, runs Migrate, and returns a Store
-// wired to a real Postgres instance. These are integration tests, not unit
-// tests — skip rather than fail when no database is available, since that
-// says nothing about whether the code itself is correct.
+// newTestStore is a Store over a migrated database of the test's own (see pgtest). These are
+// integration tests, not unit tests — skip rather than fail when no database is available, since
+// that says nothing about whether the code itself is correct.
 func newTestStore(t *testing.T) *postgres.Store {
 	t.Helper()
-	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" {
-		t.Skip("DATABASE_URL not set — skipping postgres integration tests")
-	}
-
-	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Fatalf("connect: %v", err)
-	}
-	if err := pool.Ping(ctx); err != nil {
-		t.Skipf("postgres not reachable at DATABASE_URL: %v", err)
-	}
-	t.Cleanup(pool.Close)
-
-	if err := postgres.Migrate(ctx, pool); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-	// Truncate both before AND after: before, so a prior manual/demo session's
-	// leftover rows in this same database (e.g. seeded for the frontend)
-	// can't make an unrelated test's row-count assertions flaky; after, so
-	// this test doesn't leave anything behind for the next one either.
-	truncate := func() {
-		_, _ = pool.Exec(context.Background(), `TRUNCATE skill_tools, agent_identities, skills, tools, agents, identities, integrations CASCADE`)
-	}
-	truncate()
-	t.Cleanup(truncate)
-
-	return postgres.New(pool)
+	store, _ := pgtest.Store(t)
+	return store
 }
 
 func TestIntegrationCRUD(t *testing.T) {

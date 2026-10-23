@@ -6,39 +6,21 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/unitz007/open-kael/api"
 	"github.com/unitz007/open-kael/domain"
-	"github.com/unitz007/open-kael/postgres"
+	"github.com/unitz007/open-kael/postgres/pgtest"
 )
 
 // Rules on how an agent uses a tool: set by the agent's creator only, checked against the tool,
 // limited to tools that creator may see, and applied by reloading the agent.
 func TestAgentRules(t *testing.T) {
-	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" {
-		t.Skip("DATABASE_URL not set")
-	}
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
-	if err := pool.Ping(ctx); err != nil {
-		t.Skipf("postgres not reachable: %v", err)
-	}
-	if err := postgres.Migrate(ctx, pool); err != nil {
-		t.Fatal(err)
-	}
-	store := postgres.New(pool)
+	store, _ := pgtest.Store(t)
 
 	var mu sync.Mutex
 	var reloaded []string
@@ -57,13 +39,6 @@ func TestAgentRules(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	t.Cleanup(func() {
-		_, _ = pool.Exec(ctx, `TRUNCATE skill_tools, skills, tools, agents, integrations CASCADE`)
-		for _, u := range users {
-			_ = store.DeleteSession(ctx, "tok_"+u)
-			_ = store.DeleteAccount(ctx, u)
-		}
-	})
 	if err := store.SaveIntegration(ctx, &domain.Integration{ID: "rul_plat", Name: "Platform", Service: "plat"}); err != nil {
 		t.Fatal(err)
 	}

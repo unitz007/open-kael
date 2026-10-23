@@ -11,7 +11,7 @@ import (
 // A screen may choose a new agent's id in advance, so it can show the agent as it will look. The id is used only when
 // it has the usual form and no agent has it: it can never reach, or overwrite, an existing agent.
 func TestCreateAgent_AProposedIdIsUsedOnlyWhenItIsFresh(t *testing.T) {
-	store, _ := openDB(t)
+	store := openDB(t)
 	srv := api.NewServer(store)
 	create := func(id, name string) (string, int) {
 		rec := postJSON(t, srv, "/agents", map[string]any{"id": id, "name": name, "max_iterations": 5})

@@ -4,37 +4,19 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/unitz007/open-kael/api"
 	"github.com/unitz007/open-kael/domain"
-	"github.com/unitz007/open-kael/postgres"
+	"github.com/unitz007/open-kael/postgres/pgtest"
 )
 
 // A person can ask to be asked first about something that changes something, never about a lookup.
 func TestMyToolApproval_OnlyForThingsThatChangeSomething(t *testing.T) {
-	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" {
-		t.Skip("DATABASE_URL not set")
-	}
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
-	if err := pool.Ping(ctx); err != nil {
-		t.Skipf("postgres not reachable: %v", err)
-	}
-	if err := postgres.Migrate(ctx, pool); err != nil {
-		t.Fatal(err)
-	}
-	store := postgres.New(pool)
+	store, _ := pgtest.Store(t)
 	srv := api.NewServer(store)
 
 	const user = "mta_a"
@@ -54,15 +36,6 @@ func TestMyToolApproval_OnlyForThingsThatChangeSomething(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	t.Cleanup(func() {
-		_ = store.SetUserToolApproval(ctx, user, "mta_change", false)
-		_ = store.DeleteSession(ctx, "tok_"+user)
-		_ = store.DeleteAccount(ctx, user)
-		_ = store.DeletePerson(ctx, user)
-		_, _ = pool.Exec(ctx, `DELETE FROM tools WHERE id IN ('mta_look','mta_change')`)
-		_, _ = pool.Exec(ctx, `DELETE FROM integrations WHERE id = 'mta_int'`)
-	})
-
 	put := func(tool string) (int, string) {
 		rr := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPut, "/users/me/tool-approvals/"+tool, strings.NewReader(""))
