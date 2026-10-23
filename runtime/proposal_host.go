@@ -41,6 +41,9 @@ func (h *Host) finishFor(ctx context.Context, hosted *HostedAgent, withOutcome b
 	if h.canOfferChoices(ctx, hosted) {
 		addChoicesTo(a)
 	}
+	if asksAboutAbility(ctx) {
+		addAbilityQuestionTo(a)
+	}
 	return a
 }
 

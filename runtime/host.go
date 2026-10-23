@@ -1772,9 +1772,21 @@ func withSystemAddition(messages []domain.Message, text string) []domain.Message
 
 // runRouted runs a message with the tools of the capabilities routing chose.
 func (h *Host) runRouted(ctx context.Context, hosted *HostedAgent, userText string, messages []domain.Message, actions, convActions, mergedTools []*domain.BoundAction, intent domain.Intent) (*domain.LoopResult, []domain.Message, error) {
+	// A capability was picked, but the request may still be beyond what it can do: the agent says so on finish, and
+	// it is counted like a request that matched nothing (see beyond.go).
+	ctx = withAbilityQuestion(ctx)
+	result, final, err := h.runRoutedTurn(ctx, hosted, userText, messages, actions, convActions, mergedTools, intent)
+	if err == nil && asksAboutAbility(ctx) && beyondAbilities(result) {
+		log.Printf("skill-router: the agent said this was beyond its abilities — counting it as something it can't do")
+		h.noteCouldNot(ctx, hosted, userText)
+	}
+	return result, final, err
+}
+
+func (h *Host) runRoutedTurn(ctx context.Context, hosted *HostedAgent, userText string, messages []domain.Message, actions, convActions, mergedTools []*domain.BoundAction, intent domain.Intent) (*domain.LoopResult, []domain.Message, error) {
 	if len(mergedTools) == 0 {
 		log.Printf("skill-router: selected skills yielded no tools — responding directly")
-		return h.respondDirectly(ctx, hosted, messages, actions)
+		return h.respondDirectly(ctx, hosted, messages, []*domain.BoundAction{h.finishFor(ctx, hosted, false)})
 	}
 
 	// An unattended run may look things up, and change only what the person agreed to.
@@ -1824,7 +1836,7 @@ func (h *Host) runRouted(ctx context.Context, hosted *HostedAgent, userText stri
 		}
 		if len(readTools) == 0 {
 			log.Printf("skill-router: recommend intent — no read-only tools, responding directly")
-			return h.respondDirectly(ctx, hosted, withRecommendHint(messages), actions)
+			return h.respondDirectly(ctx, hosted, withRecommendHint(messages), []*domain.BoundAction{h.finishFor(ctx, hosted, false)})
 		}
 		log.Printf("skill-router: recommend intent — running with %d read-only tool(s)", len(readTools))
 		messages = withRecommendHint(messages)
