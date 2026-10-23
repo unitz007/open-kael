@@ -373,3 +373,18 @@ func TestRouter_APickerWithoutContextSupportIsStillUsed(t *testing.T) {
 		t.Errorf("a plain router is unaffected: %q", res.Content)
 	}
 }
+
+// A request to do something keeps every tool that does things, whatever the relevance filter thinks: only look-ups are
+// trimmed. ("…but let's confirm the size first" once lost place_trade, so the trade could not be placed.)
+func TestFilter_ARequestToDoSomethingKeepsEveryToolThatDoesThings(t *testing.T) {
+	r := newRig(func(int) *domain.LLMResponse { return calls(finishCall("ok", "need_details")) }, placed)
+	r.host.SetToolFilter(keepOnly{keep: "get_live_quote"}) // would drop place_trade
+	r.turn(t, domain.IntentExecute, "I want in on the GBPUSD sell, but let's confirm the size first")
+	have := map[string]bool{}
+	for _, n := range r.model.names {
+		have[n] = true
+	}
+	if !have["place_trade"] || !have["get_live_quote"] {
+		t.Errorf("place_trade stays on offer for a request to do something: %v", r.model.names)
+	}
+}

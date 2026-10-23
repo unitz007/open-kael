@@ -1797,6 +1797,13 @@ func (h *Host) runRouted(ctx context.Context, hosted *HostedAgent, userText stri
 			log.Printf("skill-router: tool filter failed: %v — using full tool list", ferr)
 		} else if len(filtered) > 0 {
 			log.Printf("skill-router: tool filter: %d → %d tool(s)", len(mergedTools), len(filtered))
+			if intent == domain.IntentExecute {
+				// A request to do something keeps every way the chosen capabilities have of doing it: only look-ups are
+				// trimmed. Found 2026-10-23: "I want in on the GBPUSD sell, but let's confirm the size first" lost
+				// place_trade, so the agent saved the person's sizing and then had no way to place the trade. Every
+				// change still goes through its own gates (approval, rules).
+				filtered = withChanges(filtered, mergedTools)
+			}
 			mergedTools = filtered
 		}
 	}
@@ -2339,4 +2346,20 @@ func (h *Host) RunScheduledTaskThen(ctx context.Context, agentID, userID, identi
 		}
 	}()
 	return nil
+}
+
+// withChanges adds back to a filtered list every tool from the full list that changes something (is not read-only),
+// in the full list's order.
+func withChanges(filtered, all []*domain.BoundAction) []*domain.BoundAction {
+	kept := map[string]bool{}
+	for _, t := range filtered {
+		kept[t.Spec.Name] = true
+	}
+	out := append([]*domain.BoundAction(nil), filtered...)
+	for _, t := range all {
+		if !t.Spec.ReadOnly && !kept[t.Spec.Name] {
+			out = append(out, t)
+		}
+	}
+	return out
 }
