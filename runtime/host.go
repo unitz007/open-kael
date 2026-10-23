@@ -284,6 +284,8 @@ type Host struct {
 	// extraActions, when set, adds actions to a person's turn (never to an unattended run). The application
 	// uses it for things the framework knows nothing about, such as setting up a reaction to an event.
 	extraActions func(ctx context.Context, hosted *HostedAgent) []*domain.BoundAction
+	// platformSkills, when set, adds the platform's own capabilities to a person's turn (see PlatformSkill).
+	platformSkills func(ctx context.Context, hosted *HostedAgent) []PlatformSkill
 
 	// eventDispatcher, when set, is told of every event that arrives, whether or not a capability listens
 	// for it, with the person it is about as the provider names them (a login, a customer id).
@@ -1331,7 +1333,16 @@ func (h *Host) handleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 		extra := h.extraActions(ctx, hosted)
 		actions = append(actions, extra...)
 		messengerSkillActions = append(messengerSkillActions, extra...)
-		ctx = withExtraActions(ctx, extra)
+	}
+	if h.platformSkills != nil && conv.UserID != "" && !unattended {
+		ps := h.platformSkills(ctx, hosted)
+		var acts []*domain.BoundAction
+		for _, p := range ps {
+			acts = append(acts, p.Actions...)
+		}
+		actions = append(actions, acts...)
+		messengerSkillActions = append(messengerSkillActions, acts...)
+		ctx = withPlatformSkills(ctx, ps)
 	}
 
 	promptIntegrations := hosted.integrations()
@@ -1555,12 +1566,12 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 
 	var pickedIntent domain.Intent
 	if tr, ok := h.skillRouter.(ToolAwareSkillRouter); ok && h.routeByTools {
-		skillNames, pickedIntent, err = tr.PickSkillsWithTools(ctx, userText, earlier, h.routedSkills(hosted))
+		skillNames, pickedIntent, err = tr.PickSkillsWithTools(ctx, userText, earlier, h.routedSkills(ctx, hosted))
 	} else if cr, ok := h.skillRouter.(ContextualSkillRouter); ok && !earlier.IsZero() {
 		log.Printf("skill-router: reading the message next to the one before it")
-		skillNames, pickedIntent, err = cr.PickSkillsInContext(ctx, userText, earlier, hosted.Agent.Skills)
+		skillNames, pickedIntent, err = cr.PickSkillsInContext(ctx, userText, earlier, skillsFor(ctx, hosted))
 	} else {
-		skillNames, pickedIntent, err = h.skillRouter.PickSkills(ctx, userText, hosted.Agent.Skills)
+		skillNames, pickedIntent, err = h.skillRouter.PickSkills(ctx, userText, skillsFor(ctx, hosted))
 	}
 	if err != nil {
 		log.Printf("skill-router: pick skills failed: %v — running NativeLoop with full actions", err)
@@ -1640,11 +1651,6 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 		// outside this agent's scope — decline instead of letting the LLM
 		// answer anything. Agents with no skills fall back to the full loop.
 		if len(hosted.Agent.Skills) > 0 {
-			// What the application adds (alerts: "let me know whenever …", "stop alert 2") belongs to no
-			// ability, so no ability matches it. It gets one chance here before anything below.
-			if result, final, ok := h.tryExtraActions(ctx, hosted, messages, actions); ok {
-				return result, final, nil
-			}
 			// A question (not an off-topic one: that was settled above) that none of its
 			// abilities covers, like "is the market open?" to a forex agent, is answered
 			// plainly with no tools and no pretence of looking anything up. A request to DO
@@ -1704,6 +1710,15 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 	seen := map[string]bool{}
 	var mergedTools []*domain.BoundAction
 	for _, name := range skillNames {
+		if acts, ok := platformActions(ctx, name); ok {
+			for _, t := range acts {
+				if !seen[t.Spec.Name] {
+					seen[t.Spec.Name] = true
+					mergedTools = append(mergedTools, t)
+				}
+			}
+			continue
+		}
 		for _, skill := range hosted.Agent.Skills {
 			if skill.Name != name {
 				continue
@@ -1726,7 +1741,7 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 	// What the creator told these capabilities to do goes into the agent's own prompt for this message: measured on the
 	// real model, instructions there are followed far more often than as a note beside the message (90% against 73%
 	// on "do not use this" instructions). The prompt is not kept in the conversation, so neither are they.
-	if instr := capabilityInstructionsHint(hosted.Agent.Skills, skillNames); instr != "" {
+	if instr := capabilityInstructionsHint(skillsFor(ctx, hosted), skillNames); instr != "" {
 		messages = withSystemAddition(messages, instr)
 	}
 	return h.runRouted(ctx, hosted, userText, messages, actions, convActions, mergedTools, intent)
@@ -1784,7 +1799,7 @@ func (h *Host) runRouted(ctx context.Context, hosted *HostedAgent, userText stri
 	if intent == domain.IntentRecommend {
 		var readTools []*domain.BoundAction
 		for _, t := range mergedTools {
-			if t.Spec.ReadOnly {
+			if t.Spec.ReadOnly || isPlatformAction(ctx, t.Spec.Name) {
 				readTools = append(readTools, t)
 			}
 		}
@@ -1799,7 +1814,15 @@ func (h *Host) runRouted(ctx context.Context, hosted *HostedAgent, userText stri
 
 	loopActions := make([]*domain.BoundAction, 0, len(mergedTools)+len(convActions)+1)
 	loopActions = append(loopActions, mergedTools...)
-	loopActions = append(loopActions, convActions...)
+	inLoop := map[string]bool{}
+	for _, t := range mergedTools {
+		inLoop[t.Spec.Name] = true
+	}
+	for _, a := range convActions {
+		if !inLoop[a.Spec.Name] { // a platform capability that was picked brings its actions already
+			loopActions = append(loopActions, a)
+		}
+	}
 	loopActions = append(loopActions, h.finishFor(ctx, hosted, reqs != nil))
 	if reqs != nil {
 		ctx = domain.WithRequirements(ctx, reqs)

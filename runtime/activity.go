@@ -85,7 +85,7 @@ func (h *Host) noteMessage(hosted *HostedAgent) {
 func (h *Host) noteUses(ctx context.Context, hosted *HostedAgent, skillNames []string) {
 	var ids []string
 	for _, name := range skillNames {
-		for _, s := range hosted.Agent.Skills {
+		for _, s := range skillsFor(ctx, hosted) {
 			if s.Name == name {
 				ids = append(ids, s.ID)
 				break
