@@ -2,6 +2,7 @@ package runtime_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -311,4 +312,57 @@ func TestChoices_NotOfferedWhenNobodyIsThereToTap(t *testing.T) {
 		t.Errorf("nothing kept: %v %d", b, len(store.m))
 	}
 	_ = hosted
+}
+
+// An alert reaches the person on purpose, so its run may end with choices ("Place the trade"): saved for that person
+// and agent, and a tap is handled as if they had typed it, like any other.
+func TestChoices_AnAlertRunMayOfferThem(t *testing.T) {
+	host, _, box, store := choiceRig(t, finishWithChoices("New buy signal on EURUSD.", twoChoices(), "ok"), true)
+	ctx := domain.WithAlertRun(context.Background())
+	if err := host.RunScheduledTask(ctx, "a1", "u1", "id_slack", "C1", "A new trading signal was made"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "buttons", func() bool { b, _ := box.snapshot(); return len(b) == 1 })
+	if len(store.m) != 1 {
+		t.Fatalf("the choices are saved: %d", len(store.m))
+	}
+	for _, p := range store.m {
+		if p.PersonID != "u1" || p.AgentID != "a1" {
+			t.Errorf("for this person and agent: %+v", p)
+		}
+	}
+}
+
+// A write-only run offers the model nothing but finish, whatever capabilities the agent has.
+func TestWriteOnly_OffersNothingButFinish(t *testing.T) {
+	spy := &toolSpy{}
+	r := newFollowRig(t, &followRouter{byText: map[string][]string{"A new signal": {"analyse_pair"}}})
+	r.hosted.Agent.LLMs = []domain.LLM{spy}
+	ctx := domain.WithWriteOnly(domain.WithUnattended(context.Background()))
+	conv := domain.ConversationRef{Provider: "slack", ChatID: "C1", IdentityID: "id_slack", UserID: "u1"}
+	if _, err := r.host.HandleTurn(ctx, r.hosted, conv, "A new signal"); err != nil {
+		t.Fatal(err)
+	}
+	if spy.calls() != 1 || strings.Join(spy.offered[0], ",") != domain.FinishActionName {
+		t.Fatalf("one call, only finish: %v", spy.offered)
+	}
+	if got := r.box.texts(); len(got) != 1 || got[0] != "ok" {
+		t.Errorf("its reply is delivered: %q", got)
+	}
+}
+
+// A write-only run that fails sends nothing itself: the caller sends something plainer (an alert's summary).
+func TestWriteOnly_AFailureSendsNothing(t *testing.T) {
+	host, _, box, _ := choiceRig(t, &funcLLM{call: func(int) (*domain.LLMResponse, error) { return nil, errors.New("model down") }}, true)
+	got := make(chan error, 1)
+	ctx := domain.WithWriteOnly(domain.WithAlertRun(context.Background()))
+	if err := host.RunScheduledTaskThen(ctx, "a1", "u1", "id_slack", "C1", "A new signal", func(err error) { got <- err }); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-got; err == nil {
+		t.Fatal("the caller is told it failed")
+	}
+	if texts := box.texts(); len(texts) != 0 {
+		t.Errorf("nothing sent: %q", texts)
+	}
 }

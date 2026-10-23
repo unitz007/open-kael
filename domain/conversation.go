@@ -64,6 +64,8 @@ const (
 	unattendedAllowedCtxKey
 	connectRequesterCtxKey
 	originalMessageCtxKey
+	alertRunCtxKey
+	writeOnlyCtxKey
 )
 
 // WithConversation/ConversationFromContext thread the active conversation
@@ -135,6 +137,31 @@ func WithUnattended(ctx context.Context) context.Context {
 func WithUnattendedAllowing(ctx context.Context, actions []string) context.Context {
 	ctx = WithUnattended(ctx)
 	return context.WithValue(ctx, unattendedAllowedCtxKey, append([]string(nil), actions...))
+}
+
+// WithAlertRun marks an unattended run that answers an alert the person set up. Unlike a repeating task, it exists to
+// reach them, so it may end with choices: taps work later, and each is handled as if the person had typed it, with
+// every gate a typed message goes through. Nothing else about being unattended changes.
+func WithAlertRun(ctx context.Context) context.Context {
+	return context.WithValue(ctx, alertRunCtxKey, true)
+}
+
+// IsAlertRun says whether the run answers an alert (see WithAlertRun).
+func IsAlertRun(ctx context.Context) bool {
+	v, _ := ctx.Value(alertRunCtxKey).(bool)
+	return v
+}
+
+// WithWriteOnly marks a run that only writes its reply: no ability is offered, so nothing is looked up or changed.
+// The agent still knows the person and the conversation, as on any turn.
+func WithWriteOnly(ctx context.Context) context.Context {
+	return context.WithValue(ctx, writeOnlyCtxKey, true)
+}
+
+// IsWriteOnly says whether the run only writes (see WithWriteOnly).
+func IsWriteOnly(ctx context.Context) bool {
+	v, _ := ctx.Value(writeOnlyCtxKey).(bool)
+	return v
 }
 
 // UnattendedAllowed returns the actions an unattended turn may change things with (none usually).

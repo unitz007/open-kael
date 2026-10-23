@@ -22,7 +22,8 @@ func (h *Host) SetProposalStore(s domain.ProposalStore) { h.proposals = s }
 // canOfferChoices reports whether this turn's reply can carry tappable buttons: someone is there to tap,
 // we know who they are, the choices can be saved, and the messenger can put buttons under a message.
 func (h *Host) canOfferChoices(ctx context.Context, hosted *HostedAgent) bool {
-	if h.proposals == nil || domain.IsUnattended(ctx) {
+	// Nobody is there to tap on an unattended run, except one that answers an alert: that one exists to reach them.
+	if h.proposals == nil || (domain.IsUnattended(ctx) && !domain.IsAlertRun(ctx)) {
 		return false
 	}
 	conv, ok := domain.ConversationFromContext(ctx)

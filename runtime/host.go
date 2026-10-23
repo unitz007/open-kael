@@ -10,6 +10,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"regexp"
@@ -1373,7 +1374,10 @@ func (h *Host) handleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 	var final []domain.Message
 
 	_, routerIsScopeChecker := h.skillRouter.(ScopeChecker)
-	if h.skillRouter != nil && (len(hosted.Agent.Skills) > 0 || routerIsScopeChecker) {
+	if domain.IsWriteOnly(ctx) {
+		// Only writing: the agent's own prompt, the person and the conversation, and nothing to use but finish.
+		result, final, err = h.respondDirectly(ctx, hosted, messages, actions)
+	} else if h.skillRouter != nil && (len(hosted.Agent.Skills) > 0 || routerIsScopeChecker) {
 		result, final, err = h.routeWithJev(ctx, hosted, userText, messages, actions, messengerSkillActions)
 	} else {
 		loop := hosted.Agent.Loop
@@ -1391,7 +1395,9 @@ func (h *Host) handleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 	}
 
 	if err != nil {
-		if unattended {
+		if unattended && domain.IsWriteOnly(ctx) {
+			// Only writing failed: the caller has something plainer to send instead (an alert's own summary).
+		} else if unattended {
 			h.deliverBestEffort(ctx, hosted, conv, unattendedFailure)
 		} else {
 			h.noteEvent(hosted, domain.ActivityFailed, failureDetail(err))
@@ -1400,6 +1406,10 @@ func (h *Host) handleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 		return result, err
 	}
 
+	// A write-only run that wrote nothing usable sends nothing: the caller has something plainer to send instead.
+	if unattended && domain.IsWriteOnly(ctx) && (result.Status == domain.LoopStatusError || strings.TrimSpace(result.Content) == "") {
+		return result, errors.New("nothing was written")
+	}
 	content := result.Content
 	switch {
 	case result.Status == domain.LoopStatusError && unattended:
@@ -1431,7 +1441,7 @@ func (h *Host) handleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 	}
 
 	// Choices the agent finished with: buttons where they can work, otherwise a plain list.
-	choices := choicesOf(result, unattended)
+	choices := choicesOf(result, unattended && !domain.IsAlertRun(ctx))
 	if len(choices) > 0 && !h.canOfferChoices(ctx, hosted) {
 		content = withNumberedChoices(content, choices)
 		choices = nil
