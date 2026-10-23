@@ -1331,6 +1331,7 @@ func (h *Host) handleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 		extra := h.extraActions(ctx, hosted)
 		actions = append(actions, extra...)
 		messengerSkillActions = append(messengerSkillActions, extra...)
+		ctx = withExtraActions(ctx, extra)
 	}
 
 	promptIntegrations := hosted.integrations()
@@ -1639,6 +1640,11 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 		// outside this agent's scope — decline instead of letting the LLM
 		// answer anything. Agents with no skills fall back to the full loop.
 		if len(hosted.Agent.Skills) > 0 {
+			// What the application adds (alerts: "let me know whenever …", "stop alert 2") belongs to no
+			// ability, so no ability matches it. It gets one chance here before anything below.
+			if result, final, ok := h.tryExtraActions(ctx, hosted, messages, actions); ok {
+				return result, final, nil
+			}
 			// A question (not an off-topic one: that was settled above) that none of its
 			// abilities covers, like "is the market open?" to a forex agent, is answered
 			// plainly with no tools and no pretence of looking anything up. A request to DO

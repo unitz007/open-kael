@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/unitz007/open-kael/domain"
+	"github.com/unitz007/open-kael/runtime"
 )
 
 // intentRouter classifies each message's intent FIRST, from a script, and records what it was
@@ -260,5 +261,97 @@ func TestIntentFirst_APhraseFarIntoALongAnswerIsNotAPromise(t *testing.T) {
 	r.say(t, "C1", "Are there any tradeable pairs?")
 	if len(llm.seen) != 1 || r.box.texts()[0] != long {
 		t.Errorf("one call, reply as given: %d", len(llm.seen))
+	}
+}
+
+// alertLLM calls the action named in call (when it is offered) and then finishes with reply; it records what it was
+// offered each time.
+type alertLLM struct {
+	call, reply string
+	offered     [][]string
+	called      bool
+}
+
+func (s *alertLLM) Call(_ context.Context, _ []domain.Message, specs []domain.ActionSpec) (*domain.LLMResponse, error) {
+	var names []string
+	for _, sp := range specs {
+		names = append(names, sp.Name)
+	}
+	s.offered = append(s.offered, names)
+	if s.call != "" && !s.called && strings.Contains(strings.Join(names, ","), s.call) {
+		s.called = true
+		return &domain.LLMResponse{ToolCalls: []domain.ToolCall{{ID: "a", Name: s.call, Arguments: map[string]any{}}}}, nil
+	}
+	return &domain.LLMResponse{ToolCalls: []domain.ToolCall{{ID: "f", Name: domain.FinishActionName, Arguments: map[string]any{"content": s.reply}}}}, nil
+}
+
+func alertRig(t *testing.T, text string, intent domain.Intent, llm domain.LLM) (*followRig, *int) {
+	t.Helper()
+	r := newIntentRig(t, &intentRouter{intents: map[string]domain.Intent{text: intent}})
+	r.hosted.Agent.LLMs = []domain.LLM{llm}
+	ran := 0
+	r.host.SetExtraActions(func(context.Context, *runtime.HostedAgent) []*domain.BoundAction {
+		return []*domain.BoundAction{{
+			Spec:   domain.ActionSpec{Name: "set_up_reaction", Description: "Set up an alert"},
+			Invoke: func(context.Context, map[string]any) (any, error) { ran++; return "set up", nil },
+		}}
+	})
+	return r, &ran
+}
+
+// The live incident: "Let me know whenever there's a new trading signal" matched no ability (alerts are not one), and
+// the fixed "here's what I can do" was sent without the model ever seeing the alert actions.
+func TestNoAbilityMatched_AnAlertRequestReachesTheAlertActions(t *testing.T) {
+	llm := &alertLLM{call: "set_up_reaction", reply: "Done: I'll tell you about each new signal."}
+	r, ran := alertRig(t, "Let me know whenever there's a new trading signal", domain.IntentExecute, llm)
+	r.say(t, "C1", "Let me know whenever there's a new trading signal")
+	if *ran != 1 {
+		t.Fatalf("the alert action must run once: %d", *ran)
+	}
+	if got := r.box.texts(); len(got) != 1 || got[0] != llm.reply {
+		t.Fatalf("its reply is the turn's: %q", got)
+	}
+	if got := strings.Join(llm.offered[0], ","); got != "set_up_reaction,"+domain.FinishActionName {
+		t.Errorf("only the alert actions and finish are offered: %q", got)
+	}
+	for _, msgs := range r.mem.store {
+		for _, m := range msgs {
+			if m.Role == domain.RoleSystem {
+				t.Errorf("the instruction that shaped the reply must not be stored: %q", m.Content)
+			}
+		}
+	}
+}
+
+// Anything else that matches no ability is answered exactly as before: what the model wrote while it had only the
+// alert actions is thrown away.
+func TestNoAbilityMatched_SomethingElseStillGetsTheFixedReply(t *testing.T) {
+	llm := &alertLLM{reply: "Sure, I'll book your flight!"}
+	r, ran := alertRig(t, "book me a flight", domain.IntentExecute, llm)
+	r.say(t, "C1", "book me a flight")
+	if *ran != 0 {
+		t.Fatalf("no alert action: %d", *ran)
+	}
+	if got := r.box.texts(); len(got) != 1 || got[0] != fixedDecline() {
+		t.Fatalf("the fixed reply, never the model's: %q", got)
+	}
+	if len(llm.offered) != 1 {
+		t.Errorf("asked once: %d", len(llm.offered))
+	}
+}
+
+// A question no ability covers still gets its own answer afterwards (asked a second time, with no tools).
+func TestNoAbilityMatched_AQuestionIsStillAnsweredAfterwards(t *testing.T) {
+	llm := &alertLLM{reply: "The market is open around the clock on weekdays."}
+	r, ran := alertRig(t, "Is the market open?", domain.IntentRecommend, llm)
+	r.say(t, "C1", "Is the market open?")
+	if *ran != 0 || len(llm.offered) != 2 {
+		t.Fatalf("no alert, then the usual answer: ran=%d calls=%d", *ran, len(llm.offered))
+	}
+	if got := strings.Join(llm.offered[1], ","); got != domain.FinishActionName {
+		t.Errorf("the usual answer has no tools: %q", got)
+	}
+	if got := r.box.texts(); len(got) != 1 || got[0] != llm.reply {
+		t.Errorf("one reply: %q", got)
 	}
 }
