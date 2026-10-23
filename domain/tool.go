@@ -50,6 +50,9 @@ type ToolDefinition struct {
 	// prompt is a closure, because a ToolSpec is only ever built in code,
 	// never persisted. Empty falls back to Description.
 	ApprovalPromptTemplate string `json:"approval_prompt_template,omitempty"`
+	// Prepared names values its executor's prepare step adds to a call (see Preparer), which the approval prompt may
+	// show although the model never gives them: a trade's size worked out from the person's own rule, with what it risks.
+	Prepared []string `json:"prepared,omitempty"`
 
 	// ApprovalTimeoutSeconds bounds how long the runtime host waits for a
 	// response before treating an approval request as declined — never
@@ -87,5 +90,25 @@ func (t *ToolDefinition) RenderApprovalPrompt(input map[string]any) string {
 	for key, value := range input {
 		prompt = strings.ReplaceAll(prompt, "{{"+key+"}}", fmt.Sprint(value))
 	}
+	// A line whose value was not given is left out: an approval never shows a placeholder.
+	if strings.Contains(prompt, "{{") {
+		var kept []string
+		for _, line := range strings.Split(prompt, "\n") {
+			if !strings.Contains(line, "{{") {
+				kept = append(kept, line)
+			}
+		}
+		prompt = strings.Join(kept, "\n")
+	}
 	return prompt
+}
+
+// prepares says whether the tool's prepare step adds the named value (see Prepared).
+func (t *ToolDefinition) prepares(name string) bool {
+	for _, p := range t.Prepared {
+		if p == name {
+			return true
+		}
+	}
+	return false
 }

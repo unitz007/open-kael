@@ -134,7 +134,7 @@ func ValidateTool(t *ToolDefinition) error {
 	}
 	if t.RequiresApproval {
 		for _, m := range promptFieldRe.FindAllStringSubmatch(t.ApprovalPromptTemplate, -1) {
-			if _, ok := props[m[1]]; !ok {
+			if _, ok := props[m[1]]; !ok && !t.prepares(m[1]) {
 				bad("approval prompt mentions {{%s}}, which the tool doesn't take", m[1])
 			}
 		}

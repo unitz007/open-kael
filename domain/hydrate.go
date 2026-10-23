@@ -79,6 +79,11 @@ func BindTool(def *ToolDefinition, identity *Identity, integration *Integration,
 	if len(rules) > 0 {
 		invoke = withRules(rules, def.ModelName(), invoke)
 	}
+	// An executor that prepares a call (works something out from the person's own settings) does so after the input
+	// check and before the rules and the approval, so both see what will really be sent.
+	if p, ok := executor.(Preparer); ok {
+		invoke = withPrepare(p, def, identity, invoke)
+	}
 	invoke = withInputContract(def, invoke)
 	// Fixed and default values are filled in first, so the input check sees a whole call.
 	if len(rules) > 0 {
