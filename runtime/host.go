@@ -1392,7 +1392,8 @@ func (h *Host) handleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 	// the person wrote, so it doesn't belong in their conversation (their follow-up questions
 	// still have the reply to refer to).
 	if !unattended && hosted.Deps.Memory != nil && len(final) >= 1+len(prior) {
-		hosted.Deps.Memory.Append(ctx, convKey, final[1+len(prior):]...)
+		// The loop's own nudges stay out: kept, they would read later as something the person wrote.
+		hosted.Deps.Memory.Append(ctx, convKey, domain.Kept(final[1+len(prior):])...)
 	}
 
 	if err != nil {

@@ -19,6 +19,21 @@ type Message struct {
 	ToolCalls  []ToolCall
 	ToolCallID string
 	Name       string
+	// Internal marks a message the loop adds for the model's sake within one run: a nudge ("You must respond by calling
+	// one of the available actions…") and the undelivered text that made it necessary. The model sees it during the run;
+	// it is never kept in the conversation (see Kept), where it would read later as something the person wrote.
+	Internal bool
+}
+
+// Kept is the part of a run's messages that belongs in the conversation: everything but what is Internal.
+func Kept(msgs []Message) []Message {
+	out := make([]Message, 0, len(msgs))
+	for _, m := range msgs {
+		if !m.Internal {
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 type ToolCall struct {

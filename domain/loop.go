@@ -141,8 +141,8 @@ func (l *NativeLoop) Run(ctx context.Context, messages []Message, actions []*Bou
 		if len(resp.ToolCalls) == 0 {
 			// Model produced no tool calls — nudge it to call finish or another action.
 			messages = append(messages,
-				Message{Role: RoleAssistant, Content: resp.Content},
-				Message{Role: RoleUser, Content: fmt.Sprintf("You must respond by calling one of the available actions. Call %q to deliver your response to the user.", FinishActionName)},
+				Message{Role: RoleAssistant, Content: resp.Content, Internal: true},
+				Message{Role: RoleUser, Content: fmt.Sprintf("You must respond by calling one of the available actions. Call %q to deliver your response to the user.", FinishActionName), Internal: true},
 			)
 			consecutiveFailures++
 			if consecutiveFailures >= maxConsecutiveFailures {
@@ -153,8 +153,8 @@ func (l *NativeLoop) Run(ctx context.Context, messages []Message, actions []*Bou
 
 		if len(resp.ToolCalls) > maxToolCallsPerIter {
 			messages = append(messages,
-				Message{Role: RoleAssistant, Content: resp.Content, ToolCalls: resp.ToolCalls[:0]},
-				Message{Role: RoleUser, Content: fmt.Sprintf("You requested %d tool calls at once. Make at most %d tool calls per response.", len(resp.ToolCalls), maxToolCallsPerIter)},
+				Message{Role: RoleAssistant, Content: resp.Content, ToolCalls: resp.ToolCalls[:0], Internal: true},
+				Message{Role: RoleUser, Content: fmt.Sprintf("You requested %d tool calls at once. Make at most %d tool calls per response.", len(resp.ToolCalls), maxToolCallsPerIter), Internal: true},
 			)
 			consecutiveFailures++
 			if consecutiveFailures >= maxConsecutiveFailures {
