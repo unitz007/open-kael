@@ -144,6 +144,7 @@ type Host struct {
 
 	// serveCtx is the context passed to ListenAndServe; stored so
 	// StartListenerForAgent can start goroutines on the same lifecycle.
+	// Guarded by mu.
 	serveCtx context.Context
 
 	// turnsCtx is what messages being handled run under (see turnContext): it is not cancelled when the server starts

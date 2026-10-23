@@ -22,7 +22,9 @@ import (
 // and ListenAndServe returns once they have. A server stopping for a deploy therefore lets a reply that is being
 // written reach the person, instead of dropping it half way.
 func (h *Host) ListenAndServe(ctx context.Context) error {
+	h.mu.Lock()
 	h.serveCtx = ctx
+	h.mu.Unlock()
 
 	// Sentinel: keeps serveWG non-zero until ctx is cancelled so dynamically
 	// added listeners can safely call h.serveWG.Add without racing with Wait.
@@ -75,8 +77,13 @@ func (h *Host) ListenAndServe(ctx context.Context) error {
 // started — 0 means no listeners so the caller should skip the processing
 // goroutine.
 func (h *Host) startListeners(ctx context.Context, hosted *HostedAgent, inbox chan domain.InboundMessage) int {
+	// StartListenerForAgent appends to IdentityIDs under h.mu while this runs, so read a copy taken under the lock.
+	h.mu.RLock()
+	identityIDs := append([]string(nil), hosted.Agent.IdentityIDs...)
+	h.mu.RUnlock()
+
 	started := 0
-	for _, identityID := range hosted.Agent.IdentityIDs {
+	for _, identityID := range identityIDs {
 		identity, ok := hosted.catalog().Identity(identityID)
 		if !ok {
 			continue
@@ -193,12 +200,12 @@ func (h *Host) handleWaiting(serve context.Context, hosted *HostedAgent, inbox c
 // No-op when ListenAndServe is not running or the identity's executor doesn't
 // implement domain.Listener.
 func (h *Host) StartListenerForAgent(agentID string, identity *domain.Identity, integration *domain.Integration) {
-	if h.serveCtx == nil {
+	h.mu.Lock()
+	ctx := h.serveCtx
+	if ctx == nil {
+		h.mu.Unlock()
 		return
 	}
-	ctx := h.serveCtx
-
-	h.mu.Lock()
 	hosted, ok := h.agents[agentID]
 	if ok {
 		hosted.catalog().PutIdentity(identity)
