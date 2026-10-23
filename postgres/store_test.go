@@ -2,6 +2,7 @@ package postgres_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/unitz007/open-kael/domain"
@@ -282,5 +283,45 @@ func TestToolNeedsLocalTimeRoundTrip(t *testing.T) {
 	}
 	if again, _ := store.GetTool(ctx, "nlt_a"); again.NeedsLocalTime {
 		t.Error("saving again can turn it off")
+	}
+}
+
+// A tool's prepared values and its per-run limit survive being stored, so a tool whose approval shows a prepared value
+// (a trade's worked-out size) still keeps the tool contract when it is loaded. Without them place_trade was left out at
+// every start (2026-10-23).
+func TestToolPreparedAndMaxCallsRoundTrip(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	if err := store.SaveIntegration(ctx, &domain.Integration{ID: "int_prep", Name: "Aegis", Service: "trading"}); err != nil {
+		t.Fatal(err)
+	}
+	def := &domain.ToolDefinition{ID: "prep_trade", Name: "place_trade", Description: "Places a trade", IntegrationID: "int_prep", Action: "trade",
+		RequiresApproval: true, ApprovalTimeoutSeconds: 300, ApprovalPromptTemplate: "Size: {{size_line}}\n{{rr_line}}",
+		InputSchema: domain.Schema{Type: domain.SchemaTypeObject, Properties: map[string]domain.Schema{"symbol": {Type: domain.SchemaTypeString, Description: "The pair."}}},
+		Prepared:    []string{"size_line", "rr_line"}, MaxCalls: 1}
+	if err := store.SaveTool(ctx, def); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.GetTool(ctx, "prep_trade")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(got.Prepared, ",") != "size_line,rr_line" || got.MaxCalls != 1 {
+		t.Fatalf("kept: prepared=%v max_calls=%d", got.Prepared, got.MaxCalls)
+	}
+	if err := domain.ValidateTool(got); err != nil {
+		t.Errorf("a loaded tool keeps the contract: %v", err)
+	}
+	list, _ := store.ListToolsByIntegration(ctx, "int_prep")
+	if len(list) != 1 || len(list[0].Prepared) != 2 || list[0].MaxCalls != 1 {
+		t.Errorf("listed the same: %+v", list)
+	}
+	plain := &domain.ToolDefinition{ID: "prep_plain", Name: "look", Description: "Looks", IntegrationID: "int_prep", Action: "look", ReadOnly: true,
+		InputSchema: domain.Schema{Type: domain.SchemaTypeObject}}
+	if err := store.SaveTool(ctx, plain); err != nil {
+		t.Fatal(err)
+	}
+	if p, _ := store.GetTool(ctx, "prep_plain"); len(p.Prepared) != 0 || p.MaxCalls != 0 {
+		t.Errorf("a tool with neither stays without: %+v", p)
 	}
 }

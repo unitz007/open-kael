@@ -186,6 +186,11 @@ ALTER TABLE tools ADD COLUMN IF NOT EXISTS approval_timeout_seconds INT NOT NULL
 ALTER TABLE tools ADD COLUMN IF NOT EXISTS read_only                BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE tools ADD COLUMN IF NOT EXISTS disabled                 BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE tools ADD COLUMN IF NOT EXISTS needs_local_time         BOOLEAN NOT NULL DEFAULT FALSE;
+-- What a tool's prepare step adds, which its approval may show (ToolDefinition.Prepared); without it a stored tool whose
+-- approval shows a prepared value breaks the tool contract when it is loaded, and is left out (2026-10-23: place_trade).
+ALTER TABLE tools ADD COLUMN IF NOT EXISTS prepared                 TEXT[] NOT NULL DEFAULT '{}';
+-- How many times a tool may be called in one run (ToolDefinition.MaxCalls; 0 = no limit).
+ALTER TABLE tools ADD COLUMN IF NOT EXISTS max_calls                INT NOT NULL DEFAULT 0;
 
 CREATE INDEX IF NOT EXISTS idx_tools_integration_id ON tools (integration_id);
 
