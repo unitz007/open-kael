@@ -92,3 +92,53 @@ func TestSkillEndpoints_ALimitMustBeOnAConnectionTheCapabilityUses(t *testing.T)
 		t.Errorf("the same on an update: %d saved=%d", got, st.saved)
 	}
 }
+
+// tradingStore has one connection, its trading abilities, and keeps what is saved.
+type tradingStore struct {
+	skillStore
+	last *domain.Skill
+}
+
+func (s *tradingStore) LoadIntegration(_ context.Context, id string) (*domain.Integration, error) {
+	if id == "trading" {
+		return &domain.Integration{ID: "trading", Service: "trading"}, nil
+	}
+	return nil, domain.ErrNotFound
+}
+func (s *tradingStore) ListToolsByIntegration(_ context.Context, id string) ([]*domain.ToolDefinition, error) {
+	symbol := domain.Schema{Type: domain.SchemaTypeObject, Properties: map[string]domain.Schema{"symbol": {Type: domain.SchemaTypeString}}}
+	return []*domain.ToolDefinition{
+		{ID: "t:status", Name: "get_trading_status", IntegrationID: "trading", ReadOnly: true, InputSchema: symbol},
+		{ID: "t:place", Name: "place_trade", IntegrationID: "trading", InputSchema: symbol},
+	}, nil
+}
+func (s *tradingStore) SaveSkill(_ context.Context, sk *domain.Skill) error {
+	s.saved++
+	s.last = sk
+	return nil
+}
+
+// What must happen first is only between abilities the capability really has; a good one is saved tidied, with an id.
+func TestSkillEndpoints_PrerequisitesAreHeldToWhatTheCapabilityCanDo(t *testing.T) {
+	st := &tradingStore{}
+	post := func(body string) int {
+		rr := httptest.NewRecorder()
+		api.NewServer(st).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/agents/a1/skills", strings.NewReader(body)))
+		return rr.Code
+	}
+	for name, body := range map[string]string{
+		"an ability it doesn't have":    `{"id":"s1","name":"x","integrations":["trading"],"prerequisites":[{"before":"t:place","first":"t:other"}]}`,
+		"a change made to happen first": `{"id":"s1","name":"x","integrations":["trading"],"prerequisites":[{"before":"t:status","first":"t:place"}]}`,
+		"an input one of them lacks":    `{"id":"s1","name":"x","integrations":["trading"],"prerequisites":[{"before":"t:place","first":"t:status","same":["size"]}]}`,
+	} {
+		if got := post(body); got != http.StatusBadRequest || st.saved != 0 {
+			t.Errorf("%s: %d saved=%d", name, got, st.saved)
+		}
+	}
+	if got := post(`{"id":"s1","name":"x","integrations":["trading"],"prerequisites":[{"before":"t:place","first":"t:status","same":["symbol"]},{"before":"t:place","first":"t:status","same":["symbol"]}]}`); got != http.StatusOK {
+		t.Fatalf("a good one: %d", got)
+	}
+	if p := st.last.Prerequisites; len(p) != 1 || p[0].ID == "" || p[0].Same[0] != "symbol" {
+		t.Errorf("saved once, with an id: %+v", p)
+	}
+}

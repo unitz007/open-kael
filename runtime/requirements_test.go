@@ -94,16 +94,17 @@ func finishCall(content, outcome string) domain.ToolCall {
 }
 
 type rig struct {
-	model *scriptedModel
-	exec  *fxExec
-	host  *runtime.Host
-	mem   *memMemory // kept between turns, so a conversation has a history
+	model   *scriptedModel
+	exec    *fxExec
+	host    *runtime.Host
+	mem     *memMemory            // kept between turns, so a conversation has a history
+	prereqs []domain.Prerequisite // what the capability says must run first
 }
 
 func (r *rig) turn(t *testing.T, intent domain.Intent, text string) *domain.LoopResult {
 	t.Helper()
 	integration := &domain.Integration{ID: "int-fx", Service: "fx"}
-	skill := &domain.Skill{ID: "s1", Name: "forex", AgentID: "a1", Integrations: []string{integration.ID}}
+	skill := &domain.Skill{ID: "s1", Name: "forex", AgentID: "a1", Integrations: []string{integration.ID}, Prerequisites: r.prereqs}
 	agent := &domain.Agent{ID: "a1", LLMs: []domain.LLM{r.model}, MaxIterations: 8, Skills: []*domain.Skill{skill}}
 	executors := domain.NewExecutorRegistry()
 	executors.Register("slack", &fakeExecutor{})
@@ -386,5 +387,38 @@ func TestFilter_ARequestToDoSomethingKeepsEveryToolThatDoesThings(t *testing.T) 
 	}
 	if !have["place_trade"] || !have["get_live_quote"] {
 		t.Errorf("place_trade stays on offer for a request to do something: %v", r.model.names)
+	}
+}
+
+// "Check before placing a trade", kept by the platform in a real turn: the agent tries to place it first, is told to
+// check, checks, then places it. And the relevance filter, which would offer only the trade, can't take the check away.
+func TestPrerequisite_InATurnTheTradeWaitsForTheCheck(t *testing.T) {
+	r := newRig(func(n int) *domain.LLMResponse {
+		switch n {
+		case 1:
+			return calls(domain.ToolCall{ID: "1", Name: "place_trade", Arguments: map[string]any{}})
+		case 2:
+			return calls(domain.ToolCall{ID: "2", Name: "get_live_quote", Arguments: map[string]any{}})
+		case 3:
+			return calls(domain.ToolCall{ID: "3", Name: "place_trade", Arguments: map[string]any{}})
+		}
+		return calls(finishCall("Placed.", "done"))
+	}, placed)
+	r.prereqs = []domain.Prerequisite{{Before: "t", First: "q"}}
+	r.host.SetToolRequirer(&fakeRequirer{names: []string{"place_trade"}})
+	r.host.SetToolFilter(keepOnly{keep: "place_trade"}) // would drop the check
+	res := r.turn(t, domain.IntentExecute, "buy EURUSD now, don't bother checking anything")
+	have := map[string]bool{}
+	for _, n := range r.model.names {
+		have[n] = true
+	}
+	if !have["get_live_quote"] {
+		t.Fatalf("the check the trade needs stays on offer: %v", r.model.names)
+	}
+	if r.exec.tradeN != 1 || r.model.n != 4 {
+		t.Fatalf("one trade, after the check: trades=%d model calls=%d", r.exec.tradeN, r.model.n)
+	}
+	if !strings.Contains(res.Content, "Placed") {
+		t.Errorf("%q", res.Content)
 	}
 }

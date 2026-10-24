@@ -45,6 +45,9 @@ type ActionSpec struct {
 type BoundAction struct {
 	Spec   ActionSpec
 	Invoke func(ctx context.Context, input map[string]any) (any, error)
+	// Needs are the actions (by name) its capability says must run successfully first in the same run (see
+	// Prerequisite): whoever trims what is offered must keep them, or this one could never run.
+	Needs []string
 }
 
 // skillClock is the time source for an ability's instructions; tests replace it.

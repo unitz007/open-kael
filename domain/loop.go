@@ -103,6 +103,7 @@ func availableNames(m map[string]*BoundAction) []string {
 }
 
 func (l *NativeLoop) Run(ctx context.Context, messages []Message, actions []*BoundAction) (*LoopResult, []Message, error) {
+	ctx = WithRunJournal(ctx) // what runs successfully, for prerequisites (a nested run shares its caller's)
 	actionsByName := make(map[string]*BoundAction, len(actions))
 	specs := make([]ActionSpec, 0, len(actions))
 	for _, a := range actions {

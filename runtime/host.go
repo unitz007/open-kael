@@ -1742,6 +1742,15 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 			}
 			for _, t := range tools {
 				if seen[t.Spec.Name] {
+					// The same ability through two capabilities: if this one must wait for a check, it is the one kept, so a
+					// creator's "check first" is never lost to the order the capabilities were picked in.
+					if len(t.Needs) > 0 {
+						for i, m := range mergedTools {
+							if m.Spec.Name == t.Spec.Name && len(m.Needs) == 0 {
+								mergedTools[i] = t
+							}
+						}
+					}
 					continue
 				}
 				seen[t.Spec.Name] = true
@@ -1821,6 +1830,7 @@ func (h *Host) runRoutedTurn(ctx context.Context, hosted *HostedAgent, userText 
 		}
 	}
 	mergedTools = keepRequired(mergedTools, allTools, reqs)
+	mergedTools = keepNeeded(mergedTools, allTools)
 	log.Printf("skill-router: offering tools %v", actionNames(mergedTools))
 
 	// Recommend intent: filter to read-only tools so the LLM can fetch data

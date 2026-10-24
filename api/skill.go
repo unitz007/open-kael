@@ -213,6 +213,40 @@ func (s *Server) skillRefsAccessible(w http.ResponseWriter, r *http.Request, ski
 		writeError(w, http.StatusBadRequest, errors.New("this skill refers to a connection that doesn't exist or isn't yours"))
 		return false
 	}
+	if len(skill.Prerequisites) > 0 {
+		// What must happen first is only between abilities this capability really grants (domain/prerequisite.go).
+		toolsByID := map[string]*domain.ToolDefinition{}
+		for _, id := range skill.Integrations {
+			list, err := s.store.ListToolsByIntegration(r.Context(), id)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, err)
+				return false
+			}
+			for _, t := range list {
+				toolsByID[t.ID] = t
+			}
+		}
+		for _, b := range skill.Tools {
+			if t, err := s.store.GetTool(r.Context(), b.ToolID); err == nil {
+				toolsByID[t.ID] = t
+			}
+		}
+		granted := map[string]*domain.ToolDefinition{}
+		for _, t := range domain.GrantedTools(skill, toolsByID) {
+			granted[t.ID] = t
+		}
+		ps, err := domain.NormalizePrerequisites(skill.Prerequisites, granted)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return false
+		}
+		for i := range ps {
+			if ps[i].ID == "" {
+				ps[i].ID = fmt.Sprintf("p%d", i+1)
+			}
+		}
+		skill.Prerequisites = ps
+	}
 	return true
 }
 

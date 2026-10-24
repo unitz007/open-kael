@@ -52,6 +52,8 @@ func BindTool(def *ToolDefinition, identity *Identity, integration *Integration,
 		}
 		return executor.Execute(ctx, identity, connectionRef, def.Action, input)
 	}
+	// What really ran is written in the run's journal, for prerequisites to be checked against (prerequisite.go).
+	invoke = withJournal(def.ID, invoke)
 	// Auth gate: if identity requires a user connection ref and none is set,
 	// prompt the user to connect their account before executing the tool.
 	// Token-kind identities hold one shared key for everybody, so there is no
@@ -208,6 +210,32 @@ func WrapOneShotGuard(action *BoundAction) *BoundAction {
 // longer exists is an error, so a limited capability can never quietly widen. Integrations not listed as limited are
 // granted whole, with any named abilities added on top, exactly as before.
 func HydrateSkillTools(skill *Skill, agent *Agent, toolsByID map[string]*ToolDefinition, identitiesByID map[string]*Identity, integrationsByID map[string]*Integration, registry *ExecutorRegistry) ([]*BoundAction, error) {
+	bound, err := hydrateSkillTools(skill, agent, toolsByID, identitiesByID, integrationsByID, registry)
+	if err != nil || len(skill.Prerequisites) == 0 {
+		return bound, err
+	}
+	// What the creator said must happen first is kept by the platform: the ability waits (prerequisite.go).
+	names := map[string]string{}
+	for id, def := range toolsByID {
+		names[id] = def.ModelName()
+	}
+	byName := map[string]string{} // model name → tool id
+	for id, def := range toolsByID {
+		byName[def.ModelName()] = id
+	}
+	for i, a := range bound {
+		var rules []Prerequisite
+		for _, p := range skill.Prerequisites {
+			if p.Before == byName[a.Spec.Name] {
+				rules = append(rules, p)
+			}
+		}
+		bound[i] = WrapPrerequisites(a, rules, names)
+	}
+	return bound, nil
+}
+
+func hydrateSkillTools(skill *Skill, agent *Agent, toolsByID map[string]*ToolDefinition, identitiesByID map[string]*Identity, integrationsByID map[string]*Integration, registry *ExecutorRegistry) ([]*BoundAction, error) {
 	bound := make([]*BoundAction, 0, len(skill.Tools)+len(skill.Integrations)*4)
 
 	// Legacy path: explicit tool bindings stored by the creator.

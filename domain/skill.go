@@ -58,7 +58,9 @@ type Skill struct {
 	// abilities named in Tools are granted, not the whole connection. Anything not listed here is granted whole,
 	// and abilities named in Tools for it are added on top, as they always were. Limiting is explicit so that a
 	// connection's later abilities are never granted by surprise and a limit can never quietly widen.
-	LimitedIntegrations []string `json:"limited_integrations,omitempty"`
+	// Prerequisites are abilities that must run successfully before others, kept by the platform (prerequisite.go).
+	Prerequisites       []Prerequisite `json:"prerequisites,omitempty"`
+	LimitedIntegrations []string       `json:"limited_integrations,omitempty"`
 
 	Visibility SkillVisibility `json:"visibility"`
 

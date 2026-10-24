@@ -88,3 +88,39 @@ func TestSkill_TitleIsKeptApartFromTheInternalName(t *testing.T) {
 		t.Errorf("with the agent's capabilities, an old one with none: %+v / %+v", list, byAgents)
 	}
 }
+
+// What a capability says must happen first is kept across save and load, however it is read back, and goes when taken off.
+func TestSkill_PrerequisitesSurviveSavingAndLoading(t *testing.T) {
+	ctx := context.Background()
+	pool := pgtest.Empty(t)
+	if err := postgres.Migrate(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	st := postgres.New(pool)
+	if err := st.SaveAgent(ctx, &domain.Agent{ID: "a1", Name: "A"}); err != nil {
+		t.Fatal(err)
+	}
+	want := []domain.Prerequisite{{ID: "p1", Before: "t:place", First: "t:status", Same: []string{"symbol"}, Text: "Before placing a trade, it checks open trades on the same pair"}}
+	skill := &domain.Skill{ID: "s1", AgentID: "a1", Name: "trades", Prerequisites: want}
+	if err := st.SaveSkill(ctx, skill); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.GetSkill(ctx, "s1")
+	if err != nil || !reflect.DeepEqual(got.Prerequisites, want) {
+		t.Fatalf("read back by id: %+v %v", got, err)
+	}
+	if agent, err := st.LoadAgent(ctx, "a1"); err != nil || len(agent.Skills) != 1 || !reflect.DeepEqual(agent.Skills[0].Prerequisites, want) {
+		t.Errorf("and with the agent: %+v %v", agent, err)
+	}
+	byAgents, _ := st.ListSkillsByAgents(ctx, []string{"a1"})
+	if len(byAgents["a1"]) != 1 || !reflect.DeepEqual(byAgents["a1"][0].Prerequisites, want) {
+		t.Errorf("and with several agents': %+v", byAgents)
+	}
+	skill.Prerequisites = nil
+	if err := st.SaveSkill(ctx, skill); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := st.GetSkill(ctx, "s1"); got.Prerequisites != nil {
+		t.Errorf("taken off when saved without them: %+v", got.Prerequisites)
+	}
+}

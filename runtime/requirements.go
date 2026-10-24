@@ -145,3 +145,27 @@ func recentTurn(messages []domain.Message) domain.Earlier {
 	}
 	return e
 }
+
+// keepNeeded puts back what an offered action must run first (BoundAction.Needs) when trimming left it out: without it
+// the action could never run.
+func keepNeeded(offered, all []*domain.BoundAction) []*domain.BoundAction {
+	have := map[string]bool{}
+	for _, t := range offered {
+		have[t.Spec.Name] = true
+	}
+	for i := 0; i < len(offered); i++ { // what is put back may need something too
+		for _, need := range offered[i].Needs {
+			if have[need] {
+				continue
+			}
+			for _, t := range all {
+				if t.Spec.Name == need {
+					offered = append(offered, t)
+					have[need] = true
+					break
+				}
+			}
+		}
+	}
+	return offered
+}
