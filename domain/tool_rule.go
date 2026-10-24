@@ -82,7 +82,7 @@ func (a *Agent) RulesFor(toolID string) []ToolRule {
 // (numbers as numbers, values of the input's own type). The error is written for the creator.
 func NormalizeRule(r ToolRule, def *ToolDefinition) (ToolRule, error) {
 	if def == nil {
-		return r, fmt.Errorf("that tool doesn't exist")
+		return r, fmt.Errorf("that isn't something it can do")
 	}
 	r.Input = strings.TrimSpace(r.Input)
 	r.Message = strings.TrimSpace(r.Message)
@@ -91,7 +91,7 @@ func NormalizeRule(r ToolRule, def *ToolDefinition) (ToolRule, error) {
 	}
 	prop, ok := def.InputSchema.Properties[r.Input]
 	if !ok {
-		return r, fmt.Errorf("%q isn't something this tool takes", r.Input)
+		return r, fmt.Errorf("%q isn't a detail of %s", r.Input, def.Name)
 	}
 	label := humanize(r.Input)
 	if r.Kind != RuleMaxProduct {
@@ -102,7 +102,7 @@ func NormalizeRule(r ToolRule, def *ToolDefinition) (ToolRule, error) {
 		r.With = strings.TrimSpace(r.With)
 		other, ok := def.InputSchema.Properties[r.With]
 		if !ok {
-			return r, fmt.Errorf("%q isn't something this tool takes", r.With)
+			return r, fmt.Errorf("%q isn't a detail of %s", r.With, def.Name)
 		}
 		if r.With == r.Input {
 			return r, fmt.Errorf("pick two different details to multiply")
@@ -184,7 +184,7 @@ func NormalizeRules(rules []ToolRule, tools map[string]*ToolDefinition) ([]ToolR
 			return nil, err
 		}
 		if perTool[n.ToolID]++; perTool[n.ToolID] > maxRulesPerTool {
-			return nil, fmt.Errorf("too many rules on one tool (up to %d)", maxRulesPerTool)
+			return nil, fmt.Errorf("too many rules on one thing it does (up to %d)", maxRulesPerTool)
 		}
 		s := slot{n.ToolID, n.Input}
 		switch n.Kind {

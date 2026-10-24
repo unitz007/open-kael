@@ -235,6 +235,15 @@ func HydrateSkillTools(skill *Skill, agent *Agent, toolsByID map[string]*ToolDef
 	return bound, nil
 }
 
+// rulesFor is what an ability is held to through this capability: the agent's rules for it and the capability's own.
+func rulesFor(agent *Agent, skill *Skill, toolID string) []ToolRule {
+	own := skill.RulesFor(toolID)
+	if len(own) == 0 {
+		return agent.RulesFor(toolID)
+	}
+	return append(append([]ToolRule{}, agent.RulesFor(toolID)...), own...)
+}
+
 func hydrateSkillTools(skill *Skill, agent *Agent, toolsByID map[string]*ToolDefinition, identitiesByID map[string]*Identity, integrationsByID map[string]*Integration, registry *ExecutorRegistry) ([]*BoundAction, error) {
 	bound := make([]*BoundAction, 0, len(skill.Tools)+len(skill.Integrations)*4)
 
@@ -252,10 +261,11 @@ func hydrateSkillTools(skill *Skill, agent *Agent, toolsByID map[string]*ToolDef
 			return nil, fmt.Errorf("skill %q: tool %q references unknown integration %q", skill.ID, def.ID, def.IntegrationID)
 		}
 		identity := resolveIdentityForIntegration(agent, integration, identitiesByID)
-		action, err := HydrateTool(def, identity, integration, registry, agent.RulesFor(def.ID)...)
+		action, err := HydrateTool(def, identity, integration, registry, rulesFor(agent, skill, def.ID)...)
 		if err != nil {
 			return nil, fmt.Errorf("skill %q: %w", skill.ID, err)
 		}
+		action.Limited = len(skill.RulesFor(def.ID)) > 0
 		bound = append(bound, action)
 	}
 
@@ -288,10 +298,11 @@ func hydrateSkillTools(skill *Skill, agent *Agent, toolsByID map[string]*ToolDef
 			if seen[name] {
 				continue // already bound via explicit tool list
 			}
-			action, err := HydrateTool(def, identity, integration, registry, agent.RulesFor(def.ID)...)
+			action, err := HydrateTool(def, identity, integration, registry, rulesFor(agent, skill, def.ID)...)
 			if err != nil {
 				return nil, fmt.Errorf("skill %q: %w", skill.ID, err)
 			}
+			action.Limited = len(skill.RulesFor(def.ID)) > 0
 			bound = append(bound, action)
 			seen[name] = true
 		}

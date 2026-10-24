@@ -61,6 +61,9 @@ type Skill struct {
 	// Prerequisites are abilities that must run successfully before others, kept by the platform (prerequisite.go).
 	Prerequisites       []Prerequisite `json:"prerequisites,omitempty"`
 	LimitedIntegrations []string       `json:"limited_integrations,omitempty"`
+	// Rules are limits on the details of what this capability does ("never more than 100,000 for the size"), kept by
+	// the platform like an agent's own rules (tool_rule.go), but only when the ability is used through this capability.
+	Rules []ToolRule `json:"rules,omitempty"`
 
 	Visibility SkillVisibility `json:"visibility"`
 
@@ -114,4 +117,18 @@ const MaxSkillTitle = 60
 // CleanSkillTitle trims a title and folds its whitespace (line breaks included) to single spaces.
 func CleanSkillTitle(title string) string {
 	return strings.Join(strings.Fields(title), " ")
+}
+
+// RulesFor returns the capability's own rules for one ability.
+func (s *Skill) RulesFor(toolID string) []ToolRule {
+	if s == nil {
+		return nil
+	}
+	var out []ToolRule
+	for _, r := range s.Rules {
+		if r.ToolID == toolID {
+			out = append(out, r)
+		}
+	}
+	return out
 }

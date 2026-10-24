@@ -141,4 +141,21 @@ func TestSkillEndpoints_PrerequisitesAreHeldToWhatTheCapabilityCanDo(t *testing.
 	if p := st.last.Prerequisites; len(p) != 1 || p[0].ID == "" || p[0].Same[0] != "symbol" {
 		t.Errorf("saved once, with an id: %+v", p)
 	}
+	// Its own limits are held to the same: on an ability it has, a detail that ability takes, a value that fits.
+	saved := st.saved
+	for name, body := range map[string]string{
+		"an ability it doesn't have": `{"id":"s1","name":"x","integrations":["trading"],"rules":[{"tool_id":"t:other","input":"symbol","kind":"one_of","value":["EURUSD"]}]}`,
+		"a detail it doesn't take":   `{"id":"s1","name":"x","integrations":["trading"],"rules":[{"tool_id":"t:place","input":"size","kind":"max","value":5}]}`,
+		"a number on text":           `{"id":"s1","name":"x","integrations":["trading"],"rules":[{"tool_id":"t:place","input":"symbol","kind":"max","value":5}]}`,
+	} {
+		if got := post(body); got != http.StatusBadRequest || st.saved != saved {
+			t.Errorf("%s: %d", name, got)
+		}
+	}
+	if got := post(`{"id":"s1","name":"x","integrations":["trading"],"rules":[{"tool_id":"t:place","input":"symbol","kind":"one_of","value":["EURUSD"]}]}`); got != http.StatusOK {
+		t.Fatalf("a good limit: %d", got)
+	}
+	if r := st.last.Rules; len(r) != 1 || r[0].ID == "" {
+		t.Errorf("saved with an id: %+v", r)
+	}
 }

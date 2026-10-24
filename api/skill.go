@@ -213,8 +213,9 @@ func (s *Server) skillRefsAccessible(w http.ResponseWriter, r *http.Request, ski
 		writeError(w, http.StatusBadRequest, errors.New("this skill refers to a connection that doesn't exist or isn't yours"))
 		return false
 	}
-	if len(skill.Prerequisites) > 0 {
-		// What must happen first is only between abilities this capability really grants (domain/prerequisite.go).
+	if len(skill.Prerequisites) > 0 || len(skill.Rules) > 0 {
+		// What must happen first, and the capability's own limits, are only on abilities it really grants
+		// (domain/prerequisite.go, domain/tool_rule.go).
 		toolsByID := map[string]*domain.ToolDefinition{}
 		for _, id := range skill.Integrations {
 			list, err := s.store.ListToolsByIntegration(r.Context(), id)
@@ -246,6 +247,20 @@ func (s *Server) skillRefsAccessible(w http.ResponseWriter, r *http.Request, ski
 			}
 		}
 		skill.Prerequisites = ps
+		rules, err := domain.NormalizeRules(skill.Rules, granted)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return false
+		}
+		for i := range rules {
+			if rules[i].ID == "" {
+				rules[i].ID = domain.NewID()
+			}
+		}
+		if len(rules) == 0 {
+			rules = nil
+		}
+		skill.Rules = rules
 	}
 	return true
 }

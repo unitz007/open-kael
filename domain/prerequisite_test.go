@@ -132,3 +132,39 @@ func TestNormalizePrerequisites(t *testing.T) {
 		t.Error("too many accepted")
 	}
 }
+
+// A capability's own limits ("only EURUSD or GBPUSD for the pair") hold whenever the ability is used through it: a call
+// that breaks one is refused before anything reaches the service, alongside the agent's own rules.
+func TestSkillRules_HoldThroughTheCapability(t *testing.T) {
+	exec := &tradingExecutor{}
+	tools, ints, reg := tradingFixture(exec)
+	skill := &domain.Skill{ID: "s", Integrations: []string{"trading"},
+		Rules: []domain.ToolRule{{ToolID: "t:place", Input: "symbol", Kind: domain.RuleOneOf, Value: []any{"EURUSD", "GBPUSD"}}}}
+	agent := &domain.Agent{Rules: []domain.ToolRule{{ToolID: "t:place", Input: "symbol", Kind: domain.RuleNoneOf, Value: []any{"GBPUSD"}}}}
+	bound, err := domain.HydrateSkillTools(skill, agent, tools, nil, ints, reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	place, status := action(t, bound, "place_trade"), action(t, bound, "get_trading_status")
+	if !place.Limited || status.Limited {
+		t.Errorf("only the ability with limits of its own is marked: %v %v", place.Limited, status.Limited)
+	}
+	ctx := context.Background()
+	for _, sym := range []string{"USDJPY", "GBPUSD"} { // the capability's limit, then the agent's
+		out, err := place.Invoke(ctx, map[string]any{"symbol": sym})
+		if m, _ := out.(map[string]any); err != nil || m["status"] != "refused" || m["changed"] != false {
+			t.Errorf("%s: refused back to the model: %v %v", sym, out, err)
+		}
+	}
+	if _, err := place.Invoke(ctx, map[string]any{"symbol": "EURUSD"}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(exec.seen, ",") != "place:EURUSD" {
+		t.Errorf("only the allowed pair reached the service: %v", exec.seen)
+	}
+	// Another capability with the same ability has none of them.
+	other, _ := domain.HydrateSkillTools(&domain.Skill{ID: "o", Integrations: []string{"trading"}}, &domain.Agent{}, tools, nil, ints, reg)
+	if _, err := action(t, other, "place_trade").Invoke(ctx, map[string]any{"symbol": "USDJPY"}); err != nil || exec.seen[len(exec.seen)-1] != "place:USDJPY" {
+		t.Errorf("a limit belongs to its capability: %v %v", exec.seen, err)
+	}
+}

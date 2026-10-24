@@ -48,6 +48,9 @@ type BoundAction struct {
 	// Needs are the actions (by name) its capability says must run successfully first in the same run (see
 	// Prerequisite): whoever trims what is offered must keep them, or this one could never run.
 	Needs []string
+	// Limited says its capability holds it to limits of its own (Skill.Rules), so where the same ability comes through
+	// two capabilities this copy is the one kept.
+	Limited bool
 }
 
 // skillClock is the time source for an ability's instructions; tests replace it.

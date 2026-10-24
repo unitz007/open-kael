@@ -169,3 +169,12 @@ func keepNeeded(offered, all []*domain.BoundAction) []*domain.BoundAction {
 	}
 	return offered
 }
+
+// guards counts what an ability's capability holds it to of its own: what must run first, and its own limits.
+func guards(a *domain.BoundAction) int {
+	n := len(a.Needs)
+	if a.Limited {
+		n++
+	}
+	return n
+}

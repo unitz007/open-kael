@@ -101,7 +101,8 @@ func TestSkill_PrerequisitesSurviveSavingAndLoading(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []domain.Prerequisite{{ID: "p1", Before: "t:place", First: "t:status", Same: []string{"symbol"}, Text: "Before placing a trade, it checks open trades on the same pair"}}
-	skill := &domain.Skill{ID: "s1", AgentID: "a1", Name: "trades", Prerequisites: want}
+	rules := []domain.ToolRule{{ID: "r1", ToolID: "t:place", Input: "size", Kind: domain.RuleMax, Value: 100000.0}}
+	skill := &domain.Skill{ID: "s1", AgentID: "a1", Name: "trades", Prerequisites: want, Rules: rules}
 	if err := st.SaveSkill(ctx, skill); err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +121,14 @@ func TestSkill_PrerequisitesSurviveSavingAndLoading(t *testing.T) {
 	if err := st.SaveSkill(ctx, skill); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := st.GetSkill(ctx, "s1"); got.Prerequisites != nil {
-		t.Errorf("taken off when saved without them: %+v", got.Prerequisites)
+	if got, _ := st.GetSkill(ctx, "s1"); !reflect.DeepEqual(got.Rules, rules) {
+		t.Errorf("its own limits too: %+v", got.Rules)
+	}
+	skill.Rules = nil
+	if err := st.SaveSkill(ctx, skill); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := st.GetSkill(ctx, "s1"); got.Prerequisites != nil || got.Rules != nil {
+		t.Errorf("taken off when saved without them: %+v %+v", got.Prerequisites, got.Rules)
 	}
 }

@@ -246,7 +246,7 @@ func TestNormalizeRule_RefusesWhatCannotWorkInWordsTheCreatorCanRead(t *testing.
 		r    domain.ToolRule
 		want string
 	}{
-		"unknown input":    {domain.ToolRule{Input: "nope", Kind: domain.RuleMax, Value: 1.0}, "isn't something this tool takes"},
+		"unknown input":    {domain.ToolRule{Input: "nope", Kind: domain.RuleMax, Value: 1.0}, "isn't a detail of"},
 		"max on text":      {domain.ToolRule{Input: "symbol", Kind: domain.RuleMax, Value: 1.0}, "isn't a number"},
 		"max not a number": {domain.ToolRule{Input: "size", Kind: domain.RuleMax, Value: "lots"}, "must be a number"},
 		"empty list":       {domain.ToolRule{Input: "symbol", Kind: domain.RuleOneOf, Value: []any{}}, "between 1 and"},
@@ -281,7 +281,7 @@ func TestNormalizeRules_RefusesRulesThatCannotBothHold(t *testing.T) {
 		"min above max":     {[]domain.ToolRule{r("size", domain.RuleMax, 10.0), r("size", domain.RuleMin, 20.0)}, "smallest allowed for size is bigger"},
 		"two maximums":      {[]domain.ToolRule{r("size", domain.RuleMax, 10.0), r("size", domain.RuleMax, 20.0)}, "already has a largest"},
 		"fixed and default": {[]domain.ToolRule{r("min_rr", domain.RuleFixed, 2.0), r("min_rr", domain.RuleDefault, 1.0)}, "can have only one"},
-		"unknown tool":      {[]domain.ToolRule{{ToolID: "ghost", Input: "size", Kind: domain.RuleMax, Value: 1.0}}, "doesn't exist"},
+		"unknown tool":      {[]domain.ToolRule{{ToolID: "ghost", Input: "size", Kind: domain.RuleMax, Value: 1.0}}, "isn't something it can do"},
 	} {
 		if _, err := domain.NormalizeRules(tc.rules, tools); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: want %q, got %v", name, tc.want, err)
@@ -403,7 +403,7 @@ func TestNormalizeRule_ValueLimitsAreCheckedAgainstTheTool(t *testing.T) {
 		r    domain.ToolRule
 		want string
 	}{
-		"second input unknown": {domain.ToolRule{Input: "size", With: "nope", Kind: domain.RuleMaxProduct, Value: 1.0}, "isn't something this tool takes"},
+		"second input unknown": {domain.ToolRule{Input: "size", With: "nope", Kind: domain.RuleMaxProduct, Value: 1.0}, "isn't a detail of"},
 		"the same input twice": {domain.ToolRule{Input: "size", With: "size", Kind: domain.RuleMaxProduct, Value: 1.0}, "two different details"},
 		"one of them is text":  {domain.ToolRule{Input: "size", With: "symbol", Kind: domain.RuleMaxProduct, Value: 1.0}, "symbol isn't a number"},
 		"limit zero or less":   {domain.ToolRule{Input: "size", With: "entry", Kind: domain.RuleMaxProduct, Value: 0.0}, "above zero"},

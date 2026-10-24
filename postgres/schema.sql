@@ -233,6 +233,7 @@ ALTER TABLE skills ADD COLUMN IF NOT EXISTS integrations TEXT[] NOT NULL DEFAULT
 ALTER TABLE skills ADD COLUMN IF NOT EXISTS limited_integrations TEXT[] NOT NULL DEFAULT '{}';
 -- Abilities that must run successfully before others, kept by the platform (domain/prerequisite.go).
 ALTER TABLE skills ADD COLUMN IF NOT EXISTS prerequisites JSONB NOT NULL DEFAULT '[]';
+ALTER TABLE skills ADD COLUMN IF NOT EXISTS rules JSONB NOT NULL DEFAULT '[]';
 -- The short name the creator gave a capability, shown on screens ('' for capabilities made before titles existed).
 ALTER TABLE skills ADD COLUMN IF NOT EXISTS title TEXT NOT NULL DEFAULT '';
 
