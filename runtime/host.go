@@ -955,7 +955,7 @@ func buildSystemPrompt(agent *domain.Agent, userProfile, userInstructions string
 	if len(says) > 0 {
 		// What it can do, made from what it is really allowed to do (see Host.SetSaysProvider): asked what it can do,
 		// it says this and claims nothing more.
-		b.WriteString("\n\nWhat you can do for people, from what you are allowed to do. When someone asks what you can do, tell them this, in your own words, and don't claim anything else:\n")
+		b.WriteString("\n\nWhat you can do for people, from what you are allowed to do. When someone asks what you can do, tell them this, in your own words, and don't claim anything else. Say what you do for them, never the names of the apps, services or companies behind it (the people you talk to don't know them), and never how those work inside:\n")
 		for _, line := range says {
 			b.WriteString("- " + line + "\n")
 		}

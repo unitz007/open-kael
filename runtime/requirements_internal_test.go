@@ -252,18 +252,19 @@ func TestSays_FromTheProviderWhenItHasLines(t *testing.T) {
 	}
 	h.SetSaysProvider(func(_ context.Context, id string) []string {
 		if id == "a1" {
-			return []string{"Email: catches you up on your inbox and drafts replies"}
+			return []string{"Catches you up on your inbox and drafts replies"}
 		}
 		return nil
 	})
-	if got := declineText(h.abilitiesOf(ctx, agent)); !strings.Contains(got, "• Email: catches you up on your inbox and drafts replies") || strings.Contains(got, "Manages my email") {
+	if got := declineText(h.abilitiesOf(ctx, agent)); !strings.Contains(got, "• Catches you up on your inbox and drafts replies") || strings.Contains(got, "Manages my email") {
 		t.Errorf("decline: %q", got)
 	}
-	if got := greetingBody(agent, h.abilitiesOf(ctx, agent)); !strings.Contains(got, "• Email: catches you up") {
+	if got := greetingBody(agent, h.abilitiesOf(ctx, agent)); !strings.Contains(got, "• Catches you up") {
 		t.Errorf("greeting: %q", got)
 	}
 	p := buildSystemPrompt(agent, "", "", nil, nil, nil, domain.UserDetails{}, h.saysOf(ctx, agent))
-	if !strings.Contains(p, "When someone asks what you can do, tell them this") || !strings.Contains(p, "- Email: catches you up") {
+	if !strings.Contains(p, "When someone asks what you can do, tell them this") || !strings.Contains(p, "- Catches you up") ||
+		!strings.Contains(p, "never the names of the apps, services or companies behind it") {
 		t.Errorf("prompt: %q", p)
 	}
 	if got := h.abilitiesOf(ctx, &domain.Agent{ID: "other", Skills: agent.Skills}); got[0] != "Manages my email" {
