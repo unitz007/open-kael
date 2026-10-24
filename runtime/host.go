@@ -2181,6 +2181,12 @@ func (h *Host) saysOf(ctx context.Context, agent *domain.Agent) []string {
 }
 
 // abilitiesOf is what an agent lists as what it can do: the provider's lines, else its capabilities' descriptions.
+// Welcome is the message someone gets the first time they write to an agent: its creator's greeting, or its
+// introduction with what it can do (the same lines as the greeting the chat sends), for showing it to its creator.
+func (h *Host) Welcome(ctx context.Context, agent *domain.Agent) string {
+	return greetingBody(agent, h.abilitiesOf(ctx, agent))
+}
+
 func (h *Host) abilitiesOf(ctx context.Context, agent *domain.Agent) []string {
 	if lines := h.saysOf(ctx, agent); len(lines) > 0 {
 		return lines

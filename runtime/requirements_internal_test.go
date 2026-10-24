@@ -267,6 +267,14 @@ func TestSays_FromTheProviderWhenItHasLines(t *testing.T) {
 		!strings.Contains(p, "never the names of the apps, services or companies behind it") {
 		t.Errorf("prompt: %q", p)
 	}
+	if got := h.Welcome(ctx, agent); got != greetingBody(agent, h.abilitiesOf(ctx, agent)) || !strings.Contains(got, "• Catches you up") {
+		t.Errorf("welcome: %q", got)
+	}
+	agent.Greeting = "Hello there"
+	if got := h.Welcome(ctx, agent); got != "Hello there" {
+		t.Errorf("the creator's own greeting: %q", got)
+	}
+	agent.Greeting = ""
 	if got := h.abilitiesOf(ctx, &domain.Agent{ID: "other", Skills: agent.Skills}); got[0] != "Manages my email" {
 		t.Errorf("an agent it has nothing for keeps its capabilities: %v", got)
 	}
