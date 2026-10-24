@@ -102,7 +102,7 @@ func TestSkill_PrerequisitesSurviveSavingAndLoading(t *testing.T) {
 	}
 	want := []domain.Prerequisite{{ID: "p1", Before: "t:place", First: "t:status", Same: []string{"symbol"}, Text: "Before placing a trade, it checks open trades on the same pair"}}
 	rules := []domain.ToolRule{{ID: "r1", ToolID: "t:place", Input: "size", Kind: domain.RuleMax, Value: 100000.0}}
-	skill := &domain.Skill{ID: "s1", AgentID: "a1", Name: "trades", Prerequisites: want, Rules: rules}
+	skill := &domain.Skill{ID: "s1", AgentID: "a1", Name: "trades", Prerequisites: want, Rules: rules, AllLookUps: true}
 	if err := st.SaveSkill(ctx, skill); err != nil {
 		t.Fatal(err)
 	}
@@ -120,6 +120,9 @@ func TestSkill_PrerequisitesSurviveSavingAndLoading(t *testing.T) {
 	skill.Prerequisites = nil
 	if err := st.SaveSkill(ctx, skill); err != nil {
 		t.Fatal(err)
+	}
+	if got, _ := st.GetSkill(ctx, "s1"); !got.AllLookUps {
+		t.Error("all its look-ups is kept")
 	}
 	if got, _ := st.GetSkill(ctx, "s1"); !reflect.DeepEqual(got.Rules, rules) {
 		t.Errorf("its own limits too: %+v", got.Rules)

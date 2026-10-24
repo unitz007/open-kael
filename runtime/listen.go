@@ -405,7 +405,7 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 			log.Printf("runtime: agent %q: onboarding checker: %v", hosted.Agent.ID, err)
 		}
 		if !onboarded {
-			greeting := greetingBody(hosted.Agent)
+			greeting := greetingBody(hosted.Agent, h.abilitiesOf(ctx, hosted.Agent))
 			btn := h.gettingStartedButton(msg.Conversation, hosted.Agent.ID)
 			if btn != nil {
 				greeting += "\n\nTap Get started below to tell me your name and time zone and to connect what I need."

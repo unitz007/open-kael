@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -50,7 +51,7 @@ func TestBuildSystemPrompt_StatesTheCurrentDateAndTime(t *testing.T) {
 	old := clockNow
 	clockNow = func() time.Time { return time.Date(2026, 10, 17, 19, 6, 40, 0, time.UTC) }
 	defer func() { clockNow = old }()
-	p := buildSystemPrompt(&domain.Agent{Name: "Bot"}, "", "", nil, nil, nil, domain.UserDetails{})
+	p := buildSystemPrompt(&domain.Agent{Name: "Bot"}, "", "", nil, nil, nil, domain.UserDetails{}, nil)
 	if !strings.Contains(p, "Saturday, 17 October 2026, 19:06 UTC") {
 		t.Errorf("the agent must be told when it is: %q", p)
 	}
@@ -83,11 +84,11 @@ func TestBuildSystemPrompt_InThePersonsOwnTimeZone(t *testing.T) {
 	old := clockNow
 	clockNow = func() time.Time { return time.Date(2026, 10, 17, 19, 6, 40, 0, time.UTC) }
 	defer func() { clockNow = old }()
-	p := buildSystemPrompt(&domain.Agent{Name: "Bot"}, "", "", nil, nil, nil, domain.UserDetails{Timezone: "Africa/Lagos"})
+	p := buildSystemPrompt(&domain.Agent{Name: "Bot"}, "", "", nil, nil, nil, domain.UserDetails{Timezone: "Africa/Lagos"}, nil)
 	if !strings.Contains(p, "Saturday, 17 October 2026, 20:06 (Africa/Lagos, the person's time zone); that is 19:06 UTC") {
 		t.Errorf("local time first, UTC for reference: %q", p)
 	}
-	p = buildSystemPrompt(&domain.Agent{Name: "Bot"}, "", "", nil, nil, nil, domain.UserDetails{Timezone: "Asia/Tokyo"})
+	p = buildSystemPrompt(&domain.Agent{Name: "Bot"}, "", "", nil, nil, nil, domain.UserDetails{Timezone: "Asia/Tokyo"}, nil)
 	if !strings.Contains(p, "Sunday, 18 October 2026, 04:06 (Asia/Tokyo") {
 		t.Errorf("the day follows the person's zone: %q", p)
 	}
@@ -131,7 +132,7 @@ func TestBuildSystemPrompt_IncludesWhoTheyAreBeforeWhatTimeItIs(t *testing.T) {
 	old := clockNow
 	clockNow = func() time.Time { return time.Date(2026, 10, 17, 19, 6, 40, 0, time.UTC) }
 	defer func() { clockNow = old }()
-	p := buildSystemPrompt(&domain.Agent{Name: "Bot"}, "", "", nil, nil, nil, domain.UserDetails{Name: "Ada", Language: "yo", Country: "NG", Timezone: "Africa/Lagos"})
+	p := buildSystemPrompt(&domain.Agent{Name: "Bot"}, "", "", nil, nil, nil, domain.UserDetails{Name: "Ada", Language: "yo", Country: "NG", Timezone: "Africa/Lagos"}, nil)
 	i, j := strings.Index(p, `called "Ada"`), strings.Index(p, "Right now it is")
 	if i < 0 || j < 0 || i > j || !strings.Contains(p, "preferred language is Yoruba") {
 		t.Errorf("who they are, then the time: %q", p)
@@ -226,16 +227,46 @@ func TestDeclineText_IsFixedAndListsWhatTheAgentDoes(t *testing.T) {
 		{Name: "places_trades"},
 	}}
 	want := "I can't help with that one. Here's what I can do:\n• Analyses a currency pair\n• Places Trades\n\nWhat would you like to try?"
-	if got := declineText(agent); got != want {
+	if got := declineText(welcomeAbilities(agent)); got != want {
 		t.Errorf("decline:\n got %q\nwant %q", got, want)
 	}
 }
 
 func TestBuildSystemPrompt_TellsTheAgentToDoLookUpsAndProposeSpecifics(t *testing.T) {
-	p := buildSystemPrompt(&domain.Agent{Name: "Bot"}, "", "", nil, nil, nil, domain.UserDetails{})
+	p := buildSystemPrompt(&domain.Agent{Name: "Bot"}, "", "", nil, nil, nil, domain.UserDetails{}, nil)
 	for _, want := range []string{"do it now", "changes nothing", "specific", "Never go ahead with a change without their agreement", "answer it and stop"} {
 		if !strings.Contains(p, want) {
 			t.Errorf("the prompt must say %q:\n%s", want, p)
 		}
+	}
+}
+
+// What an agent says it can do comes from the provider when it gives lines: in the greeting, the "can't help with that"
+// reply and the prompt; otherwise from its capabilities, as before.
+func TestSays_FromTheProviderWhenItHasLines(t *testing.T) {
+	h := NewHost()
+	agent := &domain.Agent{ID: "a1", Name: "Aelox", Skills: []*domain.Skill{{Name: "manages_email", Description: "Manages my email"}}}
+	ctx := context.Background()
+	if got := h.abilitiesOf(ctx, agent); len(got) != 1 || got[0] != "Manages my email" {
+		t.Fatalf("no provider: %v", got)
+	}
+	h.SetSaysProvider(func(_ context.Context, id string) []string {
+		if id == "a1" {
+			return []string{"Email: catches you up on your inbox and drafts replies"}
+		}
+		return nil
+	})
+	if got := declineText(h.abilitiesOf(ctx, agent)); !strings.Contains(got, "• Email: catches you up on your inbox and drafts replies") || strings.Contains(got, "Manages my email") {
+		t.Errorf("decline: %q", got)
+	}
+	if got := greetingBody(agent, h.abilitiesOf(ctx, agent)); !strings.Contains(got, "• Email: catches you up") {
+		t.Errorf("greeting: %q", got)
+	}
+	p := buildSystemPrompt(agent, "", "", nil, nil, nil, domain.UserDetails{}, h.saysOf(ctx, agent))
+	if !strings.Contains(p, "When someone asks what you can do, tell them this") || !strings.Contains(p, "- Email: catches you up") {
+		t.Errorf("prompt: %q", p)
+	}
+	if got := h.abilitiesOf(ctx, &domain.Agent{ID: "other", Skills: agent.Skills}); got[0] != "Manages my email" {
+		t.Errorf("an agent it has nothing for keeps its capabilities: %v", got)
 	}
 }

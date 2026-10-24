@@ -87,8 +87,7 @@ func isShortFollowUp(text string) bool {
 // declineText is what a person is told when what they asked is outside everything the
 // agent does. It is fixed wording built from the agent's own list of abilities, so the
 // agent can never promise work it isn't going to do.
-func declineText(agent *domain.Agent) string {
-	abilities := welcomeAbilities(agent)
+func declineText(abilities []string) string {
 	var b strings.Builder
 	b.WriteString("I can't help with that one.")
 	if len(abilities) > 0 {

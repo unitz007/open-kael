@@ -64,6 +64,10 @@ type Skill struct {
 	// Rules are limits on the details of what this capability does ("never more than 100,000 for the size"), kept by
 	// the platform like an agent's own rules (tool_rule.go), but only when the ability is used through this capability.
 	Rules []ToolRule `json:"rules,omitempty"`
+	// AllLookUps grants, on each connection it is limited on, every ability that only looks things up, including ones
+	// the connection gains later, on top of the abilities named in Tools. Changes stay only the ones named. Looking
+	// things up is harmless and reads only the account of whoever is talking to it.
+	AllLookUps bool `json:"all_look_ups,omitempty"`
 
 	Visibility SkillVisibility `json:"visibility"`
 

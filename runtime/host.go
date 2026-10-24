@@ -293,6 +293,8 @@ type Host struct {
 	// for it, with the person it is about as the provider names them (a login, a customer id).
 	eventDispatcher func(ctx context.Context, eventName, payload, sourceIdentityID, actorExternalID string)
 
+	// says, when set, gives what an agent says it can do (SetSaysProvider).
+	says func(ctx context.Context, agentID string) []string
 	// readiness, when set, says why an agent cannot answer people yet ("" when it can).
 	readiness func(ctx context.Context, agent *domain.Agent) string
 
@@ -935,7 +937,7 @@ const proposeGuidance = "Moving things forward: when the next useful step is onl
 //   - userProfile: general facts about the user learned across all agents
 //   - userInstructions: explicit per-agent instructions set by the user
 //   - integrationNotes: integration-specific facts (FPL team, GitHub repos, etc.)
-func buildSystemPrompt(agent *domain.Agent, userProfile, userInstructions string, integrationNotes map[string]string, integrationsByID map[string]*domain.Integration, messengerSkills []string, person domain.UserDetails) string {
+func buildSystemPrompt(agent *domain.Agent, userProfile, userInstructions string, integrationNotes map[string]string, integrationsByID map[string]*domain.Integration, messengerSkills []string, person domain.UserDetails, says []string) string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "You are %s.", agent.Name)
@@ -949,6 +951,14 @@ func buildSystemPrompt(agent *domain.Agent, userProfile, userInstructions string
 			fmt.Fprintf(&b, "- %s: %s\n", s.Name, s.Description)
 		}
 		b.WriteString("\nOnly operate within these skills.")
+	}
+	if len(says) > 0 {
+		// What it can do, made from what it is really allowed to do (see Host.SetSaysProvider): asked what it can do,
+		// it says this and claims nothing more.
+		b.WriteString("\n\nWhat you can do for people, from what you are allowed to do. When someone asks what you can do, tell them this, in your own words, and don't claim anything else:\n")
+		for _, line := range says {
+			b.WriteString("- " + line + "\n")
+		}
 	}
 
 	if agent.Instructions != "" {
@@ -1361,7 +1371,7 @@ func (h *Host) handleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 		// Their time zone is not known: anything that depends on their clock asks for it, once.
 		ctx = domain.WithTimezoneRequester(ctx, h.timezoneRequester(hosted))
 	}
-	systemPrompt := buildSystemPrompt(hosted.Agent, userProfile, userInstructions, integrationNotes, promptIntegrations, messengerSkills, person)
+	systemPrompt := buildSystemPrompt(hosted.Agent, userProfile, userInstructions, integrationNotes, promptIntegrations, messengerSkills, person, h.saysOf(ctx, hosted.Agent))
 	if conv.UserID != "" && h.repeatingTasksNote != nil {
 		if note := strings.TrimSpace(h.repeatingTasksNote(ctx, conv.UserID, hosted.Agent.ID)); note != "" {
 			systemPrompt += "\n\n" + note
@@ -1566,7 +1576,7 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 				if len(hosted.Agent.Skills) > 0 {
 					log.Printf("skill-router: unrelated to this agent — replying with what I can do")
 					h.noteCouldNot(ctx, hosted, userText)
-					result, final := fixedReply(messages, declineText(hosted.Agent))
+					result, final := fixedReply(messages, declineText(h.abilitiesOf(ctx, hosted.Agent)))
 					return result, final, nil
 				}
 				log.Printf("skill-router: unrelated to this agent (no abilities) — letting LLM decline")
@@ -1682,14 +1692,14 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 				result, final, rerr = h.respondDirectly(ctx, hosted, withHint(messages, retryHint), actions)
 				if rerr != nil || promisesLookup(result) {
 					log.Printf("skill-router: still promising a look-up — replying with what I can do")
-					r, f := fixedReply(messages, declineText(hosted.Agent))
+					r, f := fixedReply(messages, declineText(h.abilitiesOf(ctx, hosted.Agent)))
 					return r, f, nil
 				}
 				return result, withoutHint(final, retryHint), rerr
 			}
 			log.Printf("skill-router: nothing it can do for this matched — replying with what I can do")
 			h.noteCouldNot(ctx, hosted, userText)
-			result, final := fixedReply(messages, declineText(hosted.Agent))
+			result, final := fixedReply(messages, declineText(h.abilitiesOf(ctx, hosted.Agent)))
 			return result, final, nil
 		}
 		// No skills defined — use ScopeChecker if available to gate by
@@ -2099,7 +2109,7 @@ func (h *Host) withUserToolApprovals(ctx context.Context, userID string) context
 // (non-localhost); otherwise the URL is embedded in the text so local
 // development still works.
 func (h *Host) onboardingMessage(agent *domain.Agent, linkCode string) (text, linkURL string) {
-	body := greetingBody(agent)
+	body := greetingBody(agent, h.abilitiesOf(context.Background(), agent))
 
 	var b strings.Builder
 	b.WriteString(body)
@@ -2128,7 +2138,7 @@ func (h *Host) onboardingMessage(agent *domain.Agent, linkCode string) (text, li
 // is used word for word; without one, a fixed introduction is built from the agent's
 // name, description and what it can do. No model is involved, so every person gets
 // the same welcome.
-func greetingBody(agent *domain.Agent) string {
+func greetingBody(agent *domain.Agent, abilities []string) string {
 	if agent.Greeting != "" {
 		return agent.Greeting
 	}
@@ -2137,7 +2147,7 @@ func greetingBody(agent *domain.Agent) string {
 	if agent.Description != "" {
 		b.WriteString("\n\n" + agent.Description)
 	}
-	if abilities := welcomeAbilities(agent); len(abilities) > 0 {
+	if len(abilities) > 0 {
 		b.WriteString("\n\nHere's what I can help with:")
 		for _, line := range abilities {
 			b.WriteString("\n• " + line)
@@ -2149,6 +2159,35 @@ func greetingBody(agent *domain.Agent) string {
 // welcomeAbilities lists what the agent can do, one plain line each, in the words its
 // creator gave (or the name, tidied, when they gave none). It covers everything the
 // agent does for the person, whether or not other agents may call it.
+// SetSaysProvider supplies what an agent says it can do, built from what it is really allowed to do (closed-kael keeps
+// it per agent and app, remade when that changes). When it gives lines, they are the greeting's list, the list in the
+// "can't help with that" reply and, in the agent's prompt, what it says when asked what it can do; otherwise the
+// capabilities' descriptions are used, as before.
+func (h *Host) SetSaysProvider(f func(ctx context.Context, agentID string) []string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.says = f
+}
+
+// saysOf is the provider's lines for an agent, nil when there are none.
+func (h *Host) saysOf(ctx context.Context, agent *domain.Agent) []string {
+	h.mu.RLock()
+	f := h.says
+	h.mu.RUnlock()
+	if f == nil || agent == nil {
+		return nil
+	}
+	return f(ctx, agent.ID)
+}
+
+// abilitiesOf is what an agent lists as what it can do: the provider's lines, else its capabilities' descriptions.
+func (h *Host) abilitiesOf(ctx context.Context, agent *domain.Agent) []string {
+	if lines := h.saysOf(ctx, agent); len(lines) > 0 {
+		return lines
+	}
+	return welcomeAbilities(agent)
+}
+
 func welcomeAbilities(agent *domain.Agent) []string {
 	var out []string
 	for _, s := range agent.Skills {

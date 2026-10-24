@@ -2,6 +2,7 @@ package domain_test
 
 import (
 	"context"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -166,5 +167,39 @@ func TestSkillRules_HoldThroughTheCapability(t *testing.T) {
 	other, _ := domain.HydrateSkillTools(&domain.Skill{ID: "o", Integrations: []string{"trading"}}, &domain.Agent{}, tools, nil, ints, reg)
 	if _, err := action(t, other, "place_trade").Invoke(ctx, map[string]any{"symbol": "USDJPY"}); err != nil || exec.seen[len(exec.seen)-1] != "place:USDJPY" {
 		t.Errorf("a limit belongs to its capability: %v %v", exec.seen, err)
+	}
+}
+
+// A capability limited on a connection with AllLookUps gets every look-up it has, including ones added later, and of
+// what it changes only the abilities named.
+func TestAllLookUps_EveryLookUpButOnlyTheNamedChanges(t *testing.T) {
+	exec := &tradingExecutor{}
+	tools, ints, reg := tradingFixture(exec)
+	tools["t:close"] = &domain.ToolDefinition{ID: "t:close", Name: "close_trade", Description: "Closes a trade.", IntegrationID: "trading", Action: "close",
+		InputSchema: domain.Schema{Type: domain.SchemaTypeObject, Properties: map[string]domain.Schema{"symbol": {Type: domain.SchemaTypeString}}}}
+	skill := &domain.Skill{ID: "s", Integrations: []string{"trading"}, LimitedIntegrations: []string{"trading"}, AllLookUps: true,
+		Tools: []domain.ToolBinding{{ToolID: "t:place"}}}
+	bound, err := domain.HydrateSkillTools(skill, &domain.Agent{}, tools, nil, ints, reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, b := range bound {
+		names = append(names, b.Spec.Name)
+	}
+	sort.Strings(names)
+	if strings.Join(names, ",") != "get_trading_status,news,place_trade" {
+		t.Errorf("bound %v", names)
+	}
+	var granted []string
+	for _, d := range domain.GrantedTools(skill, tools) {
+		granted = append(granted, d.ID)
+	}
+	if strings.Join(granted, ",") != "t:news,t:place,t:status" {
+		t.Errorf("granted %v", granted)
+	}
+	skill.AllLookUps = false
+	if g := domain.GrantedTools(skill, tools); len(g) != 1 {
+		t.Errorf("without it, only the named: %v", g)
 	}
 }

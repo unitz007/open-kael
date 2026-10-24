@@ -25,6 +25,13 @@ func GrantedTools(skill *Skill, toolsByID map[string]*ToolDefinition) []*ToolDef
 	}
 	for _, integrationID := range skill.Integrations {
 		if narrowed[integrationID] {
+			if skill.AllLookUps {
+				for _, def := range toolsByID {
+					if def.IntegrationID == integrationID && def.ReadOnly {
+						add(def)
+					}
+				}
+			}
 			continue
 		}
 		for _, def := range toolsByID {

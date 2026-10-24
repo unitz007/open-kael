@@ -279,7 +279,7 @@ func hydrateSkillTools(skill *Skill, agent *Agent, toolsByID map[string]*ToolDef
 		narrowed[id] = true
 	}
 	for _, integrationID := range skill.Integrations {
-		if narrowed[integrationID] {
+		if narrowed[integrationID] && !skill.AllLookUps {
 			continue // only the abilities named above, bound by the explicit path
 		}
 		integration, ok := integrationsByID[integrationID]
@@ -290,6 +290,9 @@ func hydrateSkillTools(skill *Skill, agent *Agent, toolsByID map[string]*ToolDef
 		for _, def := range toolsByID {
 			if def.IntegrationID != integrationID || def.Disabled {
 				continue
+			}
+			if narrowed[integrationID] && !def.ReadOnly {
+				continue // limited: of what it changes, only the abilities named above
 			}
 			name := def.FunctionName
 			if name == "" {

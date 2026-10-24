@@ -56,8 +56,8 @@ func (s *Store) SaveSkill(ctx context.Context, skill *domain.Skill) error {
 	}
 
 	_, err = tx.Exec(ctx, `
-		INSERT INTO skills (id, agent_id, name, description, instructions, input_schema, output_schema, visibility, schedulable, integrations, limited_integrations, title, prerequisites, rules)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+		INSERT INTO skills (id, agent_id, name, description, instructions, input_schema, output_schema, visibility, schedulable, integrations, limited_integrations, title, prerequisites, rules, all_look_ups)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 		ON CONFLICT (id) DO UPDATE SET
 			agent_id = EXCLUDED.agent_id,
 			name = EXCLUDED.name,
@@ -71,9 +71,10 @@ func (s *Store) SaveSkill(ctx context.Context, skill *domain.Skill) error {
 			limited_integrations = EXCLUDED.limited_integrations,
 			title = EXCLUDED.title,
 			prerequisites = EXCLUDED.prerequisites,
-			rules = EXCLUDED.rules
+			rules = EXCLUDED.rules,
+			all_look_ups = EXCLUDED.all_look_ups
 	`, skill.ID, skill.AgentID, skill.Name, skill.Description, skill.Instructions,
-		inputJSON, outputJSON, string(skill.Visibility), skill.Schedulable, integrations, limited, skill.Title, prereqJSON, rulesJSON)
+		inputJSON, outputJSON, string(skill.Visibility), skill.Schedulable, integrations, limited, skill.Title, prereqJSON, rulesJSON, skill.AllLookUps)
 	if err != nil {
 		return fmt.Errorf("postgres: save skill %q: %w", skill.ID, err)
 	}
@@ -95,7 +96,7 @@ func (s *Store) SaveSkill(ctx context.Context, skill *domain.Skill) error {
 
 func (s *Store) GetSkill(ctx context.Context, id string) (*domain.Skill, error) {
 	row := s.pool.QueryRow(ctx, `
-		SELECT id, agent_id, name, description, instructions, input_schema, output_schema, visibility, schedulable, integrations, limited_integrations, title, prerequisites, rules
+		SELECT id, agent_id, name, description, instructions, input_schema, output_schema, visibility, schedulable, integrations, limited_integrations, title, prerequisites, rules, all_look_ups
 		FROM skills WHERE id = $1
 	`, id)
 	skill, err := scanSkill(row)
@@ -115,7 +116,7 @@ func (s *Store) GetSkill(ctx context.Context, id string) (*domain.Skill, error) 
 
 func (s *Store) ListSkillsByAgent(ctx context.Context, agentID string) ([]*domain.Skill, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, agent_id, name, description, instructions, input_schema, output_schema, visibility, schedulable, integrations, limited_integrations, title, prerequisites, rules
+		SELECT id, agent_id, name, description, instructions, input_schema, output_schema, visibility, schedulable, integrations, limited_integrations, title, prerequisites, rules, all_look_ups
 		FROM skills WHERE agent_id = $1 ORDER BY id
 	`, agentID)
 	if err != nil {
@@ -153,7 +154,7 @@ func (s *Store) ListSkillsByAgents(ctx context.Context, agentIDs []string) (map[
 		return out, nil
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, agent_id, name, description, instructions, input_schema, output_schema, visibility, schedulable, integrations, limited_integrations, title, prerequisites, rules
+		SELECT id, agent_id, name, description, instructions, input_schema, output_schema, visibility, schedulable, integrations, limited_integrations, title, prerequisites, rules, all_look_ups
 		FROM skills WHERE agent_id = ANY($1) ORDER BY agent_id, id
 	`, agentIDs)
 	if err != nil {
@@ -226,7 +227,7 @@ func scanSkill(row rowScanner) (*domain.Skill, error) {
 	var prereqJSON, rulesJSON []byte
 
 	if err := row.Scan(&skill.ID, &skill.AgentID, &skill.Name, &skill.Description, &skill.Instructions,
-		&inputJSON, &outputJSON, &visibility, &skill.Schedulable, &integrations, &limited, &skill.Title, &prereqJSON, &rulesJSON); err != nil {
+		&inputJSON, &outputJSON, &visibility, &skill.Schedulable, &integrations, &limited, &skill.Title, &prereqJSON, &rulesJSON, &skill.AllLookUps); err != nil {
 		return nil, err
 	}
 	if len(rulesJSON) > 0 {

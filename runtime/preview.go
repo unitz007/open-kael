@@ -26,7 +26,7 @@ const maxPreviewReply = 160
 // executed, so it is safe to run while someone is still typing their instructions. It reports the model's first
 // move: the abilities it reaches for before it has seen any result.
 func PreviewToolUse(ctx context.Context, llm domain.LLM, agent *domain.Agent, skill *domain.Skill, defs []*domain.ToolDefinition, userText string) (ToolUse, error) {
-	system := buildSystemPrompt(agent, "", "", nil, nil, nil, domain.UserDetails{})
+	system := buildSystemPrompt(agent, "", "", nil, nil, nil, domain.UserDetails{}, nil)
 	if hint := capabilityInstructionsHint([]*domain.Skill{skill}, []string{skill.Name}); hint != "" {
 		system += "\n\n" + hint
 	}
