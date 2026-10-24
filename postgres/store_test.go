@@ -298,13 +298,17 @@ func TestToolPreparedAndMaxCallsRoundTrip(t *testing.T) {
 	def := &domain.ToolDefinition{ID: "prep_trade", Name: "place_trade", Description: "Places a trade", IntegrationID: "int_prep", Action: "trade",
 		RequiresApproval: true, ApprovalTimeoutSeconds: 300, ApprovalPromptTemplate: "Size: {{size_line}}\n{{rr_line}}",
 		InputSchema: domain.Schema{Type: domain.SchemaTypeObject, Properties: map[string]domain.Schema{"symbol": {Type: domain.SchemaTypeString, Description: "The pair."}}},
-		Prepared:    []string{"size_line", "rr_line"}, MaxCalls: 1}
+		Prepared:    []string{"size_line", "rr_line"}, MaxCalls: 1,
+		PreparedInputs: map[string]domain.Schema{"size": {Type: domain.SchemaTypeNumber, Description: "Units, worked out."}}}
 	if err := store.SaveTool(ctx, def); err != nil {
 		t.Fatal(err)
 	}
 	got, err := store.GetTool(ctx, "prep_trade")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if got.PreparedInputs["size"].Type != domain.SchemaTypeNumber {
+		t.Errorf("what limits may be set on is kept: %+v", got.PreparedInputs)
 	}
 	if strings.Join(got.Prepared, ",") != "size_line,rr_line" || got.MaxCalls != 1 {
 		t.Fatalf("kept: prepared=%v max_calls=%d", got.Prepared, got.MaxCalls)

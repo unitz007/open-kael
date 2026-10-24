@@ -53,6 +53,10 @@ type ToolDefinition struct {
 	// Prepared names values its executor's prepare step adds to a call (see Preparer), which the approval prompt may
 	// show although the model never gives them: a trade's size worked out from the person's own rule, with what it risks.
 	Prepared []string `json:"prepared,omitempty"`
+	// PreparedInputs are those of the prepared values a creator may set limits on, with their types ("never more than
+	// 100,000 for the size" when the size is worked out from the person's own rule). The model never sees or gives them;
+	// limits are checked after the prepare step, so they see what will really be sent.
+	PreparedInputs map[string]Schema `json:"prepared_inputs,omitempty"`
 
 	// ApprovalTimeoutSeconds bounds how long the runtime host waits for a
 	// response before treating an approval request as declined — never
@@ -101,6 +105,15 @@ func (t *ToolDefinition) RenderApprovalPrompt(input map[string]any) string {
 		prompt = strings.Join(kept, "\n")
 	}
 	return prompt
+}
+
+// detail is an input a limit may be set on: one the model gives, or one the prepare step works out (PreparedInputs).
+func (t *ToolDefinition) detail(name string) (Schema, bool) {
+	if p, ok := t.InputSchema.Properties[name]; ok {
+		return p, true
+	}
+	p, ok := t.PreparedInputs[name]
+	return p, ok
 }
 
 // prepares says whether the tool's prepare step adds the named value (see Prepared).

@@ -128,3 +128,25 @@ func TestContract_AnApprovalMayShowWhatIsPrepared(t *testing.T) {
 		t.Error("the model never sees a prepared value as an input")
 	}
 }
+
+// A limit can be set on a value the prepare step works out and the model never gives (a trade's size from the person's
+// own rule): it is checked after the prepare step, so "never more than 10,000 for the size" refuses the 19,000 worked
+// out, before anyone is asked to approve it and before the service sees it.
+func TestRules_OnAWorkedOutValue(t *testing.T) {
+	tool := &domain.ToolDefinition{ID: "t", Name: "place_trade", InputSchema: domain.Schema{Type: domain.SchemaTypeObject, Properties: map[string]domain.Schema{
+		"symbol": {Type: domain.SchemaTypeString}}},
+		PreparedInputs: map[string]domain.Schema{"size": {Type: domain.SchemaTypeNumber, Description: "Units, worked out."}}}
+	rule, err := domain.NormalizeRule(domain.ToolRule{ToolID: "t", Input: "size", Kind: domain.RuleMax, Value: 10000}, tool)
+	if err != nil {
+		t.Fatalf("a worked-out value takes a limit: %v", err)
+	}
+	if _, err := domain.NormalizeRule(domain.ToolRule{ToolID: "t", Input: "size", Kind: domain.RuleOneOf, Value: []any{"x"}}, tool); err == nil {
+		t.Error("held to its type like any other")
+	}
+	exec := &prepExecutor{}
+	bound, rec, ctx := prepRig(t, exec, rule)
+	out, err := bound.Invoke(ctx, map[string]any{"symbol": "EURUSD"})
+	if m, _ := out.(map[string]any); err != nil || m["status"] != "refused" || exec.sent != nil || len(rec.prompts) != 0 {
+		t.Errorf("refused before approval and the service: %v %v sent=%v prompts=%d", out, err, exec.sent, len(rec.prompts))
+	}
+}

@@ -89,7 +89,7 @@ func NormalizeRule(r ToolRule, def *ToolDefinition) (ToolRule, error) {
 	if utf8.RuneCountInString(r.Message) > maxRuleMessage {
 		return r, fmt.Errorf("the message is too long (up to %d characters)", maxRuleMessage)
 	}
-	prop, ok := def.InputSchema.Properties[r.Input]
+	prop, ok := def.detail(r.Input)
 	if !ok {
 		return r, fmt.Errorf("%q isn't a detail of %s", r.Input, def.Name)
 	}
@@ -100,7 +100,7 @@ func NormalizeRule(r ToolRule, def *ToolDefinition) (ToolRule, error) {
 	switch r.Kind {
 	case RuleMaxProduct:
 		r.With = strings.TrimSpace(r.With)
-		other, ok := def.InputSchema.Properties[r.With]
+		other, ok := def.detail(r.With)
 		if !ok {
 			return r, fmt.Errorf("%q isn't a detail of %s", r.With, def.Name)
 		}
