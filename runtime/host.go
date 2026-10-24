@@ -1923,9 +1923,13 @@ func limitUnattended(tools []*domain.BoundAction, allowed []string) []*domain.Bo
 // user wants advice, not action — it should answer directly without invoking
 // action tools.
 func withRecommendHint(messages []domain.Message) []domain.Message {
-	const hint = "The user wants advice or information, not to take an action right now. " +
-		"Answer directly from your knowledge and capabilities. " +
-		"Do not invoke tools to execute actions on the user's behalf."
+	// Only look-ups are offered here, so the note says to use them: "answer directly from your knowledge" and "do not
+	// invoke tools" read as "don't look anything up", and half the time "who should I captain?" was answered with general
+	// advice and a request for the person's squad instead of looking at it (measured 2026-10-24, internal/capcompare).
+	const hint = "The person wants advice or information, not a change. Only abilities that look things up are offered " +
+		"here, and nothing you use can change anything: use them to get the facts the answer depends on (the person's own " +
+		"data, what is current) before answering, rather than giving general advice or asking them for what you can look up. " +
+		"Change nothing."
 	out := make([]domain.Message, 0, len(messages)+1)
 	if len(messages) > 0 {
 		out = append(out, messages[:len(messages)-1]...)
