@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/unitz007/open-kael/domain"
 )
@@ -122,8 +124,9 @@ func (s *Server) deleteAgent(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// patchAgent updates mutable text fields on an agent (Greeting, Description,
-// Instructions). Only fields present in the JSON body are updated.
+// patchAgent updates mutable text fields on an agent (Name, Description, Instructions). Only fields present in the
+// JSON body are updated; a name is tidied and can't be empty. (Its first message is never set here: it introduces
+// itself, see Host.Welcome.)
 // PATCH /agents/{id}
 func (s *Server) patchAgent(w http.ResponseWriter, r *http.Request) {
 	agent, err := s.store.LoadAgent(r.Context(), r.PathValue("id"))
@@ -140,7 +143,7 @@ func (s *Server) patchAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var patch struct {
-		Greeting     *string `json:"greeting"`
+		Name         *string `json:"name"`
 		Description  *string `json:"description"`
 		Instructions *string `json:"instructions"`
 	}
@@ -148,8 +151,13 @@ func (s *Server) patchAgent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	if patch.Greeting != nil {
-		agent.Greeting = *patch.Greeting
+	if patch.Name != nil {
+		name := strings.Join(strings.Fields(*patch.Name), " ")
+		if name == "" || utf8.RuneCountInString(name) > 60 {
+			writeError(w, http.StatusBadRequest, errors.New("a name needs 1 to 60 characters"))
+			return
+		}
+		agent.Name = name
 	}
 	if patch.Description != nil {
 		agent.Description = *patch.Description

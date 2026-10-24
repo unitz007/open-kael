@@ -1,8 +1,10 @@
 package api_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/unitz007/open-kael/api"
@@ -38,5 +40,32 @@ func TestCreateAgent_AProposedIdIsUsedOnlyWhenItIsFresh(t *testing.T) {
 			t.Errorf("an id of another form is not used: %q → %q", bad, id)
 		}
 		t.Cleanup(func() { _ = store.DeleteAgent(t.Context(), id) })
+	}
+}
+
+// An agent can be renamed (tidied, never to nothing) along with what it does; its first message is not set this way.
+func TestPatchAgent_Rename(t *testing.T) {
+	store := openDB(t)
+	srv := api.NewServer(store)
+	rec := postJSON(t, srv, "/agents", map[string]any{"name": "Gaffer", "max_iterations": 5})
+	var made struct{ ID string }
+	_ = json.Unmarshal(rec.Body.Bytes(), &made)
+	t.Cleanup(func() { _ = store.DeleteAgent(t.Context(), made.ID) })
+	patch := func(body map[string]any) int {
+		raw, _ := json.Marshal(body)
+		req := httptest.NewRequest(http.MethodPatch, "/agents/"+made.ID, bytes.NewReader(raw))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
+		return w.Code
+	}
+	if code := patch(map[string]any{"name": "  Ava   Lee ", "description": "Helps.", "greeting": "ignored"}); code != http.StatusOK {
+		t.Fatalf("rename: %d", code)
+	}
+	if a, err := store.GetAgent(t.Context(), made.ID); err != nil || a.Name != "Ava Lee" || a.Description != "Helps." || a.Greeting != "" {
+		t.Errorf("stored %+v %v", a, err)
+	}
+	if code := patch(map[string]any{"name": "   "}); code != http.StatusBadRequest {
+		t.Errorf("an empty name: %d", code)
 	}
 }
