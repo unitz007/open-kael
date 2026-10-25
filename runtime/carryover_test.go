@@ -343,3 +343,49 @@ func TestAnActionThatKeepsFailing_TellsThePersonNothingWasChanged(t *testing.T) 
 		t.Error("the failure's internals must not reach the person")
 	}
 }
+
+// toolThenFinish calls the agent's look-up once, then finishes: a turn that really used an ability.
+type toolThenFinish struct{ n int }
+
+func (l *toolThenFinish) Call(_ context.Context, msgs []domain.Message, actions []domain.ActionSpec) (*domain.LLMResponse, error) {
+	l.n++
+	if l.n%2 == 1 {
+		for _, a := range actions {
+			if a.Name == "get_live_quote" {
+				return &domain.LLMResponse{ToolCalls: []domain.ToolCall{{ID: "q", Name: "get_live_quote", Arguments: map[string]any{}}}}, nil
+			}
+		}
+	}
+	return &domain.LLMResponse{ToolCalls: []domain.ToolCall{{ID: "f", Name: domain.FinishActionName, Arguments: map[string]any{"content": "ok"}}}}, nil
+}
+
+// The incident: "Check for all pairs" right after a deploy matched nothing, and what the last message used had gone
+// with the restart, so it was answered from old prices with no look-up. The conversation itself says what it was doing.
+func TestFollowUp_AfterARestartTheConversationSaysWhatItWasDoing(t *testing.T) {
+	router := &followRouter{byText: map[string][]string{"Check audusd": {"analyse_pair"}}}
+	r := newFollowRig(t, router)
+	r.hosted.Agent.LLMs = []domain.LLM{&toolThenFinish{}}
+	r.say(t, "C1", "Check audusd")
+
+	// A restart: a new host, the same stored conversation.
+	again := runtime.NewHost()
+	again.SetSkillRouter(router)
+	spy := &toolSpy{}
+	r.hosted.Agent.LLMs = []domain.LLM{spy}
+	again.Register(r.hosted)
+	conv := domain.ConversationRef{Provider: "slack", ChatID: "C1", IdentityID: "id_slack", UserID: "u1"}
+	if _, err := again.HandleTurn(context.Background(), r.hosted, conv, "Check for all pairs"); err != nil {
+		t.Fatal(err)
+	}
+	if spy.calls() != 1 || !strings.Contains(strings.Join(spy.offered[0], ","), "get_live_quote") {
+		t.Fatalf("the follow-up must be answered with the ability the conversation was using: %v", spy.offered)
+	}
+
+	// A conversation that used nothing gives nothing to stay with.
+	fresh := newFollowRig(t, &followRouter{})
+	fresh.say(t, "C9", "hello there friend")
+	fresh.say(t, "C9", "Check for all pairs")
+	if fresh.spy.calls() != 0 {
+		t.Errorf("nothing to stay with: declined without a model call, got %d calls", fresh.spy.calls())
+	}
+}

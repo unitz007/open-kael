@@ -1636,6 +1636,11 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 		if prev := h.carry.recall(carryID); len(prev) > 0 {
 			log.Printf("skill-router: nothing matched a short follow-up — staying with %v from the last message", prev)
 			skillNames = prev
+		} else if prev := h.skillsLastUsed(hosted, messages); len(prev) > 0 {
+			// What the last message used is kept in memory only, so a restart loses it: then the conversation itself
+			// says what it was doing ("Check for all pairs" after a deploy was answered from old prices, 2026-10-26).
+			log.Printf("skill-router: nothing matched a short follow-up — staying with %v, which the conversation last used", prev)
+			skillNames = prev
 		}
 	}
 	h.carry.remember(carryID, skillNames)

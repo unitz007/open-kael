@@ -19,8 +19,8 @@ const (
 	carryOverMax      = 2000 // conversations remembered at once
 )
 
-// carryOver remembers, per conversation, which abilities the last message used. It is
-// in memory on purpose: after a restart a follow-up is simply judged on its own.
+// carryOver remembers, per conversation, which abilities the last message used. It is in memory; after a restart
+// the conversation itself says what it last used (skillsLastUsed).
 type carryOver struct {
 	mu   sync.Mutex
 	last map[string]carryEntry
@@ -76,6 +76,51 @@ func (c *carryOver) recall(key string) []string {
 		return nil
 	}
 	return append([]string(nil), e.skills...)
+}
+
+// lastUsedTurns is how many of the person's recent messages are looked back over for what the conversation used.
+const lastUsedTurns = 2
+
+// skillsLastUsed is which of the agent's abilities the conversation's latest turns used, read from the conversation
+// itself (which, unlike carryOver, outlives a restart): the abilities whose tools were called in the most recent of the
+// last lastUsedTurns turns that called any. messages ends with the message being answered.
+func (h *Host) skillsLastUsed(hosted *HostedAgent, messages []domain.Message) []string {
+	used := map[string]bool{}
+	turns := 0
+	for i := len(messages) - 2; i >= 0 && turns < lastUsedTurns; i-- {
+		m := messages[i]
+		switch m.Role {
+		case domain.RoleUser:
+			if len(used) > 0 {
+				i = -1 // that turn used something: it is the one
+				continue
+			}
+			turns++
+		case domain.RoleAssistant:
+			for _, c := range m.ToolCalls {
+				if c.Name != domain.FinishActionName {
+					used[c.Name] = true
+				}
+			}
+		}
+	}
+	if len(used) == 0 {
+		return nil
+	}
+	var out []string
+	for _, skill := range hosted.Agent.Skills {
+		tools, err := h.hydrate(hosted, skill)
+		if err != nil {
+			continue
+		}
+		for _, t := range tools {
+			if used[t.Spec.Name] {
+				out = append(out, skill.Name)
+				break
+			}
+		}
+	}
+	return out
 }
 
 // isShortFollowUp reports whether a message is short enough to be a continuation.
