@@ -221,7 +221,19 @@ func (l *NativeLoop) Run(ctx context.Context, messages []Message, actions []*Bou
 
 			callCounts[call.Name]++
 			if callCounts[call.Name] > maxSameActionCalls {
-				return giveUp(fmt.Sprintf("action %q called too many times", call.Name))
+				// One reply may use an ability only so often. Reaching that is not a reason to throw away what it has
+				// already found ("check all pairs" one pair at a time, 2026-10-25): it is told to answer with that and
+				// say what it left out, and gives up only if it keeps asking.
+				log.Printf("loop: action %q reached its %d uses for this reply — asking for an answer with what it has", call.Name, maxSameActionCalls)
+				messages = append(messages, Message{Role: RoleTool, ToolCallID: call.ID, Name: call.Name, Content: overUsed(call.Name)})
+				for _, rest := range resp.ToolCalls[idx+1:] { // every call needs an answer
+					messages = append(messages, Message{Role: RoleTool, ToolCallID: rest.ID, Name: rest.Name, Content: "not run: " + overUsed(call.Name)})
+				}
+				consecutiveFailures++
+				if consecutiveFailures >= maxConsecutiveFailures {
+					return giveUp(fmt.Sprintf("action %q called too many times", call.Name))
+				}
+				break
 			}
 			if action.Spec.MaxCalls > 0 && callCounts[call.Name] > action.Spec.MaxCalls {
 				messages = append(messages, Message{Role: RoleTool, ToolCallID: call.ID, Name: call.Name,
@@ -278,6 +290,11 @@ func (l *NativeLoop) Run(ctx context.Context, messages []Message, actions []*Bou
 	}
 
 	return &LoopResult{Status: LoopStatusMaxIteration}, messages, nil
+}
+
+// overUsed is what an ability that reached its uses for one reply answers instead of running.
+func overUsed(name string) string {
+	return fmt.Sprintf("not run: %s has been used %d times in this reply, as many as one reply may use. Answer now with what you already have, and say plainly what you did not get to (the person can ask for the rest).", name, maxSameActionCalls)
 }
 
 // callLLM tries each provider in priority order. A provider that exhausts

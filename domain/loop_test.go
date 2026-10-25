@@ -370,3 +370,61 @@ func TestLLMDown(t *testing.T) {
 		}
 	}
 }
+
+// "Check all pairs" with an ability that takes one pair at a time: past the uses one reply may have, the agent is told
+// to answer with what it has, and does, instead of the whole reply being thrown away (Contadorah, 2026-10-25).
+func TestNativeLoop_AnAbilityUsedTooOftenGetsAnAnswerWithWhatItHas(t *testing.T) {
+	var told string
+	llm := &funcLLM{call: func(n int) (*domain.LLMResponse, error) {
+		if n <= 2 {
+			var calls []domain.ToolCall
+			for i := 0; i < 10; i++ {
+				calls = append(calls, domain.ToolCall{ID: fmt.Sprintf("%d-%d", n, i), Name: "get_quote", Arguments: map[string]any{"symbol": fmt.Sprintf("P%d", n*10+i)}})
+			}
+			return &domain.LLMResponse{ToolCalls: calls}, nil
+		}
+		return &domain.LLMResponse{ToolCalls: []domain.ToolCall{{ID: "f", Name: domain.FinishActionName, Arguments: map[string]any{"content": "Here are 15 of the pairs."}}}}, nil
+	}}
+	ran := 0
+	quote := &domain.BoundAction{Spec: domain.ActionSpec{Name: "get_quote", Description: "A price"},
+		Invoke: func(context.Context, map[string]any) (any, error) { ran++; return "1.0", nil }}
+	result, transcript, err := domain.NewNativeLoop([]domain.LLM{llm}, 10).Run(context.Background(), nil, []*domain.BoundAction{quote})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != domain.LoopStatusComplete || result.Content != "Here are 15 of the pairs." {
+		t.Fatalf("got %s %q", result.Status, result.Content)
+	}
+	if ran != 15 {
+		t.Errorf("ran %d times, want 15", ran)
+	}
+	answered := map[string]bool{}
+	for _, m := range transcript {
+		if m.Role == domain.RoleTool {
+			answered[m.ToolCallID] = true
+			if strings.Contains(m.Content, "Answer now with what you already have") {
+				told = m.Content
+			}
+		}
+	}
+	if told == "" || len(answered) < 21 {
+		t.Errorf("told %q; %d calls answered, want every one", told, len(answered))
+	}
+}
+
+// One that keeps asking after being told still stops.
+func TestNativeLoop_AnAbilityThatKeepsBeingAskedForStillStops(t *testing.T) {
+	llm := &funcLLM{call: func(n int) (*domain.LLMResponse, error) {
+		var calls []domain.ToolCall
+		for i := 0; i < 10; i++ {
+			calls = append(calls, domain.ToolCall{ID: fmt.Sprintf("%d-%d", n, i), Name: "get_quote", Arguments: map[string]any{"symbol": fmt.Sprint(n, i)}})
+		}
+		return &domain.LLMResponse{ToolCalls: calls}, nil
+	}}
+	quote := &domain.BoundAction{Spec: domain.ActionSpec{Name: "get_quote", Description: "A price"},
+		Invoke: func(context.Context, map[string]any) (any, error) { return "1.0", nil }}
+	result, _, err := domain.NewNativeLoop([]domain.LLM{llm}, 10).Run(context.Background(), nil, []*domain.BoundAction{quote})
+	if err != nil || result.Status != domain.LoopStatusError {
+		t.Fatalf("got %+v %v", result, err)
+	}
+}
