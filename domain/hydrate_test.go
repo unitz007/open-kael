@@ -2,6 +2,8 @@ package domain_test
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/unitz007/open-kael/domain"
@@ -269,5 +271,35 @@ func TestUnattendedRun_AgreedChangeRunsWithoutAskingAndAnyOtherIsRefused(t *test
 	}
 	if ran(attended) {
 		t.Error("an attended run is still asked (and there is no one to ask here)")
+	}
+}
+
+type noSignIn struct{}
+
+func (noSignIn) RequestConnect(context.Context, domain.ConversationRef, *domain.Identity, string) (string, error) {
+	return "", domain.ErrSignInUnavailable
+}
+
+// A tool whose sign-in can't be offered tells the agent plainly that it can't be used and to answer without it; it
+// never reaches the service. A shared key needs no sign-in at all.
+func TestSignInUnavailable_TheAgentIsToldToAnswerWithoutIt(t *testing.T) {
+	integration := &domain.Integration{ID: "int_1", Service: "mock"}
+	tool := &domain.ToolDefinition{ID: "tool_1", Name: "Web Search", Description: "Searches", IntegrationID: integration.ID, Action: "mock.echo"}
+	registry := domain.NewExecutorRegistry()
+	registry.Register("mock", echoExecutor{})
+	ctx := domain.WithConnectRequester(domain.WithConversation(domain.WithUserID(context.Background(), "u1"), domain.ConversationRef{ChatID: "c"}), noSignIn{})
+
+	bound, err := domain.HydrateTool(tool, &domain.Identity{ID: "id1", Kind: domain.IdentityKindOAuth}, integration, registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = bound.Invoke(ctx, map[string]any{})
+	if err == nil || !errors.Is(err, domain.ErrSignInUnavailable) || !strings.Contains(err.Error(), "Web Search can't be used right now") || !strings.Contains(err.Error(), "answer with what you can") {
+		t.Fatalf("%v", err)
+	}
+
+	bound, _ = domain.HydrateTool(tool, &domain.Identity{ID: "id2", Kind: domain.IdentityKindToken}, integration, registry)
+	if _, err := bound.Invoke(ctx, map[string]any{}); err != nil {
+		t.Errorf("a shared key runs without a sign-in: %v", err)
 	}
 }

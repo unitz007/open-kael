@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -252,4 +253,27 @@ func (r *recordingActivity) all() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]string(nil), r.ev...)
+}
+
+// When no sign-in can be offered, nothing is held back and no prompt counts as sent, however often the model tries:
+// each try says the tool can't be used, so the agent answers without it (it used to hold the message on the second try
+// and reply with nothing).
+func TestConnectRequester_NoSignInHoldsNothing(t *testing.T) {
+	h, req, exec, conv, _ := promptRig(t)
+	h.connectURLGenerator = func(context.Context, string, string) (string, error) {
+		return "", errors.New("connecting Web Search isn't available right now")
+	}
+	ctx := domain.WithOriginalMessage(context.Background(), "find the job details")
+	for i := 0; i < 2; i++ {
+		ref, err := req.RequestConnect(ctx, conv, &domain.Identity{ID: "search"}, "u1")
+		if ref != "" || !errors.Is(err, domain.ErrSignInUnavailable) {
+			t.Fatalf("try %d: %q %v", i+1, ref, err)
+		}
+	}
+	if _, held := h.pendingAuthTurns.Load("u1:search"); held {
+		t.Error("a message was held for a sign-in that can't happen")
+	}
+	if n := exec.count(); n != 0 {
+		t.Errorf("sent %d prompts", n)
+	}
 }

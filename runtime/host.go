@@ -2282,16 +2282,18 @@ func (h *Host) resolveConnectRequester(ctx context.Context, hosted *HostedAgent,
 			}
 		}
 
+		// No sign-in can be offered: nothing is held back (it could never be replayed) and no prompt is counted as sent,
+		// so the agent answers without the tool. Checked before the prompt is counted: a second try must not be held.
+		url, err := h.connectURLGenerator(ctx, userID, identity.ID)
+		if err != nil {
+			return "", fmt.Errorf("%w: %v", domain.ErrSignInUnavailable, err)
+		}
+
 		// One prompt per person per moment: a model that calls three tools at once
 		// would otherwise send the same connect prompt three times.
 		if !h.shouldSendConnectPrompt(key) {
 			storePending()
 			return "", nil
-		}
-
-		url, err := h.connectURLGenerator(ctx, userID, identity.ID)
-		if err != nil {
-			return "", fmt.Errorf("generate connect URL for identity %q: %w", identity.ID, err)
 		}
 
 		var integrationName string

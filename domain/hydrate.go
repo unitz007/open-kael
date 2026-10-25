@@ -2,6 +2,7 @@ package domain
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sync/atomic"
@@ -322,6 +323,11 @@ func ConnectToolNameFromContext(ctx context.Context) string {
 	return name
 }
 
+// ErrSignInUnavailable is what a ConnectRequester returns when the person would need to sign in to use a tool but no
+// sign-in can be offered (none is set up for the service). Nothing is held back for later: the tool can't be used in
+// this reply, and the agent is told so, to answer without it.
+var ErrSignInUnavailable = errors.New("no sign-in can be offered for it")
+
 // withAuthGate wraps invoke with a just-in-time authentication check. When the
 // user's connectionRef for identity is empty, it asks the user to connect their
 // account (via ConnectRequester from context) and blocks until connected or the
@@ -350,6 +356,9 @@ func withAuthGate(identity *Identity, toolName string, inner func(ctx context.Co
 			ctx = context.WithValue(ctx, ctxConnectToolName{}, toolName)
 		}
 		newRef, err := requester.RequestConnect(ctx, conv, identity, userID)
+		if errors.Is(err, ErrSignInUnavailable) {
+			return nil, fmt.Errorf("%s can't be used right now (%w). Don't call it again in this reply: answer with what you can, and tell the person plainly what you couldn't do", toolName, err)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("tool requires authentication — %w", err)
 		}
