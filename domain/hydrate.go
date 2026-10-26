@@ -212,23 +212,41 @@ func WrapOneShotGuard(action *BoundAction) *BoundAction {
 // granted whole, with any named abilities added on top, exactly as before.
 func HydrateSkillTools(skill *Skill, agent *Agent, toolsByID map[string]*ToolDefinition, identitiesByID map[string]*Identity, integrationsByID map[string]*Integration, registry *ExecutorRegistry) ([]*BoundAction, error) {
 	bound, err := hydrateSkillTools(skill, agent, toolsByID, identitiesByID, integrationsByID, registry)
-	if err != nil || len(skill.Prerequisites) == 0 {
+	if err != nil {
 		return bound, err
 	}
-	// What the creator said must happen first is kept by the platform: the ability waits (prerequisite.go).
+	// What must happen first is kept by the platform: the ability waits (prerequisite.go). It is what the creator said
+	// (the capability's prerequisites) and what the ability itself needs (ToolDefinition.First), when the agent has it.
 	names := map[string]string{}
-	for id, def := range toolsByID {
-		names[id] = def.ModelName()
-	}
 	byName := map[string]string{} // model name → tool id
 	for id, def := range toolsByID {
+		names[id] = def.ModelName()
 		byName[def.ModelName()] = id
 	}
+	has := map[string]bool{}
+	for _, a := range bound {
+		has[byName[a.Spec.Name]] = true
+	}
 	for i, a := range bound {
+		id := byName[a.Spec.Name]
 		var rules []Prerequisite
 		for _, p := range skill.Prerequisites {
-			if p.Before == byName[a.Spec.Name] {
+			if p.Before == id {
 				rules = append(rules, p)
+			}
+		}
+		if def := toolsByID[id]; def != nil {
+		own:
+			for _, first := range def.First {
+				if !has[first] || first == id {
+					continue
+				}
+				for _, r := range rules {
+					if r.First == first && len(r.Same) == 0 {
+						continue own
+					}
+				}
+				rules = append(rules, Prerequisite{Before: id, First: first})
 			}
 		}
 		bound[i] = WrapPrerequisites(a, rules, names)

@@ -203,3 +203,36 @@ func TestAllLookUps_EveryLookUpButOnlyTheNamedChanges(t *testing.T) {
 		t.Errorf("without it, only the named: %v", g)
 	}
 }
+
+// An ability can say what must go through first itself (a transfer needs the team's player ids): it holds for every
+// agent that has both, with no rule from the creator, and is left out for one that can't run the first.
+func TestPrerequisite_AnAbilitysOwnFirst(t *testing.T) {
+	exec := &tradingExecutor{}
+	tools, ints, reg := tradingFixture(exec)
+	place := *tools["t:place"]
+	place.First = []string{"t:status"}
+	tools["t:place"] = &place
+	bound, err := domain.HydrateSkillTools(&domain.Skill{ID: "s", Integrations: []string{"trading"}}, &domain.Agent{}, tools, nil, ints, reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := domain.WithRunJournal(context.Background())
+	if out, _ := action(t, bound, "place_trade").Invoke(ctx, map[string]any{"symbol": "EURUSD"}); out.(map[string]any)["status"] != "refused" {
+		t.Fatalf("waits for its own first: %v", out)
+	}
+	if _, err := action(t, bound, "get_trading_status").Invoke(ctx, map[string]any{"symbol": "GBPUSD"}); err != nil {
+		t.Fatal(err)
+	}
+	if out, _ := action(t, bound, "place_trade").Invoke(ctx, map[string]any{"symbol": "EURUSD"}); out.(map[string]any)["ok"] != true {
+		t.Fatalf("after it, for any values: %v", out)
+	}
+
+	limited := &domain.Skill{ID: "s", Integrations: []string{"trading"}, LimitedIntegrations: []string{"trading"}, Tools: []domain.ToolBinding{{ToolID: "t:place"}}}
+	bound, err = domain.HydrateSkillTools(limited, &domain.Agent{}, tools, nil, ints, reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out, _ := action(t, bound, "place_trade").Invoke(domain.WithRunJournal(context.Background()), map[string]any{"symbol": "EURUSD"}); out.(map[string]any)["ok"] != true {
+		t.Fatalf("an agent that can't run the first isn't held to it: %v", out)
+	}
+}

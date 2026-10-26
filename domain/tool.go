@@ -57,6 +57,10 @@ type ToolDefinition struct {
 	// 100,000 for the size" when the size is worked out from the person's own rule). The model never sees or gives them;
 	// limits are checked after the prepare step, so they see what will really be sent.
 	PreparedInputs map[string]Schema `json:"prepared_inputs,omitempty"`
+	// First names abilities (tool ids) that must have gone through in the same run before this one may: a change that
+	// needs what only a look-up gives (a transfer needs the player ids from the person's team). Kept for every agent
+	// that has both, exactly like a creator's own "this before that" (prerequisite.go); one it doesn't have is ignored.
+	First []string `json:"first,omitempty"`
 
 	// ApprovalTimeoutSeconds bounds how long the runtime host waits for a
 	// response before treating an approval request as declined — never

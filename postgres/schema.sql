@@ -200,6 +200,7 @@ ALTER TABLE tools ADD COLUMN IF NOT EXISTS needs_local_time         BOOLEAN NOT 
 -- approval shows a prepared value breaks the tool contract when it is loaded, and is left out (2026-10-23: place_trade).
 ALTER TABLE tools ADD COLUMN IF NOT EXISTS prepared                 TEXT[] NOT NULL DEFAULT '{}';
 ALTER TABLE tools ADD COLUMN IF NOT EXISTS prepared_inputs          JSONB NOT NULL DEFAULT '{}';
+ALTER TABLE tools ADD COLUMN IF NOT EXISTS first_needed             TEXT[] NOT NULL DEFAULT '{}';
 -- How many times a tool may be called in one run (ToolDefinition.MaxCalls; 0 = no limit).
 ALTER TABLE tools ADD COLUMN IF NOT EXISTS max_calls                INT NOT NULL DEFAULT 0;
 

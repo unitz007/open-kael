@@ -242,7 +242,7 @@ func WrapPrerequisites(action *BoundAction, rules []Prerequisite, names map[stri
 				}
 				msg += " for the same " + strings.Join(vals, ", ")
 			}
-			msg += ", as this capability requires. Do that now, then call " + action.Spec.Name + " again if it still makes sense."
+			msg += ", as required. Do that now, then call " + action.Spec.Name + " again if it still makes sense."
 			return map[string]any{"status": "refused", "changed": false, "message": msg}, nil
 		}
 		return inner(ctx, input)
