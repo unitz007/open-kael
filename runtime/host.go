@@ -295,6 +295,8 @@ type Host struct {
 
 	// says, when set, gives what an agent says it can do (SetSaysProvider).
 	says func(ctx context.Context, agentID string) []string
+	// notice, when set, is what a person is told once about who runs an agent (see SetNotice).
+	notice func(ctx context.Context, agent *domain.Agent, conv domain.ConversationRef) string
 	// readiness, when set, says why an agent cannot answer people yet ("" when it can).
 	readiness func(ctx context.Context, agent *domain.Agent) string
 
@@ -1412,7 +1414,7 @@ func (h *Host) handleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 		} else if unattended {
 			h.deliverBestEffort(ctx, hosted, conv, unattendedFailure)
 		} else {
-			h.noteEvent(hosted, domain.ActivityFailed, failureDetail(err))
+			h.noteEvent(domain.WithConversation(ctx, conv), hosted, domain.ActivityFailed, failureDetail(err))
 			h.deliverBestEffort(ctx, hosted, conv, failureText(err))
 		}
 		return result, err
@@ -1429,7 +1431,7 @@ func (h *Host) handleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 	case result.Status == domain.LoopStatusError:
 		// giveUp reasons are internal diagnostics — never surface raw loop
 		// internals to the user regardless of whether Content is set.
-		h.noteEvent(hosted, domain.ActivityFailed, failureProblem)
+		h.noteEvent(domain.WithConversation(ctx, conv), hosted, domain.ActivityFailed, failureProblem)
 		content = "Sorry, I ran into an error and couldn't finish handling that. Please try again."
 		if domain.ChangeFailed(result.Actions) {
 			// The one thing worth saying plainly: it was tried, it failed, nothing changed.
@@ -2164,6 +2166,25 @@ func greetingBody(agent *domain.Agent, abilities []string) string {
 // welcomeAbilities lists what the agent can do, one plain line each, in the words its
 // creator gave (or the name, tidied, when they gave none). It covers everything the
 // agent does for the person, whether or not other agents may call it.
+// SetNotice supplies what a person is told about who runs an agent and what they can see. It is asked on every message
+// someone writes and gives the text only the first time for that person and agent (it keeps track), "" after. The
+// text goes into the welcome for someone new, or on its own before the answer for someone already chatting.
+func (h *Host) SetNotice(f func(ctx context.Context, agent *domain.Agent, conv domain.ConversationRef) string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.notice = f
+}
+
+func (h *Host) noticeFor(ctx context.Context, agent *domain.Agent, conv domain.ConversationRef) string {
+	h.mu.RLock()
+	f := h.notice
+	h.mu.RUnlock()
+	if f == nil || conv.UserID == "" || domain.IsUnattended(ctx) {
+		return ""
+	}
+	return strings.TrimSpace(f(ctx, agent, conv))
+}
+
 // SetSaysProvider supplies what an agent says it can do, built from what it is really allowed to do (closed-kael keeps
 // it per agent and app, remade when that changes). When it gives lines, they are the greeting's list, the list in the
 // "can't help with that" reply and, in the agent's prompt, what it says when asked what it can do; otherwise the
@@ -2308,7 +2329,7 @@ func (h *Host) resolveConnectRequester(ctx context.Context, hosted *HostedAgent,
 			}
 		}
 
-		h.noteEvent(hosted, domain.ActivitySignIn, integrationName)
+		h.noteEvent(domain.WithConversation(ctx, conv), hosted, domain.ActivitySignIn, integrationName)
 		promptText, buttonLabel := connectPrompt(integrationName)
 		var extra map[string]any
 		if url != "" && !isLocalhostURL(url) {

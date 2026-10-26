@@ -397,6 +397,10 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 		return
 	}
 
+	// What people are told about who runs the agent, once each (see SetNotice): in the welcome for someone new,
+	// else on its own before the answer.
+	notice := h.noticeFor(ctx, hosted.Agent, msg.Conversation)
+
 	// Onboarding intercept: runs before the integration setup checker so new
 	// users are welcomed (once) before anything else, and what they wrote is still answered.
 	if h.onboardingChecker != nil && h.onboardingCompleter != nil && msg.Conversation.UserID != "" {
@@ -407,6 +411,10 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 		if !onboarded {
 			greeting := greetingBody(hosted.Agent, h.abilitiesOf(ctx, hosted.Agent))
 			btn := h.gettingStartedButton(msg.Conversation, hosted.Agent.ID)
+			if notice != "" {
+				greeting += "\n\n" + notice
+				notice = ""
+			}
 			if btn != nil {
 				greeting += "\n\nTap Get started below to tell me your name and time zone and to connect what I need."
 			}
@@ -438,6 +446,10 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 				return
 			}
 		}
+	}
+
+	if notice != "" {
+		h.deliverBestEffort(ctx, hosted, msg.Conversation, notice)
 	}
 
 	// Email-link flow: runs after onboarding so the user is introduced first. A reply to "send me your
@@ -483,7 +495,7 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 					agentID:     hosted.Agent.ID,
 					userMessage: msg.Text,
 				})
-				h.noteEvent(hosted, domain.ActivitySignIn, integrationName)
+				h.noteEvent(domain.WithConversation(ctx, msg.Conversation), hosted, domain.ActivitySignIn, integrationName)
 				text, buttonLabel := connectPrompt(integrationName)
 				var extra map[string]any
 				if !isLocalhostURL(connectURL) {

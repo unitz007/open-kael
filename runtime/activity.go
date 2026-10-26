@@ -68,7 +68,21 @@ func (h *Host) notePersonActive(hosted *HostedAgent, conv domain.ConversationRef
 		return
 	}
 	agentID, person := hosted.Agent.ID, conv.UserID
-	h.record(func(ctx context.Context) { h.activity.PersonActive(ctx, agentID, person) })
+	h.record(func(ctx context.Context) {
+		h.activity.PersonActive(ctx, agentID, person)
+		if pr, ok := h.activity.(domain.PersonRecorder); ok {
+			pr.PersonSeen(ctx, agentID, conv)
+		}
+	})
+}
+
+// personOf is the person whose message this is, when it is someone's message (not an alert or repeating task).
+func personOf(ctx context.Context) (domain.ConversationRef, bool) {
+	conv, ok := domain.ConversationFromContext(ctx)
+	if !ok || conv.UserID == "" || domain.IsUnattended(ctx) {
+		return domain.ConversationRef{}, false
+	}
+	return conv, true
 }
 
 // noteMessage counts a message the agent handled, by the minute. Only the count is kept.
@@ -103,12 +117,19 @@ func (h *Host) noteUses(ctx context.Context, hosted *HostedAgent, skillNames []s
 	h.record(func(ctx context.Context) { ur.CapabilitiesUsed(ctx, agentID, ids) })
 }
 
-func (h *Host) noteEvent(hosted *HostedAgent, kind domain.ActivityKind, detail string) {
+// noteEvent notes something that happened; ctx says whose message it was, when it was someone's.
+func (h *Host) noteEvent(ctx context.Context, hosted *HostedAgent, kind domain.ActivityKind, detail string) {
 	if h.activity == nil {
 		return
 	}
 	agentID := hosted.Agent.ID
-	h.record(func(ctx context.Context) { h.activity.ActivityEvent(ctx, agentID, kind, detail) })
+	conv, isPerson := personOf(ctx)
+	h.record(func(ctx context.Context) {
+		h.activity.ActivityEvent(ctx, agentID, kind, detail)
+		if pr, ok := h.activity.(domain.PersonRecorder); ok && isPerson {
+			pr.PersonEvent(ctx, agentID, conv, kind, detail)
+		}
+	})
 }
 
 // noteCouldNot counts a request the agent could not do. The request itself is only ever seen by
@@ -118,12 +139,16 @@ func (h *Host) noteCouldNot(ctx context.Context, hosted *HostedAgent, request st
 		return
 	}
 	agentID, labeler := hosted.Agent.ID, h.topicLabeler
+	conv, isPerson := personOf(ctx)
 	h.record(func(ctx context.Context) {
 		topic := ""
 		if labeler != nil {
 			topic = labeler(ctx, request)
 		}
 		h.activity.ActivityEvent(ctx, agentID, domain.ActivityUnsupported, topic)
+		if pr, ok := h.activity.(domain.PersonRecorder); ok && isPerson {
+			pr.PersonEvent(ctx, agentID, conv, domain.ActivityUnsupported, topic)
+		}
 	})
 }
 

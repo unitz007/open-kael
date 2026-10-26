@@ -43,6 +43,14 @@ type UseRecorder interface {
 	CapabilitiesUsed(ctx context.Context, agentID string, skillIDs []string)
 }
 
+// PersonRecorder is told who wrote to an agent and what happened to them, so the agent's creator can see who talks to
+// their agents: never what anyone wrote. conv says which person (UserID) on which chat app (IdentityID). A recorder that
+// is not one simply keeps the counts above.
+type PersonRecorder interface {
+	PersonSeen(ctx context.Context, agentID string, conv ConversationRef)
+	PersonEvent(ctx context.Context, agentID string, conv ConversationRef, kind ActivityKind, detail string)
+}
+
 // ActivityEvent is one thing that happened, with no identity in it.
 type ActivityEvent struct {
 	ID      int64        `json:"id"`
