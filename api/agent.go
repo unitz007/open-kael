@@ -118,7 +118,8 @@ func (s *Server) deleteAgent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	if s.onAgentDelete != nil && len(identityIDs) > 0 {
+	// Always, with or without chat apps: what hangs on the agent (its alerts, its place in the runtime) goes too.
+	if s.onAgentDelete != nil {
 		go s.onAgentDelete(agent.ID, identityIDs)
 	}
 	w.WriteHeader(http.StatusNoContent)
