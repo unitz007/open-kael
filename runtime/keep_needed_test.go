@@ -32,13 +32,18 @@ func TestKeepNeeded(t *testing.T) {
 	email := act("send_email", "gmail", false, true, nil, nil)
 	all := []*domain.BoundAction{transfer, team, players, fixtures, quote, signals, email}
 
-	if got := names(keepNeeded([]*domain.BoundAction{transfer}, all)); got != "get_my_team,list_players,make_transfer" {
+	if got := names(keepNeeded([]*domain.BoundAction{transfer}, all, nil)); got != "get_my_team,list_players,make_transfer" {
 		t.Errorf("a declaring app brings exactly what it lists: %s", got)
 	}
-	if got := names(keepNeeded([]*domain.BoundAction{quote}, all)); got != "get_latest_decisions,get_quote" {
+	if got := names(keepNeeded([]*domain.BoundAction{quote}, all, nil)); got != "get_latest_decisions,get_quote" {
 		t.Errorf("a connection that lists nothing brings all its look-ups: %s", got)
 	}
-	if got := names(keepNeeded([]*domain.BoundAction{email}, all)); got != "send_email" {
+	if got := names(keepNeeded([]*domain.BoundAction{email}, all, nil)); got != "send_email" {
 		t.Errorf("nothing listed, nothing added: %s", got)
+	}
+	// A change kept only because every change is kept for a request to do something brings nothing along; what it must
+	// run first still comes back.
+	if got := names(keepNeeded([]*domain.BoundAction{email, transfer, quote}, all, map[string]bool{"send_email": true})); got != "get_my_team,get_quote,make_transfer,send_email" {
+		t.Errorf("only what trimming picked brings what comes with it: %s", got)
 	}
 }

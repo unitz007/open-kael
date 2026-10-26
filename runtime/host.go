@@ -1829,12 +1829,22 @@ func (h *Host) runRoutedTurn(ctx context.Context, hosted *HostedAgent, userText 
 
 	// Tool filter: trim irrelevant tools before the LLM call to reduce tokens.
 	// Falls back to the full list on error or empty result.
+	var picked map[string]bool // what trimming chose and what the request needs: only these bring what comes with them
 	if h.toolFilter != nil {
 		filtered, ferr := h.toolFilter.FilterTools(ctx, userText, mergedTools)
 		if ferr != nil {
 			log.Printf("skill-router: tool filter failed: %v — using full tool list", ferr)
 		} else if len(filtered) > 0 {
 			log.Printf("skill-router: tool filter: %d → %d tool(s)", len(mergedTools), len(filtered))
+			picked = map[string]bool{}
+			for _, t := range filtered {
+				picked[t.Spec.Name] = true
+			}
+			if reqs != nil {
+				for _, name := range reqs.Tools {
+					picked[name] = true
+				}
+			}
 			if intent == domain.IntentExecute {
 				// A request to do something keeps every way the chosen capabilities have of doing it: only look-ups are
 				// trimmed. Found 2026-10-23: "I want in on the GBPUSD sell, but let's confirm the size first" lost
@@ -1846,7 +1856,7 @@ func (h *Host) runRoutedTurn(ctx context.Context, hosted *HostedAgent, userText 
 		}
 	}
 	mergedTools = keepRequired(mergedTools, allTools, reqs)
-	mergedTools = keepNeeded(mergedTools, allTools)
+	mergedTools = keepNeeded(mergedTools, allTools, picked)
 	log.Printf("skill-router: offering tools %v", actionNames(mergedTools))
 
 	// Recommend intent: filter to read-only tools so the LLM can fetch data

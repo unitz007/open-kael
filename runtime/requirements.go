@@ -150,8 +150,11 @@ func recentTurn(messages []domain.Message) domain.Earlier {
 // (BoundAction.Needs; without it the action could never run) and the look-ups its inputs come from (With). For a
 // connection that doesn't list those (a creator's own), every look-up it has comes with any of its abilities: trimming
 // judges each ability on its own and can't see that one is a step towards another (found 2026-10-26: a transfer kept,
-// the player list it needed for the player coming in trimmed away).
-func keepNeeded(offered, all []*domain.BoundAction) []*domain.BoundAction {
+// the player list it needed for the player coming in trimmed away). Only what trimming picked (picked; nil when nothing
+// was trimmed) brings its look-ups along: every change is kept for a request to do something, and if each of those
+// brought its look-ups too, nearly every ability would be offered (measured: 33 → 54 for a fantasy football transfer).
+// What must run first always comes back, for anything offered.
+func keepNeeded(offered, all []*domain.BoundAction, picked map[string]bool) []*domain.BoundAction {
 	have := map[string]bool{}
 	for _, t := range offered {
 		have[t.Spec.Name] = true
@@ -164,7 +167,12 @@ func keepNeeded(offered, all []*domain.BoundAction) []*domain.BoundAction {
 	}
 	for i := 0; i < len(offered); i++ { // what is put back may rely on something too
 		a := offered[i]
-		for _, name := range append(append([]string{}, a.Needs...), a.With...) {
+		brings := picked == nil || picked[a.Spec.Name]
+		relies := a.Needs
+		if brings {
+			relies = append(append([]string{}, a.Needs...), a.With...)
+		}
+		for _, name := range relies {
 			if have[name] {
 				continue
 			}
@@ -175,7 +183,7 @@ func keepNeeded(offered, all []*domain.BoundAction) []*domain.BoundAction {
 				}
 			}
 		}
-		if a.App != "" && !a.Declared {
+		if brings && a.App != "" && !a.Declared {
 			for _, t := range all {
 				if t.App == a.App && t.Spec.ReadOnly {
 					add(t)
