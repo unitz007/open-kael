@@ -418,7 +418,7 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 			if btn != nil {
 				greeting += "\n\nTap Get started below to tell me your name and time zone and to connect what I need."
 			}
-			if h.miniAppBaseURL != "" || h.settingsFlow != nil {
+			if h.hasSettings(hosted, msg) {
 				greeting += "\n\nType /settings to manage your preferences."
 			}
 			// Complete onboarding immediately — no "tell me about yourself" step.
@@ -547,8 +547,8 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 		return
 	}
 
-	// Settings menu command: intercept before the LLM turn loop.
-	if isSettingsCommand(msg.Text) {
+	// Settings menu command: intercept before the LLM turn loop (where this chat app has settings to show).
+	if isSettingsCommand(msg.Text) && h.hasSettings(hosted, msg) {
 		// Prefer the Mini App when a base URL is configured.
 		if h.miniAppBaseURL != "" {
 			miniAppURL := h.miniAppBaseURL + "/miniapp/settings?agent=" + hosted.Agent.ID
@@ -904,6 +904,27 @@ func (h *Host) handleLinkAccountCallback(ctx context.Context, hosted *HostedAgen
 }
 
 // isSettingsCommand reports whether text is a settings-menu trigger.
+// hasSettings says whether the person can open settings from this chat app: the settings page (a Telegram Mini App)
+// or the inline settings menu, which needs a chat app that can show it. On a minion's web chat page there is neither,
+// so /settings is just words there.
+func (h *Host) hasSettings(hosted *HostedAgent, msg domain.InboundMessage) bool {
+	if msg.Conversation.Provider == "web" {
+		return false
+	}
+	if h.miniAppBaseURL != "" {
+		return true
+	}
+	if h.settingsFlow == nil {
+		return false
+	}
+	executor, ok := h.executorForMessage(hosted, msg)
+	if !ok {
+		return false
+	}
+	_, ok = executor.(domain.SettingsMenuProvider)
+	return ok
+}
+
 func isSettingsCommand(text string) bool {
 	t := strings.ToLower(strings.TrimSpace(text))
 	return t == "/settings" || t == "settings"
