@@ -63,8 +63,8 @@ func SenderSharedAcrossBots(service string) bool {
 	return false
 }
 
-// messengerServices are the chat apps people talk to an agent on.
-var messengerServices = []string{"telegram", "slack", "discord", "whatsapp"}
+// messengerServices are the chat apps people talk to an agent on ("web" is a minion's own chat page, opened from a link).
+var messengerServices = []string{"telegram", "slack", "discord", "whatsapp", "web"}
 
 // IsMessengerService reports whether a service is a chat app.
 func IsMessengerService(service string) bool {
