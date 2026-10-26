@@ -78,3 +78,57 @@ func TestSteps_WhatAnAgentIsDoingIsSeenLiveAndKeptAfterwards(t *testing.T) {
 		t.Errorf("a repeating task is not a person's message, so it is not kept: %+v", after)
 	}
 }
+
+// gateLLM holds every call until it is let go, so several conversations can be caught in progress at once.
+type gateLLM struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (g *gateLLM) Call(context.Context, []domain.Message, []domain.ActionSpec) (*domain.LLMResponse, error) {
+	g.started <- struct{}{}
+	<-g.release
+	return &domain.LLMResponse{ToolCalls: []domain.ToolCall{{ID: "1", Name: domain.FinishActionName, Arguments: map[string]any{"content": "ok"}}}}, nil
+}
+
+// An agent talks to several people at once: every conversation in progress is seen, each with the chat app it came in
+// on, and each is gone once it is done; the latest alone is still what LiveTurns says.
+func TestSteps_EveryConversationInProgressIsSeenWithItsChatApp(t *testing.T) {
+	r := newIntentRig(t, &intentRouter{
+		intents:      map[string]domain.Intent{"Check audusd": domain.IntentRecommend},
+		followRouter: followRouter{byText: map[string][]string{"Check audusd": {"analyse_pair"}}},
+	})
+	g := &gateLLM{started: make(chan struct{}, 2), release: make(chan struct{})}
+	r.hosted.Agent.LLMs = []domain.LLM{g}
+	var wg sync.WaitGroup
+	for _, c := range []domain.ConversationRef{{Provider: "slack", ChatID: "C1", IdentityID: "id_slack"}, {Provider: "telegram", ChatID: "T1", IdentityID: "id_tg"}} {
+		wg.Add(1)
+		go func(c domain.ConversationRef) {
+			defer wg.Done()
+			_, _ = r.host.HandleTurn(context.Background(), r.hosted, c, "Check audusd")
+		}(c)
+	}
+	for range 2 {
+		select {
+		case <-g.started:
+		case <-time.After(3 * time.Second):
+			t.Fatal("both conversations should be under way")
+		}
+	}
+	live := r.host.LiveConversations([]string{"a1"})["a1"]
+	chats := map[string]bool{}
+	for _, c := range live {
+		chats[c.Chat] = true
+	}
+	if len(live) != 2 || !chats["id_slack"] || !chats["id_tg"] {
+		t.Fatalf("both conversations, each with its chat app: %+v", live)
+	}
+	if latest := r.host.LiveTurns([]string{"a1"})["a1"]; latest.Chat != live[1].Chat {
+		t.Errorf("the latest alone is still what LiveTurns says: %+v", latest)
+	}
+	close(g.release)
+	wg.Wait()
+	if left := r.host.LiveConversations([]string{"a1"}); len(left) != 0 {
+		t.Errorf("nothing is left once both are done: %+v", left)
+	}
+}

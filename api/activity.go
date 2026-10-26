@@ -277,6 +277,11 @@ func (s *Server) streamWorking(w http.ResponseWriter, r *http.Request) {
 		if sw, ok := s.work.(domain.StepWatcher); ok {
 			payload["turns"] = sw.LiveTurns(ids)
 		}
+		// Every conversation in progress, each with the chat app it came in on (an agent talks to several people at
+		// once). Never who.
+		if cw, ok := s.work.(domain.ConversationWatcher); ok {
+			payload["conversations"] = cw.LiveConversations(ids)
+		}
 		raw, err := json.Marshal(payload)
 		if err != nil {
 			return true

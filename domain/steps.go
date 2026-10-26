@@ -81,16 +81,24 @@ type LiveStep struct {
 }
 
 // LiveTurn is what an agent is handling right now: with which capabilities (ids, once routing has chosen; none while
-// it is just talking) and the abilities it has used so far.
+// it is just talking), the abilities it has used so far, and the chat app it came in on (the identity's id; never who
+// wrote).
 type LiveTurn struct {
 	Capabilities []string   `json:"capabilities"`
 	Steps        []LiveStep `json:"steps"`
+	Chat         string     `json:"chat,omitempty"`
 }
 
 // StepWatcher says, for agents at work, what each is handling right now (its latest piece of work). Watchers of
 // WorkWatcher are told when this changes too.
 type StepWatcher interface {
 	LiveTurns(agentIDs []string) map[string]LiveTurn
+}
+
+// ConversationWatcher says, for agents at work, every piece of work each is handling right now, oldest first: an agent
+// talks to several people at once.
+type ConversationWatcher interface {
+	LiveConversations(agentIDs []string) map[string][]LiveTurn
 }
 
 // TurnRecord is one message from a person that an agent handled: with which capabilities, the abilities it used and

@@ -7,7 +7,10 @@ import (
 	"github.com/unitz007/open-kael/domain"
 )
 
-var _ domain.StepWatcher = (*Host)(nil)
+var (
+	_ domain.StepWatcher         = (*Host)(nil)
+	_ domain.ConversationWatcher = (*Host)(nil)
+)
 
 // Steps: what an agent is doing right now (the abilities it uses in what it is handling, and how each went), for its
 // creator's screen, and afterwards one record of each message a person sent. Only the abilities' ids and how they went
@@ -20,6 +23,7 @@ const maxTurnSteps = 30
 type turnSteps struct {
 	h       *Host
 	agentID string
+	chat    string            // the chat app (identity id) it came in on
 	tools   map[string]string // the name the model calls an ability → its id; anything else is not an ability
 
 	mu    sync.Mutex
@@ -27,20 +31,20 @@ type turnSteps struct {
 	steps []domain.LiveStep
 }
 
-// beginSteps starts following a piece of work, as the agent's latest.
-func (h *Host) beginSteps(hosted *HostedAgent) *turnSteps {
+// beginSteps starts following a piece of work, as the agent's latest; chat is the chat app it came in on.
+func (h *Host) beginSteps(hosted *HostedAgent, chat string) *turnSteps {
 	tools, _, _ := hosted.View()
 	names := make(map[string]string, len(tools))
 	for id, def := range tools {
 		names[def.ModelName()] = id
 	}
-	t := &turnSteps{h: h, agentID: hosted.Agent.ID, tools: names}
+	t := &turnSteps{h: h, agentID: hosted.Agent.ID, chat: chat, tools: names}
 	b := &h.work
 	b.mu.Lock()
 	if b.live == nil {
-		b.live = map[string]*turnSteps{}
+		b.live = map[string][]*turnSteps{}
 	}
-	b.live[t.agentID] = t
+	b.live[t.agentID] = append(b.live[t.agentID], t)
 	b.mu.Unlock()
 	return t
 }
@@ -82,15 +86,24 @@ func (t *turnSteps) setCapabilities(ids []string) {
 func (t *turnSteps) snapshot() domain.LiveTurn {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return domain.LiveTurn{Capabilities: append([]string{}, t.caps...), Steps: append([]domain.LiveStep{}, t.steps...)}
+	return domain.LiveTurn{Capabilities: append([]string{}, t.caps...), Steps: append([]domain.LiveStep{}, t.steps...), Chat: t.chat}
 }
 
-// end stops following it (if it is still the agent's latest).
+// end stops following it.
 func (t *turnSteps) end() {
 	b := &t.h.work
 	b.mu.Lock()
-	if b.live[t.agentID] == t {
+	list := b.live[t.agentID]
+	for i, x := range list {
+		if x == t {
+			list = append(list[:i:i], list[i+1:]...)
+			break
+		}
+	}
+	if len(list) == 0 {
 		delete(b.live, t.agentID)
+	} else {
+		b.live[t.agentID] = list
 	}
 	b.mu.Unlock()
 }
@@ -105,20 +118,31 @@ func stepsOf(ctx context.Context) (*turnSteps, bool) {
 	return t, ok
 }
 
-// LiveTurns implements domain.StepWatcher.
+// LiveTurns implements domain.StepWatcher: each agent's latest piece of work.
 func (h *Host) LiveTurns(agentIDs []string) map[string]domain.LiveTurn {
+	out := map[string]domain.LiveTurn{}
+	for id, list := range h.LiveConversations(agentIDs) {
+		out[id] = list[len(list)-1]
+	}
+	return out
+}
+
+// LiveConversations implements domain.ConversationWatcher: every piece of work in progress, oldest first.
+func (h *Host) LiveConversations(agentIDs []string) map[string][]domain.LiveTurn {
 	b := &h.work
 	b.mu.Lock()
-	live := make(map[string]*turnSteps, len(agentIDs))
+	live := make(map[string][]*turnSteps, len(agentIDs))
 	for _, id := range agentIDs {
-		if t := b.live[id]; t != nil {
-			live[id] = t
+		if list := b.live[id]; len(list) > 0 {
+			live[id] = append([]*turnSteps(nil), list...)
 		}
 	}
 	b.mu.Unlock()
-	out := make(map[string]domain.LiveTurn, len(live))
-	for id, t := range live {
-		out[id] = t.snapshot()
+	out := make(map[string][]domain.LiveTurn, len(live))
+	for id, list := range live {
+		for _, t := range list {
+			out[id] = append(out[id], t.snapshot())
+		}
 	}
 	return out
 }

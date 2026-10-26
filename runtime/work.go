@@ -16,7 +16,7 @@ type workBoard struct {
 	n    map[string]int
 	subs map[int]*workSub
 	next int
-	live map[string]*turnSteps // each agent's latest piece of work, while it lasts (steps.go)
+	live map[string][]*turnSteps // each agent's pieces of work in progress, oldest first, while they last (steps.go)
 }
 
 type workSub struct {
