@@ -470,8 +470,10 @@ ALTER TABLE messenger_channels ADD COLUMN IF NOT EXISTS welcome_message_id TEXT 
 -- Cleanup: remove bot-kind identities that are no longer linked to any agent.
 -- These accumulate when an agent is deleted (old code left the identity row)
 -- or when agent creation fails after the identity was created.
+-- A creator's own GitHub App is not a chat bot: it serves all their minions without being attached to one, so it stays.
 DELETE FROM identities
 WHERE kind = 'bot'
+  AND integration_id <> 'github'
   AND id NOT IN (SELECT identity_id FROM agent_identities);
 
 -- Activity: how an agent is doing, for the creator who owns it. Counts only. Nothing here holds
