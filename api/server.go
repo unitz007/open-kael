@@ -68,6 +68,10 @@ type Server struct {
 	// the runtime can stop their listener goroutines immediately.
 	onAgentDelete func(agentID string, identityIDs []string)
 
+	// onAccountDelete, when set, is called while a login is being deleted, after its agents are gone and before its
+	// connections and accounts on services are: what the application keeps for a creator outside these tables goes then.
+	onAccountDelete func(ctx context.Context, accountID string) error
+
 	// onAgentUpdate, when set, is called after PATCH /agents/{id} saves any
 	// mutable agent fields (e.g. Greeting). Receives the agent ID so the
 	// runtime can reload the in-memory agent.
@@ -158,6 +162,12 @@ func WithAgentReadiness(f func(ctx context.Context, agent *domain.Agent) string)
 // it so the runtime can stop their listener goroutines immediately.
 func WithAgentDeleteHook(f func(agentID string, identityIDs []string)) Option {
 	return func(s *Server) { s.onAgentDelete = f }
+}
+
+// WithAccountDeleteHook registers what runs while a creator deletes their login: after their agents are deleted and
+// before their own connections and accounts on services are. An error stops the deletion (asking again finishes it).
+func WithAccountDeleteHook(f func(ctx context.Context, accountID string) error) Option {
+	return func(s *Server) { s.onAccountDelete = f }
 }
 
 // WithSkillChangeHook registers a callback invoked when a skill is created or
@@ -355,6 +365,14 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /users/password/forgot", s.forgotPassword)
 	s.mux.HandleFunc("POST /users/password/reset", s.resetPassword)
 	s.mux.HandleFunc("GET /users/me", s.userAuth(s.getMe))
+	s.mux.HandleFunc("PATCH /users/me", s.userAuth(s.renameMe))
+	s.mux.HandleFunc("DELETE /users/me", s.userAuth(s.deleteMe))
+	s.mux.HandleFunc("GET /users/me/account", s.userAuth(s.getMyAccount))
+	s.mux.HandleFunc("POST /users/me/password", s.userAuth(s.changeMyPassword))
+	s.mux.HandleFunc("POST /users/me/sessions/sign-out-others", s.userAuth(s.signOutOthers))
+	s.mux.HandleFunc("POST /users/me/email", s.userAuth(s.askToChangeEmail))
+	s.mux.HandleFunc("GET /users/email/change", s.peekEmailChange)
+	s.mux.HandleFunc("POST /users/email/change", s.confirmEmailChange)
 	s.mux.HandleFunc("POST /users/me/timezone-hint", s.userAuth(s.rememberMyTimezone))
 	s.mux.HandleFunc("DELETE /sessions", s.userAuth(s.logoutUser))
 

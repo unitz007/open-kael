@@ -49,6 +49,16 @@ CREATE TABLE IF NOT EXISTS password_resets (
     expires_at TIMESTAMPTZ NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_password_resets_account ON password_resets (account_id);
+
+-- One-time links to move a login to a new email: only a hash of each, one per login at a time, for a day. The email
+-- changes only when the link is opened and confirmed.
+CREATE TABLE IF NOT EXISTS email_changes (
+    token_hash TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts (id) ON DELETE CASCADE,
+    new_email  TEXT NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_email_changes_account ON email_changes (account_id);
 CREATE INDEX IF NOT EXISTS idx_accounts_person_id ON accounts (person_id);
 
 -- Replaced by messenger_channels; kept so existing DBs don't error on startup.
