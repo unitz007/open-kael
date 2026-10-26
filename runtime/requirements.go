@@ -146,23 +146,39 @@ func recentTurn(messages []domain.Message) domain.Earlier {
 	return e
 }
 
-// keepNeeded puts back what an offered action must run first (BoundAction.Needs) when trimming left it out: without it
-// the action could never run.
+// keepNeeded puts back what trimming left out but an offered action relies on: what it must run first
+// (BoundAction.Needs; without it the action could never run) and the look-ups its inputs come from (With). For a
+// connection that doesn't list those (a creator's own), every look-up it has comes with any of its abilities: trimming
+// judges each ability on its own and can't see that one is a step towards another (found 2026-10-26: a transfer kept,
+// the player list it needed for the player coming in trimmed away).
 func keepNeeded(offered, all []*domain.BoundAction) []*domain.BoundAction {
 	have := map[string]bool{}
 	for _, t := range offered {
 		have[t.Spec.Name] = true
 	}
-	for i := 0; i < len(offered); i++ { // what is put back may need something too
-		for _, need := range offered[i].Needs {
-			if have[need] {
+	add := func(t *domain.BoundAction) {
+		if !have[t.Spec.Name] {
+			offered = append(offered, t)
+			have[t.Spec.Name] = true
+		}
+	}
+	for i := 0; i < len(offered); i++ { // what is put back may rely on something too
+		a := offered[i]
+		for _, name := range append(append([]string{}, a.Needs...), a.With...) {
+			if have[name] {
 				continue
 			}
 			for _, t := range all {
-				if t.Spec.Name == need {
-					offered = append(offered, t)
-					have[need] = true
+				if t.Spec.Name == name {
+					add(t)
 					break
+				}
+			}
+		}
+		if a.App != "" && !a.Declared {
+			for _, t := range all {
+				if t.App == a.App && t.Spec.ReadOnly {
+					add(t)
 				}
 			}
 		}

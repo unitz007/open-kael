@@ -236,3 +236,20 @@ func TestPrerequisite_AnAbilitysOwnFirst(t *testing.T) {
 		t.Fatalf("an agent that can't run the first isn't held to it: %v", out)
 	}
 }
+
+// A bound ability says which connection it belongs to, whether that connection lists what its abilities rely on, and
+// what comes with it, by the names the model calls them.
+func TestHydrate_WhatComesWithAnAbility(t *testing.T) {
+	tools, ints, reg := tradingFixture(&tradingExecutor{})
+	place := *tools["t:place"]
+	place.With = []string{"t:status", "t:gone"}
+	tools["t:place"] = &place
+	bound, err := domain.HydrateSkillTools(&domain.Skill{ID: "s", Integrations: []string{"trading"}}, &domain.Agent{}, tools, nil, ints, reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := action(t, bound, "place_trade")
+	if a.App != "trading" || !a.Declared || len(a.With) != 1 || a.With[0] != "get_trading_status" {
+		t.Errorf("app %q declared %v with %v", a.App, a.Declared, a.With)
+	}
+}

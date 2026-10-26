@@ -285,6 +285,7 @@ func hydrateSkillTools(skill *Skill, agent *Agent, toolsByID map[string]*ToolDef
 			return nil, fmt.Errorf("skill %q: %w", skill.ID, err)
 		}
 		action.Limited = len(skill.RulesFor(def.ID)) > 0
+		describe(action, def, integration, toolsByID)
 		bound = append(bound, action)
 	}
 
@@ -325,6 +326,7 @@ func hydrateSkillTools(skill *Skill, agent *Agent, toolsByID map[string]*ToolDef
 				return nil, fmt.Errorf("skill %q: %w", skill.ID, err)
 			}
 			action.Limited = len(skill.RulesFor(def.ID)) > 0
+			describe(action, def, integration, toolsByID)
 			bound = append(bound, action)
 			seen[name] = true
 		}
@@ -536,4 +538,15 @@ func WithBotCredentialRef(ctx context.Context, ref string) context.Context {
 func BotCredentialRefFromContext(ctx context.Context) (string, bool) {
 	ref, ok := ctx.Value(ctxBotCredentialRef{}).(string)
 	return ref, ok && ref != ""
+}
+
+// describe notes on a bound ability what it belongs to and what comes with it (BoundAction.App, With, Declared).
+func describe(action *BoundAction, def *ToolDefinition, integration *Integration, toolsByID map[string]*ToolDefinition) {
+	action.App = integration.ID
+	action.Declared = integration.Source == nil // the platform's own apps list what each ability relies on
+	for _, id := range def.With {
+		if w, ok := toolsByID[id]; ok {
+			action.With = append(action.With, w.ModelName())
+		}
+	}
 }

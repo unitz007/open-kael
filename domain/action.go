@@ -48,6 +48,13 @@ type BoundAction struct {
 	// Needs are the actions (by name) its capability says must run successfully first in the same run (see
 	// Prerequisite): whoever trims what is offered must keep them, or this one could never run.
 	Needs []string
+	// App is the connection the ability belongs to. With names the look-ups (by the names the model calls them) it relies
+	// on for its inputs, offered with it whenever it is (ToolDefinition.With). Declared says its connection lists those,
+	// as the platform's own apps do; a connection that doesn't (a creator's own) keeps all its look-ups together when any
+	// of its abilities is offered.
+	App      string
+	With     []string
+	Declared bool
 	// Limited says its capability holds it to limits of its own (Skill.Rules), so where the same ability comes through
 	// two capabilities this copy is the one kept.
 	Limited bool

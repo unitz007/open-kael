@@ -61,6 +61,10 @@ type ToolDefinition struct {
 	// needs what only a look-up gives (a transfer needs the player ids from the person's team). Kept for every agent
 	// that has both, exactly like a creator's own "this before that" (prerequisite.go); one it doesn't have is ignored.
 	First []string `json:"first,omitempty"`
+	// With names look-ups (tool ids) it relies on for its inputs without having to run them first (a transfer finds the
+	// player coming in through the player list): wherever it is offered, they are offered too, so trimming what an agent
+	// sees never leaves it without the way to its own inputs.
+	With []string `json:"with,omitempty"`
 
 	// ApprovalTimeoutSeconds bounds how long the runtime host waits for a
 	// response before treating an approval request as declined — never
