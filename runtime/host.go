@@ -396,6 +396,9 @@ type Host struct {
 	// when no skill was matched) and returns a reply to deliver. When the
 	// handler returns an error the turn falls through to the skill loop.
 	intentHandlers map[domain.Intent]IntentHandler
+	// noIntentGates, when set, makes the first sorting of a message a hint only: small talk and "unrelated" are answered
+	// as a normal turn, and no intent handler takes a message over (see SetIntentGates).
+	noIntentGates bool
 
 	// activity, when set, is told how each agent is doing (see activity.go): counts only.
 	activity     domain.ActivityRecorder
@@ -695,6 +698,12 @@ func (h *Host) SetUserIntegrationNotesLoader(f func(ctx context.Context, userID 
 func (h *Host) SetUserIntegrationNotesSetter(f func(ctx context.Context, userID, integrationID, notes string) error) {
 	h.userIntegrationNotesSetter = f
 }
+
+// SetIntentGates says whether the first sorting of a message may decide what the turn can do (on by default): answer
+// small talk and unrelated messages without abilities, and hand a message to an intent handler (repeating tasks).
+// Off, the sorting is a hint only: every message is a normal turn with the agent's abilities and the platform's
+// capabilities (repeating tasks and alerts are offered as actions there).
+func (h *Host) SetIntentGates(on bool) { h.noIntentGates = !on }
 
 // SetIntentHandler registers a handler for a specific intent. When the skill
 // router classifies a turn with the given intent, the handler is called before
@@ -1569,6 +1578,9 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 		} else {
 			intent, classified = in, true
 			log.Printf("skill-router: intent=%q", intent)
+			if h.noIntentGates && (intent == domain.IntentChat || intent == domain.IntentOffTopic) {
+				intent = domain.IntentRecommend // a hint only: answered as a normal turn
+			}
 			switch intent {
 			case domain.IntentChat:
 				log.Printf("skill-router: just being friendly — answering without tools")
@@ -1624,7 +1636,7 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 
 	// Only being sociable: answer like a person would, in their language, and nothing else.
 	// No ability is run and none is remembered for a follow-up.
-	if intent == domain.IntentChat {
+	if intent == domain.IntentChat && !h.noIntentGates {
 		log.Printf("skill-router: just being friendly — answering without tools")
 		h.noteUses(ctx, hosted, nil)
 		return h.chatReply(ctx, hosted, messages, actions)
@@ -1652,7 +1664,7 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 
 	// Dispatch to a registered intent handler before the skill loop.
 	// skillName is "" when no skill matched (e.g. "show my schedules").
-	if handler, ok := h.intentHandlers[intent]; ok {
+	if handler, ok := h.intentHandlers[intent]; ok && !h.noIntentGates {
 		if conv, ok := domain.ConversationFromContext(ctx); ok && conv.UserID != "" {
 			skillName := ""
 			if len(skillNames) > 0 {
