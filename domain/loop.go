@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 )
@@ -28,6 +29,7 @@ const (
 	maxConsecutiveFailures = 3
 	maxSameActionCalls     = 15
 	maxToolCallsPerIter    = 10
+	maxStaleSteps          = 2 // steps in a row with nothing new before a reply ends with what it has
 )
 
 // ErrSuperseded is what an action returns when the wait it was in (a question put to the person)
@@ -120,6 +122,12 @@ func (l *NativeLoop) Run(ctx context.Context, messages []Message, actions []*Bou
 	// Changes that already went through this turn, by action and exact arguments. The same
 	// change is never made twice in one turn, whatever makes the model ask again.
 	doneChanges := map[string]string{}
+	// Look-ups already made this turn, by action and exact arguments: the same question gets the same answer, without
+	// asking the service again and without counting against anything. They replace per-ability call limits for
+	// look-ups, which were guesses about how a task goes (comparing four players needs four look-ups).
+	lookedUp := map[string]string{}
+	// Steps in a row that ran nothing new (only repeats of what it already did): a reply that stops making progress ends.
+	stale := 0
 	reqs := RequirementsFromContext(ctx)
 	if fin, ok := actionsByName[FinishActionName]; !reqs.Active() || !ok || !hasProperty(fin.Spec.InputSchema, "outcome") {
 		// Only a loop whose finish asks for an outcome is held to the requirements, so
@@ -132,8 +140,41 @@ func (l *NativeLoop) Run(ctx context.Context, messages []Message, actions []*Bou
 		log.Printf("loop: gave up (%s) — what ran: %s", reason, describeRecords(records))
 		return &LoopResult{Status: LoopStatusError, Content: reason, Actions: records}, messages, nil
 	}
+	// wrapUp ends a reply that can't usefully go on (it keeps failing or repeating itself, or has used its steps) with
+	// an answer from what it found, instead of an error that throws all of that away: one more call, with only finish
+	// offered. A "done" it can't back up is replaced by the facts, as at any finish.
+	wrapUp := func(reason string) (*LoopResult, []Message, error) {
+		fin, ok := actionsByName[FinishActionName]
+		if !ok {
+			return giveUp(reason)
+		}
+		log.Printf("loop: wrapping up (%s) — what ran: %s", reason, describeRecords(records))
+		msgs := append(answerOpenCalls(messages), Message{Role: RoleUser, Internal: true, Content: wrapUpNote})
+		resp, err := l.callLLM(ctx, msgs, []ActionSpec{fin.Spec})
+		if err != nil || resp == nil || len(resp.ToolCalls) == 0 || resp.ToolCalls[0].Name != FinishActionName {
+			return giveUp(reason)
+		}
+		call := resp.ToolCalls[0]
+		content, _ := call.Arguments["content"].(string)
+		if strings.TrimSpace(content) == "" {
+			return giveUp(reason)
+		}
+		result := &LoopResult{Status: LoopStatusComplete, Content: content, Output: call.Arguments, Actions: records}
+		if reqs != nil {
+			if ok, _ := finishCheck(call.Arguments, reqs, records); !ok {
+				result.Content = reqs.NothingChangedMessage(records)
+			}
+		}
+		msgs = append(msgs, Message{Role: RoleAssistant, Content: resp.Content, ToolCalls: resp.ToolCalls[:1]},
+			Message{Role: RoleTool, ToolCallID: call.ID, Name: call.Name, Content: "done"})
+		return result, msgs, nil
+	}
 
 	for i := 0; l.MaxIterations == 0 || i < l.MaxIterations; i++ {
+		if stale >= maxStaleSteps {
+			return wrapUp("no progress: it only repeated what it had already done")
+		}
+		progressed := false
 		resp, err := l.callLLM(ctx, messages, specs)
 		if err != nil {
 			return nil, messages, fmt.Errorf("native loop: call llm: %w", err)
@@ -147,7 +188,7 @@ func (l *NativeLoop) Run(ctx context.Context, messages []Message, actions []*Bou
 			)
 			consecutiveFailures++
 			if consecutiveFailures >= maxConsecutiveFailures {
-				return giveUp("too many responses with no action call")
+				return wrapUp("too many responses with no action call")
 			}
 			continue
 		}
@@ -159,7 +200,7 @@ func (l *NativeLoop) Run(ctx context.Context, messages []Message, actions []*Bou
 			)
 			consecutiveFailures++
 			if consecutiveFailures >= maxConsecutiveFailures {
-				return giveUp("too many tool calls per response")
+				return wrapUp("too many tool calls per response")
 			}
 			continue
 		}
@@ -214,9 +255,22 @@ func (l *NativeLoop) Run(ctx context.Context, messages []Message, actions []*Bou
 				messages = append(messages, Message{Role: RoleTool, ToolCallID: call.ID, Name: call.Name, Content: fmt.Sprintf("unknown action %q", call.Name)})
 				consecutiveFailures++
 				if consecutiveFailures >= maxConsecutiveFailures {
-					return giveUp("too many failed action calls")
+					return wrapUp("too many failed action calls")
 				}
 				continue
+			}
+
+			lookupKey := ""
+			if action.Spec.ReadOnly {
+				if args, merr := json.Marshal(call.Arguments); merr == nil {
+					lookupKey = call.Name + "|" + string(args)
+					if prev, repeated := lookedUp[lookupKey]; repeated {
+						log.Printf("loop: %q asked again with the same inputs — answered with what it found before", call.Name)
+						messages = append(messages, Message{Role: RoleTool, ToolCallID: call.ID, Name: call.Name,
+							Content: "Already looked up in this reply, with the same inputs; the same as before:\n" + prev})
+						continue
+					}
+				}
 			}
 
 			callCounts[call.Name]++
@@ -231,16 +285,16 @@ func (l *NativeLoop) Run(ctx context.Context, messages []Message, actions []*Bou
 				}
 				consecutiveFailures++
 				if consecutiveFailures >= maxConsecutiveFailures {
-					return giveUp(fmt.Sprintf("action %q called too many times", call.Name))
+					return wrapUp(fmt.Sprintf("action %q called too many times", call.Name))
 				}
 				break
 			}
-			if action.Spec.MaxCalls > 0 && callCounts[call.Name] > action.Spec.MaxCalls {
+			if !action.Spec.ReadOnly && action.Spec.MaxCalls > 0 && callCounts[call.Name] > action.Spec.MaxCalls {
 				messages = append(messages, Message{Role: RoleTool, ToolCallID: call.ID, Name: call.Name,
 					Content: fmt.Sprintf("already called %d time(s) this turn — the result is already in context, do not call again", action.Spec.MaxCalls)})
 				consecutiveFailures++
 				if consecutiveFailures >= maxConsecutiveFailures {
-					return giveUp("too many failed action calls")
+					return wrapUp("too many failed action calls")
 				}
 				continue
 			}
@@ -259,6 +313,7 @@ func (l *NativeLoop) Run(ctx context.Context, messages []Message, actions []*Bou
 			}
 
 			noteStep(ctx, call.Name, StepRunning)
+			progressed = true // something new ran (a failure is counted by its own rule)
 			output, err := action.Invoke(ctx, call.Arguments)
 			noteStep(ctx, call.Name, StepStateOf(output, err))
 			done, msg, why := OutcomeOf(output, err)
@@ -276,7 +331,7 @@ func (l *NativeLoop) Run(ctx context.Context, messages []Message, actions []*Bou
 				messages = append(messages, Message{Role: RoleTool, ToolCallID: call.ID, Name: call.Name, Content: fmt.Sprintf("error: %v", err)})
 				consecutiveFailures++
 				if consecutiveFailures >= maxConsecutiveFailures {
-					return giveUp("too many failed action calls")
+					return wrapUp("too many failed action calls")
 				}
 				continue
 			}
@@ -285,11 +340,53 @@ func (l *NativeLoop) Run(ctx context.Context, messages []Message, actions []*Bou
 			if changeKey != "" && done {
 				doneChanges[changeKey] = truncateRunes(StringifyResult(output), 300)
 			}
+			if lookupKey != "" && done {
+				lookedUp[lookupKey] = StringifyResult(output)
+			}
 			messages = append(messages, Message{Role: RoleTool, ToolCallID: call.ID, Name: call.Name, Content: StringifyResult(output)})
+		}
+		if progressed {
+			stale = 0
+		} else {
+			stale++
 		}
 	}
 
+	if _, ok := actionsByName[FinishActionName]; ok {
+		return wrapUp("used all its steps")
+	}
 	return &LoopResult{Status: LoopStatusMaxIteration}, messages, nil
+}
+
+// wrapUpNote asks a reply that is being cut short for its answer.
+const wrapUpNote = "Stop using abilities now. Answer the person with what you found so far, and say plainly what you couldn't finish (they can ask again). Don't say anything was done unless it really went through. Call finish."
+
+// answerOpenCalls answers any call of the last assistant message that has no answer yet (a reply cut short in the
+// middle of several calls), so the conversation stays well formed for one more call to the model.
+func answerOpenCalls(messages []Message) []Message {
+	last := -1
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == RoleAssistant && len(messages[i].ToolCalls) > 0 {
+			last = i
+			break
+		}
+	}
+	if last < 0 {
+		return messages
+	}
+	answered := map[string]bool{}
+	for _, m := range messages[last+1:] {
+		if m.Role == RoleTool {
+			answered[m.ToolCallID] = true
+		}
+	}
+	out := append([]Message(nil), messages...)
+	for _, c := range messages[last].ToolCalls {
+		if !answered[c.ID] {
+			out = append(out, Message{Role: RoleTool, ToolCallID: c.ID, Name: c.Name, Content: "not run: the reply is wrapping up"})
+		}
+	}
+	return out
 }
 
 // overUsed is what an ability that reached its uses for one reply answers instead of running.
