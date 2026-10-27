@@ -396,8 +396,8 @@ type Host struct {
 	// when no skill was matched) and returns a reply to deliver. When the
 	// handler returns an error the turn falls through to the skill loop.
 	intentHandlers map[domain.Intent]IntentHandler
-	// noIntentGates, when set, makes the first sorting of a message a hint only: small talk and "unrelated" are answered
-	// as a normal turn, and no intent handler takes a message over (see SetIntentGates).
+	// noIntentGates, when set, makes the first sorting of a message a hint only for small talk and intent handlers:
+	// small talk is answered as a normal turn and no intent handler takes a message over (see SetIntentGates).
 	noIntentGates bool
 
 	// activity, when set, is told how each agent is doing (see activity.go): counts only.
@@ -700,9 +700,10 @@ func (h *Host) SetUserIntegrationNotesSetter(f func(ctx context.Context, userID,
 }
 
 // SetIntentGates says whether the first sorting of a message may decide what the turn can do (on by default): answer
-// small talk and unrelated messages without abilities, and hand a message to an intent handler (repeating tasks).
-// Off, the sorting is a hint only: every message is a normal turn with the agent's abilities and the platform's
-// capabilities (repeating tasks and alerts are offered as actions there).
+// small talk without abilities, and hand a message to an intent handler (repeating tasks). Off, those are hints only:
+// the message is a normal turn with the agent's abilities and the platform's capabilities (repeating tasks and alerts
+// are offered as actions there). A message the sorting is sure is unrelated to the agent is still declined either way:
+// agents are for their area, the decline costs no model call, and it is counted as something people asked for.
 func (h *Host) SetIntentGates(on bool) { h.noIntentGates = !on }
 
 // SetIntentHandler registers a handler for a specific intent. When the skill
@@ -1578,7 +1579,7 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 		} else {
 			intent, classified = in, true
 			log.Printf("skill-router: intent=%q", intent)
-			if h.noIntentGates && (intent == domain.IntentChat || intent == domain.IntentOffTopic) {
+			if h.noIntentGates && intent == domain.IntentChat {
 				intent = domain.IntentRecommend // a hint only: answered as a normal turn
 			}
 			switch intent {
