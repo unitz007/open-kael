@@ -550,6 +550,7 @@ func BotCredentialRefFromContext(ctx context.Context) (string, bool) {
 // describe notes on a bound ability what it belongs to and what comes with it (BoundAction.App, With, Declared).
 func describe(action *BoundAction, def *ToolDefinition, integration *Integration, toolsByID map[string]*ToolDefinition) {
 	action.App = integration.ID
+	action.AppName = integration.Name
 	action.Declared = integration.Source == nil // the platform's own apps list what each ability relies on
 	for _, id := range def.With {
 		if w, ok := toolsByID[id]; ok {

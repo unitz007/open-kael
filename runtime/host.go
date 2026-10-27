@@ -476,6 +476,14 @@ type ToolFilter interface {
 	FilterTools(ctx context.Context, userText string, tools []*domain.BoundAction) ([]*domain.BoundAction, error)
 }
 
+// ScopedToolFilter is a ToolFilter that also reads the message against what the agent is for (its description and
+// what it can do): "I've got £1.2m in the bank. What's the smartest transfer?" is about the person's fantasy football
+// team to a fantasy football assistant, and was trimmed to web search and notes when each ability was judged against
+// the message alone. Used instead of FilterTools when the filter has it.
+type ScopedToolFilter interface {
+	FilterToolsFor(ctx context.Context, userText, agentScope string, tools []*domain.BoundAction) ([]*domain.BoundAction, error)
+}
+
 func NewHost() *Host {
 	h := &Host{
 		agents:         make(map[string]*HostedAgent),
@@ -1859,7 +1867,13 @@ func (h *Host) runRoutedTurn(ctx context.Context, hosted *HostedAgent, userText 
 	// Falls back to the full list on error or empty result.
 	var picked map[string]bool // what trimming chose and what the request needs: only these bring what comes with them
 	if h.toolFilter != nil {
-		filtered, ferr := h.toolFilter.FilterTools(ctx, userText, mergedTools)
+		var filtered []*domain.BoundAction
+		var ferr error
+		if sf, ok := h.toolFilter.(ScopedToolFilter); ok {
+			filtered, ferr = sf.FilterToolsFor(ctx, userText, h.scopeOf(ctx, hosted.Agent), mergedTools)
+		} else {
+			filtered, ferr = h.toolFilter.FilterTools(ctx, userText, mergedTools)
+		}
 		if ferr != nil {
 			log.Printf("skill-router: tool filter failed: %v — using full tool list", ferr)
 		} else if len(filtered) > 0 {

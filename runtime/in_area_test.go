@@ -317,3 +317,39 @@ func TestOneCapability_AMessageForItUsesItsOnlyCapability(t *testing.T) {
 		t.Errorf("an unrelated message is still declined, with no model call: %q (%d calls)", got[len(got)-1], r.spy.calls())
 	}
 }
+
+// scopedFilter keeps everything, noting what it was told.
+type scopedFilter struct {
+	scope string
+	apps  []string
+}
+
+func (f *scopedFilter) FilterTools(_ context.Context, _ string, tools []*domain.BoundAction) ([]*domain.BoundAction, error) {
+	return tools, nil
+}
+
+func (f *scopedFilter) FilterToolsFor(_ context.Context, _ string, scope string, tools []*domain.BoundAction) ([]*domain.BoundAction, error) {
+	f.scope = scope
+	for _, t := range tools {
+		f.apps = append(f.apps, t.Spec.Name+"@"+t.AppName)
+	}
+	return tools, nil
+}
+
+// Trimming what is offered reads the message against what the agent is for, and knows which app each ability is from.
+func TestToolFilter_IsToldWhatTheAgentIsForAndEachAbilitysApp(t *testing.T) {
+	r := newIntentRig(t, &intentRouter{
+		intents:      map[string]domain.Intent{"Check audusd": domain.IntentRecommend},
+		followRouter: followRouter{byText: map[string][]string{"Check audusd": {"analyse_pair"}}},
+	})
+	r.hosted.Deps.IntegrationsByID["int-fx"].Name = "FX Desk"
+	f := &scopedFilter{}
+	r.host.SetToolFilter(f)
+	r.say(t, "C1", "Check audusd")
+	if !strings.Contains(f.scope, "Forex trading desk") || !strings.Contains(f.scope, "Analyses a currency pair") {
+		t.Errorf("what the agent is for: %q", f.scope)
+	}
+	if strings.Join(f.apps, ",") != "get_live_quote@FX Desk" {
+		t.Errorf("each ability's app: %v", f.apps)
+	}
+}

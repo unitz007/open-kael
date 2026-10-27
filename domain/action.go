@@ -52,7 +52,10 @@ type BoundAction struct {
 	// on for its inputs, offered with it whenever it is (ToolDefinition.With). Declared says its connection lists those,
 	// as the platform's own apps do; a connection that doesn't (a creator's own) keeps all its look-ups together when any
 	// of its abilities is offered.
-	App      string
+	App string
+	// AppName is that connection's name, for whoever judges what is relevant to a message ("Make Transfer" alone doesn't
+	// say it's Fantasy Premier League).
+	AppName  string
 	With     []string
 	Declared bool
 	// Limited says its capability holds it to limits of its own (Skill.Rules), so where the same ability comes through
