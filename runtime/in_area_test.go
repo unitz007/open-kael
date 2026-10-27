@@ -294,10 +294,10 @@ func (s *alertLLM) Call(_ context.Context, _ []domain.Message, specs []domain.Ac
 	return &domain.LLMResponse{ToolCalls: []domain.ToolCall{{ID: "f", Name: domain.FinishActionName, Arguments: map[string]any{"content": s.reply}}}}, nil
 }
 
-// An agent with one capability (a minion: its apps) has nothing to choose between: a message found to be for it uses
-// that capability even when the picker can't tie its words to it, so it can look things up ("I've got £1.2m in the
-// bank. What's the smartest transfer?" was answered as personal finance with no look-ups). One that isn't for it is
-// still declined without a model call.
+// An agent with one capability (a minion: its apps) has nothing to choose between: the picker isn't asked, and a
+// message found to be for it uses that capability, so it can look things up ("I've got £1.2m in the bank. What's the
+// smartest transfer?" was answered as personal finance with no look-ups when the picker said none). One that isn't for
+// it is still declined without a model call.
 func TestOneCapability_AMessageForItUsesItsOnlyCapability(t *testing.T) {
 	ask, do := "I've got £1.2m in the bank. What's the smartest transfer?", "Sort my transfer out"
 	router := &intentRouter{intents: map[string]domain.Intent{ask: domain.IntentRecommend, do: domain.IntentExecute, "write me a poem": domain.IntentOffTopic}}
@@ -311,6 +311,9 @@ func TestOneCapability_AMessageForItUsesItsOnlyCapability(t *testing.T) {
 		if !strings.Contains(strings.Join(offered, ","), "get_live_quote") {
 			t.Errorf("message %d is offered its abilities: %v", i+1, offered)
 		}
+	}
+	if router.picked != 0 {
+		t.Errorf("the picker isn't asked: %d", router.picked)
 	}
 	r.say(t, "C3", "write me a poem")
 	if got := r.box.texts(); got[len(got)-1] != fixedDecline() || r.spy.calls() != 2 {

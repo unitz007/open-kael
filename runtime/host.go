@@ -1615,7 +1615,16 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 	}
 
 	var pickedIntent domain.Intent
-	if tr, ok := h.skillRouter.(ToolAwareSkillRouter); ok && h.routeByTools {
+	// An agent with one capability of its own (a minion: its apps and house rules) has nothing to choose between, so
+	// the capability picker isn't asked. Whether the message is for it was settled just above, read against what the
+	// agent can do; which of its abilities are offered is decided below as for any message, and the platform's own
+	// capabilities (alerts, repeating tasks) are offered on every turn. Asking the picker anyway could only add a call,
+	// or answer "none": "I've got £1.2m in the bank. What's the smartest transfer I could make?" to a fantasy football
+	// minion was then answered as personal finance with no look-ups (2026-10-27).
+	if classified && len(hosted.Agent.Skills) == 1 {
+		skillNames = []string{hosted.Agent.Skills[0].Name}
+		log.Printf("skill-router: its one capability, %s", skillNames[0])
+	} else if tr, ok := h.skillRouter.(ToolAwareSkillRouter); ok && h.routeByTools {
 		skillNames, pickedIntent, err = tr.PickSkillsWithTools(ctx, userText, earlier, h.routedSkills(ctx, hosted))
 	} else if cr, ok := h.skillRouter.(ContextualSkillRouter); ok && !earlier.IsZero() {
 		log.Printf("skill-router: reading the message next to the one before it")
@@ -1654,16 +1663,6 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 		log.Printf("skill-router: just being friendly — answering without tools")
 		h.noteUses(ctx, hosted, nil)
 		return h.chatReply(ctx, hosted, messages, actions)
-	}
-
-	// An agent with one capability of its own (a minion: its apps) has nothing to choose between. When the message was
-	// read on its own against what the agent can do and found to be for it (classified, not off-topic), the picker
-	// finding nothing only means it couldn't tie the words to the capability ("I've got £1.2m in the bank. What's the
-	// smartest transfer?" to a fantasy football minion was answered as personal finance with no look-ups, 2026-10-27).
-	// So it uses its one capability, and which of its abilities are offered is decided as for any other message.
-	if classified && len(skillNames) == 0 && len(hosted.Agent.Skills) == 1 && (intent == domain.IntentRecommend || intent == domain.IntentExecute) {
-		log.Printf("skill-router: nothing matched — using %s, its only capability", hosted.Agent.Skills[0].Name)
-		skillNames = []string{hosted.Agent.Skills[0].Name}
 	}
 
 	// A short follow-up that matches nothing on its own stays with what the conversation was

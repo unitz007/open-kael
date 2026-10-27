@@ -62,6 +62,7 @@ func newToolRouterRig(t *testing.T, on bool) (*followRig, *toolRouter) {
 // is the one used; the plain picker is not asked.
 func TestRouteByTools_TheRouterSeesWhatEachAbilitysToolsDoAndItsAnswerIsUsed(t *testing.T) {
 	r, router := newToolRouterRig(t, true)
+	withAnotherCapability(r) // with one, there is nothing to pick between
 	r.say(t, "C1", statusAsk)
 
 	router.mu.Lock()
@@ -70,7 +71,7 @@ func TestRouteByTools_TheRouterSeesWhatEachAbilitysToolsDoAndItsAnswerIsUsed(t *
 		t.Fatalf("asked with tools once, the plain picker not at all: shown=%d plain=%d", len(router.shown), router.plainUsed)
 	}
 	skills := router.shown[0]
-	if len(skills) != 1 || skills[0].Skill.Name != "analyse_pair" {
+	if len(skills) != 2 || skills[0].Skill.Name != "analyse_pair" {
 		t.Fatalf("the agent's ability: %+v", skills)
 	}
 	if len(skills[0].Tools) != 1 || skills[0].Tools[0].Name != "get_live_quote" {

@@ -59,9 +59,10 @@ func platformRig(t *testing.T, text string, intent domain.Intent, picks []string
 func TestPlatformSkill_TheRouterCanPickIt(t *testing.T) {
 	llm := &alertLLM{call: "set_up_reaction", reply: "Done."}
 	r, router, ran := platformRig(t, "Let me know whenever there's a new signal", domain.IntentExecute, []string{alertsName}, llm)
+	withAnotherCapability(r) // with one, nothing is picked (TestPlatformSkill_AMinionWithOneCapabilityStillHasIt)
 	r.say(t, "C1", "Let me know whenever there's a new signal")
 
-	if len(router.lists) != 1 || strings.Join(router.lists[0], ",") != "analyse_pair,"+alertsName {
+	if len(router.lists) != 1 || strings.Join(router.lists[0], ",") != "analyse_pair,keep_journal,"+alertsName {
 		t.Fatalf("the router must see the agent's capabilities and then the platform's: %v", router.lists)
 	}
 	if *ran != 1 {
@@ -74,8 +75,25 @@ func TestPlatformSkill_TheRouterCanPickIt(t *testing.T) {
 	if got := r.box.texts(); len(got) != 1 || got[0] != "Done." {
 		t.Errorf("its reply is the turn's: %q", got)
 	}
-	if len(r.hosted.Agent.Skills) != 1 {
+	if len(r.hosted.Agent.Skills) != 2 {
 		t.Errorf("the agent's own capabilities are never changed: %d", len(r.hosted.Agent.Skills))
+	}
+}
+
+// A minion (one capability of its own) isn't put through the picker, and the platform's capabilities still come with
+// every turn: "let me know whenever …" sets the alert up.
+func TestPlatformSkill_AMinionWithOneCapabilityStillHasIt(t *testing.T) {
+	llm := &alertLLM{call: "set_up_reaction", reply: "Done."}
+	r, router, ran := platformRig(t, "Let me know whenever there's a new signal", domain.IntentExecute, nil, llm)
+	r.say(t, "C1", "Let me know whenever there's a new signal")
+	if len(router.lists) != 0 {
+		t.Errorf("nothing to pick between: %v", router.lists)
+	}
+	if *ran != 1 {
+		t.Fatalf("the alert action must run: %d", *ran)
+	}
+	if got := strings.Join(llm.offered[0], ","); strings.Count(got, "set_up_reaction") != 1 || !strings.Contains(got, "get_live_quote") {
+		t.Errorf("its abilities and the alert action, once: %q", got)
 	}
 }
 
