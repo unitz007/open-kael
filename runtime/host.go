@@ -2181,17 +2181,15 @@ func (h *Host) onboardingMessage(agent *domain.Agent, linkCode string) (text, li
 
 // greetingBody is the first thing a new person is told. The creator's own greeting
 // is used word for word; without one, a fixed introduction is built from the agent's
-// name, description and what it can do. No model is involved, so every person gets
-// the same welcome.
+// name and what it can do. No model is involved, so every person gets the same welcome.
+// Its description isn't in it (since 2026-10-27): written about the agent for its creator ("Keeps on top of email…"),
+// it read out of place between "Hi! I'm Mina." and the list that already says what it does.
 func greetingBody(agent *domain.Agent, abilities []string) string {
 	if agent.Greeting != "" {
 		return agent.Greeting
 	}
 	var b strings.Builder
 	b.WriteString("👋 Hi! I'm " + agent.Name + ".")
-	if agent.Description != "" {
-		b.WriteString("\n\n" + agent.Description)
-	}
 	if len(abilities) > 0 {
 		b.WriteString("\n\nHere's what I can help with:")
 		for _, line := range abilities {

@@ -104,7 +104,8 @@ func TestOnboarding_TheDefaultWelcomeIsFixedText(t *testing.T) {
 		func(context.Context, string, string, string, string, string) error { return nil },
 	)
 	host.DispatchInbound(context.Background(), hosted, firstMessage("hi"))
-	want := "👋 Hi! I'm Desk.\n\nTrades currencies.\n\nHere's what I can help with:\n• Analyses a currency pair and rates the trade idea\n• Places Trades"
+	// Its description isn't repeated in it: the list already says what it does.
+	want := "👋 Hi! I'm Desk.\n\nHere's what I can help with:\n• Analyses a currency pair and rates the trade idea\n• Places Trades"
 	if got := box.texts(); len(got) < 1 || got[0] != want {
 		t.Fatalf("the default welcome:\n got %q\nwant %q", got, want)
 	}
