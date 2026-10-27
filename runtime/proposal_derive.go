@@ -37,6 +37,8 @@ const deriveInstruction = "You turn the end of an assistant's reply into buttons
 	"If the reply ends by offering or asking about a next step that has two to five clear answers, call offer_choices with those answers. " +
 	"Each choice has a label (a few words, what the button says) and say (what the person would say if they typed it: first person, specific, " +
 	"using only names, times and amounts that appear in the reply or in what the person wrote). " +
+	"The label says the same thing as say, only shorter: it never drops when it would happen ('later', 'tomorrow at 9') or which one it is about, " +
+	"so tapping it can't be mistaken for something else ('Check USD/CAD order' for 'Check back on my USD/CAD order later' reads as checking it now). " +
 	"Offer only what the reply itself offers; never invent options, facts or actions. " +
 	"Every choice is a different, concrete thing to do. Never make yes/no choices, and never 'no thanks', 'just checking', 'something else' or 'not now': " +
 	"if the only thing on offer is to do one thing or not, call nothing. " +
@@ -46,6 +48,12 @@ const deriveInstruction = "You turn the end of an assistant's reply into buttons
 // platform, not to any agent: whichever model a creator gives their agent, the buttons come out the same.
 // Without it the agent's own model is used.
 func (h *Host) SetChoiceModel(m domain.LLM) { h.choiceModel = m }
+
+// DeriveChoices is the buttons the platform's model makes from a reply's closing offer, as after a real reply: for
+// measuring how they come out on a real model.
+func (h *Host) DeriveChoices(ctx context.Context, hosted *HostedAgent, userText, reply string) []domain.ProposalChoice {
+	return h.deriveChoices(ctx, hosted, userText, reply)
+}
 
 // deriveChoices asks a model to turn a reply's closing offer into choices.
 func (h *Host) deriveChoices(ctx context.Context, hosted *HostedAgent, userText, reply string) []domain.ProposalChoice {

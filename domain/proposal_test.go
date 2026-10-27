@@ -28,6 +28,29 @@ func TestProposalData_RoundTrips(t *testing.T) {
 
 func choice(label, say string) map[string]any { return map[string]any{"label": label, "say": say} }
 
+// A button whose words say when, and whose label doesn't, gets the time in its label: "Check USD/CAD order" for
+// "Check back on my USD/CAD limit order later" was tapped as "check it now" (2026-10-27). A label that says when in its
+// own way (a clock time, a day) is left as it is, and one with no room for it too.
+func TestParseProposalChoices_ALabelSaysWhen(t *testing.T) {
+	got := ParseProposalChoices([]any{
+		choice("Check USD/CAD order", "Check back on my USD/CAD limit order later."),
+		choice("Check EUR/CHF trade", "Check back on my EUR/CHF sell trade this evening."),
+		choice("Remind me", "Remind me tomorrow at 9 to call mum"),
+		choice("Move dentist to 10:15", "Move my dentist appointment to 10:15 tomorrow"),
+		choice("Check it now", "Check my USD/CAD order now"),
+		choice("Summarise my whole inbox every week", "Summarise my whole inbox every Friday"),
+	})
+	want := []string{"Check USD/CAD order later", "Check EUR/CHF trade this evening", "Remind me tomorrow at 9", "Move dentist to 10:15", "Check it now", "Summarise my whole inbox every week"}
+	if len(got) != MaxProposalChoices {
+		t.Fatalf("%+v", got)
+	}
+	for i, w := range want[:MaxProposalChoices] {
+		if got[i].Label != w {
+			t.Errorf("%q → %q, want %q", got[i].Say, got[i].Label, w)
+		}
+	}
+}
+
 func TestParseProposalChoices(t *testing.T) {
 	good := []any{choice("Move dentist to 10:15", "Move my dentist appointment to 10:15 tomorrow"), choice("Keep both", "Keep both appointments as they are")}
 	got := ParseProposalChoices(good)

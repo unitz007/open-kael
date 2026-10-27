@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -98,6 +99,7 @@ func ParseProposalChoices(raw any) []ProposalChoice {
 		if label == "" || say == "" || utf8.RuneCountInString(label) > MaxChoiceLabelRunes || utf8.RuneCountInString(say) > MaxChoiceSayRunes {
 			continue
 		}
+		label = withTiming(label, say)
 		key := strings.ToLower(label)
 		if seen[key] {
 			continue
@@ -112,6 +114,29 @@ func ParseProposalChoices(raw any) []ProposalChoice {
 		out = out[:MaxProposalChoices]
 	}
 	return out
+}
+
+// timing finds when a choice would happen, in the words of what it says: "later", "tomorrow at 9", "this evening",
+// "every Friday", "at 18:30", "in an hour".
+var timing = regexp.MustCompile(`(?i)\b(later( on| today)?|tonight|this (morning|afternoon|evening|week|weekend)|tomorrow( (morning|afternoon|evening|at \d{1,2}(:\d{2})?( ?[ap]m)?))?|next (week|month|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|every (day|morning|evening|week|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|in (an?|\d+) (minute|hour|day|week)s?|at \d{1,2}(:\d{2})?( ?[ap]m| utc)?|on (monday|tuesday|wednesday|thursday|friday|saturday|sunday))\b`)
+
+// saysWhen is a label that already says when in its own way: a clock time, a day, "today", "now".
+var saysWhen = regexp.MustCompile(`(?i)\b(\d{1,2}:\d{2}|\d{1,2} ?[ap]m|now|today|tonight|tomorrow|later|monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|wed|thu|fri|sat|sun)\b`)
+
+// withTiming keeps a button honest about when: if what it says happens at some time ("Check back on my USD/CAD order
+// later") and its label doesn't say when ("Check USD/CAD order"), the time is added to the label, so tapping it can't
+// be mistaken for doing it now (a person tapped that, meaning "check it now", 2026-10-27). A label that already says
+// when, or has no room for it, is left as it is.
+func withTiming(label, say string) string {
+	when := timing.FindString(say)
+	if when == "" || timing.MatchString(label) || saysWhen.MatchString(label) {
+		return label
+	}
+	longer := strings.TrimRight(label, ".!?") + " " + strings.ToLower(when)
+	if utf8.RuneCountInString(longer) > MaxChoiceLabelRunes {
+		return label
+	}
+	return longer
 }
 
 // Why a tap did not choose anything.
