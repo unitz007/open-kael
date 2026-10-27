@@ -253,3 +253,28 @@ func TestHydrate_WhatComesWithAnAbility(t *testing.T) {
 		t.Errorf("app %q declared %v with %v", a.App, a.Declared, a.With)
 	}
 }
+
+// An app whose service isn't running on this server (Google's apps where its sign-in isn't set up, a creator's own app
+// taken away) is left out, and the agent works with the rest: it used to fail the whole agent, silently.
+func TestHydrate_AnAppNotRunningHereIsLeftOut(t *testing.T) {
+	tools, ints, reg := tradingFixture(&tradingExecutor{})
+	tools["c:events"] = &domain.ToolDefinition{ID: "c:events", Name: "list_events", Description: "Events.", IntegrationID: "calendar", Action: "events", ReadOnly: true, InputSchema: domain.Schema{Type: domain.SchemaTypeObject}}
+	tools["c:book"] = &domain.ToolDefinition{ID: "c:book", Name: "create_event", Description: "Books.", IntegrationID: "calendar", Action: "book", InputSchema: domain.Schema{Type: domain.SchemaTypeObject}}
+	ints["calendar"] = &domain.Integration{ID: "calendar", Service: "google.calendar", Name: "Google Calendar"} // nothing registered for it
+	for name, skill := range map[string]*domain.Skill{
+		"granted whole":    {ID: "s", Integrations: []string{"trading", "calendar"}},
+		"named one by one": {ID: "s", Integrations: []string{"trading", "calendar"}, LimitedIntegrations: []string{"calendar"}, Tools: []domain.ToolBinding{{ToolID: "c:book"}}},
+	} {
+		bound, err := domain.HydrateSkillTools(skill, &domain.Agent{}, tools, nil, ints, reg)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		var names []string
+		for _, a := range bound {
+			names = append(names, a.Spec.Name)
+		}
+		if got := strings.Join(names, ","); strings.Contains(got, "event") || !strings.Contains(got, "place_trade") {
+			t.Errorf("%s: the rest bound, the calendar left out: %s", name, got)
+		}
+	}
+}

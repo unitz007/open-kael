@@ -1327,6 +1327,11 @@ func (h *Host) handleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 
 	actions, err := h.actionsFor(ctx, hosted)
 	if err != nil {
+		// Its abilities couldn't be put together: the person is told, never left waiting on nothing.
+		if !domain.IsUnattended(ctx) {
+			h.noteEvent(domain.WithConversation(ctx, conv), hosted, domain.ActivityFailed, failureDetail(err))
+			h.deliverBestEffort(ctx, hosted, conv, failureText(err))
+		}
 		return nil, err
 	}
 

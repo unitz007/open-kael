@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sync"
 	"sync/atomic"
 )
 
@@ -279,6 +280,9 @@ func hydrateSkillTools(skill *Skill, agent *Agent, toolsByID map[string]*ToolDef
 		if !ok {
 			return nil, fmt.Errorf("skill %q: tool %q references unknown integration %q", skill.ID, def.ID, def.IntegrationID)
 		}
+		if !runsHere(registry, integration) {
+			continue // its service isn't running on this server: left out, the rest still work
+		}
 		identity := resolveIdentityForIntegration(agent, integration, identitiesByID)
 		action, err := HydrateTool(def, identity, integration, registry, rulesFor(agent, skill, def.ID)...)
 		if err != nil {
@@ -305,6 +309,9 @@ func hydrateSkillTools(skill *Skill, agent *Agent, toolsByID map[string]*ToolDef
 		integration, ok := integrationsByID[integrationID]
 		if !ok {
 			return nil, fmt.Errorf("skill %q: unknown integration %q", skill.ID, integrationID)
+		}
+		if !runsHere(registry, integration) {
+			continue // its service isn't running on this server: left out, the rest still work
 		}
 		identity := resolveIdentityForIntegration(agent, integration, identitiesByID)
 		for _, def := range toolsByID {
@@ -549,4 +556,23 @@ func describe(action *BoundAction, def *ToolDefinition, integration *Integration
 			action.With = append(action.With, w.ModelName())
 		}
 	}
+}
+
+// unavailable remembers the services already reported as not running here, so each is logged once.
+var unavailable sync.Map
+
+// runsHere says whether a connection's service has an executor on this server. One that doesn't (Google's apps on a
+// server without its sign-in set up, a creator's own app taken away) is left out of what an agent can use, and the agent
+// works with the rest: until 2026-10-27 it failed the whole agent, and the person waited on "Writing…" for ever.
+func runsHere(registry *ExecutorRegistry, integration *Integration) bool {
+	if registry == nil {
+		return false
+	}
+	if _, ok := registry.For(integration.Service); ok {
+		return true
+	}
+	if _, seen := unavailable.LoadOrStore(integration.Service, true); !seen {
+		log.Printf("hydrate: %q (%s) isn't running on this server: agents that use it work without it", integration.Name, integration.Service)
+	}
+	return false
 }
