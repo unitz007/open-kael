@@ -47,6 +47,15 @@ func newIntentRig(t *testing.T, r *intentRouter) *followRig {
 	return rig
 }
 
+// withAnotherCapability gives the rig's agent a second capability, as agents made before minions had their apps have:
+// "nothing matched" then means neither, which is what these tests are about (an agent with one capability uses it:
+// TestOneCapability_). What the agent says it can do stays the same.
+func withAnotherCapability(r *followRig) *followRig {
+	r.hosted.Agent.Skills = append(r.hosted.Agent.Skills, &domain.Skill{ID: "s2", Name: "keep_journal", Description: "Keeps a trading journal", AgentID: "a1"})
+	r.host.SetSaysProvider(func(context.Context, string) []string { return []string{"Analyses a currency pair"} })
+	return r
+}
+
 func fixedDecline() string {
 	return "I can't help with that one. Here's what I can do:\n• Analyses a currency pair\n\nWhat would you like to try?"
 }
@@ -55,7 +64,7 @@ func fixedDecline() string {
 // that one". It is a question, not an off-topic message: it is answered, with no tools.
 func TestIntentFirst_AQuestionNoAbilityCoversIsAnsweredWithoutTools(t *testing.T) {
 	router := &intentRouter{intents: map[string]domain.Intent{"Is the market open?": domain.IntentRecommend}}
-	r := newIntentRig(t, router)
+	r := withAnotherCapability(newIntentRig(t, router))
 	r.say(t, "C1", "Is the market open?")
 
 	if r.spy.calls() != 1 {
@@ -125,7 +134,7 @@ func TestIntentFirst_TheClassifiedIntentOverridesWhatThePickerSays(t *testing.T)
 // Something to DO that no ability covers is told what the agent can do, in fixed words.
 func TestIntentFirst_ARequestToDoSomethingItCannotDoGetsTheFixedReply(t *testing.T) {
 	router := &intentRouter{intents: map[string]domain.Intent{"book me a flight": domain.IntentExecute}}
-	r := newIntentRig(t, router)
+	r := withAnotherCapability(newIntentRig(t, router))
 	r.say(t, "C1", "book me a flight")
 	if got := r.box.texts(); len(got) != 1 || got[0] != fixedDecline() {
 		t.Fatalf("fixed reply expected: %q", got)
@@ -161,7 +170,7 @@ func TestIntentFirst_WithNoDescriptionTheClassifierIsToldThereIsNone(t *testing.
 func TestIntentFirst_TheModelIsToldNotToPretendToLookThingsUp(t *testing.T) {
 	var seen string
 	router := &intentRouter{intents: map[string]domain.Intent{"Is the market open?": domain.IntentRecommend}}
-	r := newIntentRig(t, router)
+	r := withAnotherCapability(newIntentRig(t, router))
 	r.hosted.Agent.LLMs = []domain.LLM{&promptSpy{seen: &seen}}
 	r.say(t, "C1", "Is the market open?")
 	for _, want := range []string{"none of your abilities covers", "Never say or imply that you are looking something up", "live prices"} {
@@ -196,7 +205,7 @@ func (s *promiseLLM) Call(_ context.Context, msgs []domain.Message, _ []domain.A
 func inAreaRigWith(t *testing.T, llm domain.LLM) *followRig {
 	t.Helper()
 	router := &intentRouter{intents: map[string]domain.Intent{"Are there any tradeable pairs?": domain.IntentRecommend}}
-	r := newIntentRig(t, router)
+	r := withAnotherCapability(newIntentRig(t, router))
 	r.hosted.Agent.LLMs = []domain.LLM{llm}
 	return r
 }
@@ -283,4 +292,28 @@ func (s *alertLLM) Call(_ context.Context, _ []domain.Message, specs []domain.Ac
 		return &domain.LLMResponse{ToolCalls: []domain.ToolCall{{ID: "a", Name: s.call, Arguments: map[string]any{}}}}, nil
 	}
 	return &domain.LLMResponse{ToolCalls: []domain.ToolCall{{ID: "f", Name: domain.FinishActionName, Arguments: map[string]any{"content": s.reply}}}}, nil
+}
+
+// An agent with one capability (a minion: its apps) has nothing to choose between: a message found to be for it uses
+// that capability even when the picker can't tie its words to it, so it can look things up ("I've got £1.2m in the
+// bank. What's the smartest transfer?" was answered as personal finance with no look-ups). One that isn't for it is
+// still declined without a model call.
+func TestOneCapability_AMessageForItUsesItsOnlyCapability(t *testing.T) {
+	ask, do := "I've got £1.2m in the bank. What's the smartest transfer?", "Sort my transfer out"
+	router := &intentRouter{intents: map[string]domain.Intent{ask: domain.IntentRecommend, do: domain.IntentExecute, "write me a poem": domain.IntentOffTopic}}
+	r := newIntentRig(t, router) // nothing in its picker matches either message
+	r.say(t, "C1", ask)
+	r.say(t, "C2", do)
+	if r.spy.calls() != 2 {
+		t.Fatalf("both reach the model: %d", r.spy.calls())
+	}
+	for i, offered := range r.spy.offered {
+		if !strings.Contains(strings.Join(offered, ","), "get_live_quote") {
+			t.Errorf("message %d is offered its abilities: %v", i+1, offered)
+		}
+	}
+	r.say(t, "C3", "write me a poem")
+	if got := r.box.texts(); got[len(got)-1] != fixedDecline() || r.spy.calls() != 2 {
+		t.Errorf("an unrelated message is still declined, with no model call: %q (%d calls)", got[len(got)-1], r.spy.calls())
+	}
 }

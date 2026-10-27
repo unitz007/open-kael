@@ -83,6 +83,7 @@ func TestBeyondAbilities_WhatItCouldDoIsNotCounted(t *testing.T) {
 // unattended run (a repeating task, an alert) is never asked: nobody asked it for anything.
 func TestBeyondAbilities_OnlyAskedOnAPersonsTurnWithACapability(t *testing.T) {
 	r, llm, log := beyondRig(t, map[string]any{"content": "It opens Sunday evening.", "no_ability_for_it": true})
+	withAnotherCapability(r)
 	r.say(t, "C1", "Is the market open?")
 	if llm.asked(0) {
 		t.Error("a question no capability covers is not asked")

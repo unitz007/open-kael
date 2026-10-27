@@ -329,7 +329,7 @@ func TestActivity_EachMessageCountsWhatItWasHandledWith(t *testing.T) {
 		intents:      map[string]domain.Intent{"thanks!": domain.IntentChat, "Check audusd": domain.IntentRecommend, "Is the market open?": domain.IntentRecommend},
 		followRouter: followRouter{byText: map[string][]string{"Check audusd": {"analyse_pair"}}},
 	}
-	r := newIntentRig(t, router)
+	r := withAnotherCapability(newIntentRig(t, router))
 	log := &useLog{}
 	r.host.SetActivityRecorder(log)
 

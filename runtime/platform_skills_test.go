@@ -134,6 +134,7 @@ func TestPlatformSkill_NeverOnAnUnattendedRun(t *testing.T) {
 func TestPlatformSkill_AnUnmatchedMessageStillGetsTheFixedReply(t *testing.T) {
 	spy := &toolSpy{}
 	r, _, ran := platformRig(t, "book me a flight", domain.IntentExecute, nil, spy)
+	withAnotherCapability(r)
 	r.say(t, "C1", "book me a flight")
 	if got := r.box.texts(); len(got) != 1 || got[0] != fixedDecline() {
 		t.Fatalf("fixed reply: %q", got)

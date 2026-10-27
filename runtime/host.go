@@ -1648,6 +1648,16 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 		return h.chatReply(ctx, hosted, messages, actions)
 	}
 
+	// An agent with one capability of its own (a minion: its apps) has nothing to choose between. When the message was
+	// read on its own against what the agent can do and found to be for it (classified, not off-topic), the picker
+	// finding nothing only means it couldn't tie the words to the capability ("I've got £1.2m in the bank. What's the
+	// smartest transfer?" to a fantasy football minion was answered as personal finance with no look-ups, 2026-10-27).
+	// So it uses its one capability, and which of its abilities are offered is decided as for any other message.
+	if classified && len(skillNames) == 0 && len(hosted.Agent.Skills) == 1 && (intent == domain.IntentRecommend || intent == domain.IntentExecute) {
+		log.Printf("skill-router: nothing matched — using %s, its only capability", hosted.Agent.Skills[0].Name)
+		skillNames = []string{hosted.Agent.Skills[0].Name}
+	}
+
 	// A short follow-up that matches nothing on its own stays with what the conversation was
 	// just doing; and whatever matched is remembered for the next one.
 	carryConv, _ := domain.ConversationFromContext(ctx)

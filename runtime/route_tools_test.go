@@ -85,6 +85,7 @@ func TestRouteByTools_TheRouterSeesWhatEachAbilitysToolsDoAndItsAnswerIsUsed(t *
 // Off (the default), or a router that cannot judge tools, behaves exactly as before.
 func TestRouteByTools_OffOrWithARouterThatCannotJudgeToolsNothingChanges(t *testing.T) {
 	r, router := newToolRouterRig(t, false)
+	withAnotherCapability(r)
 	r.say(t, "C1", statusAsk)
 	router.mu.Lock()
 	if len(router.shown) != 0 || router.plainUsed != 1 {
