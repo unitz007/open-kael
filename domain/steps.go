@@ -32,10 +32,11 @@ type StepObserver interface {
 	Step(action string, state StepState)
 }
 
-// StepShower is a chat app that shows the person, while the agent works on their message, which of its abilities it
-// is using (by its plain name) and how that went, and when the work is over: what it is doing before its reply is
-// written. Optional; a chat app without it shows nothing until the reply. Neither call may block.
+// StepShower is a chat app that shows the person what the agent is doing on their message while it works: that it has
+// begun, which of its abilities it is using (by its plain name) and how that went, and when the work is over, before
+// and around its reply. Optional; a chat app without it shows nothing until the reply. No call may block.
 type StepShower interface {
+	WorkBegins(conv ConversationRef)
 	ShowStep(conv ConversationRef, ability string, state StepState)
 	WorkDone(conv ConversationRef)
 }

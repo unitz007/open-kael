@@ -53,6 +53,9 @@ func (h *Host) beginSteps(hosted *HostedAgent, conv domain.ConversationRef) *tur
 			t.shower, _ = ex.(domain.StepShower)
 		}
 	}
+	if t.shower != nil {
+		t.shower.WorkBegins(conv)
+	}
 	b := &h.work
 	b.mu.Lock()
 	if b.live == nil {

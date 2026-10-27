@@ -146,14 +146,21 @@ func (s *showingOutbox) ShowStep(conv domain.ConversationRef, ability string, st
 	s.mu.Unlock()
 }
 
+func (s *showingOutbox) WorkBegins(conv domain.ConversationRef) {
+	s.mu.Lock()
+	s.shown = append(s.shown, conv.ChatID+" begins")
+	s.mu.Unlock()
+}
+
 func (s *showingOutbox) WorkDone(conv domain.ConversationRef) {
 	s.mu.Lock()
 	s.shown = append(s.shown, conv.ChatID+" done")
 	s.mu.Unlock()
 }
 
-// A chat app that shows the person what is happening is told each ability as it runs, by its plain name and in their
-// own conversation, and when the work is over; the platform's own actions (replying) are never shown.
+// A chat app that shows the person what is happening is told when the work begins, each ability as it runs, by its
+// plain name and in their own conversation, and when the work is over; the platform's own actions (replying) are never
+// shown.
 func TestSteps_AChatAppThatShowsThemIsToldEachStepAndTheEnd(t *testing.T) {
 	r := newIntentRig(t, &intentRouter{
 		intents:      map[string]domain.Intent{"Check audusd": domain.IntentRecommend},
@@ -173,7 +180,7 @@ func TestSteps_AChatAppThatShowsThemIsToldEachStepAndTheEnd(t *testing.T) {
 
 	shower.mu.Lock()
 	defer shower.mu.Unlock()
-	want := []string{"C1 Live Quote running", "C1 Live Quote done", "C1 done"}
+	want := []string{"C1 begins", "C1 Live Quote running", "C1 Live Quote done", "C1 done"}
 	if len(shower.shown) != len(want) {
 		t.Fatalf("shown %q, want %q", shower.shown, want)
 	}
