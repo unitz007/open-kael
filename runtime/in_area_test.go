@@ -67,9 +67,10 @@ func TestIntentFirst_AQuestionNoAbilityCoversIsAnsweredWithoutTools(t *testing.T
 	if got := r.box.texts(); len(got) != 1 || got[0] != "ok" {
 		t.Errorf("the model's own reply is delivered, not the fixed decline: %q", got)
 	}
-	// The classifier was told what the agent is for, and the abilities were not part of that.
-	if len(router.areas) != 1 || router.areas[0] != "Forex trading desk" {
-		t.Errorf("the classifier must be told what the agent is for, from its description alone: %q", router.areas)
+	// The classifier was told what the agent is for: its description and what it can do (2026-10-27: the description
+	// alone, written before an app was added, made a minion decline questions about that app as unrelated).
+	if len(router.areas) != 1 || router.areas[0] != "Forex trading desk\nWhat it can do: Analyses a currency pair" {
+		t.Errorf("the classifier must be told what the agent is for, with what it can do: %q", router.areas)
 	}
 	for _, msgs := range r.mem.store {
 		for _, m := range msgs {

@@ -1573,7 +1573,7 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 	// does not depend on which abilities the agent has or how well they happen to match.
 	classified := false
 	if ic, ok := h.skillRouter.(IntentClassifier); ok {
-		in, ierr := ic.ClassifyIntent(ctx, userText, earlier, scopeContext(hosted.Agent))
+		in, ierr := ic.ClassifyIntent(ctx, userText, earlier, h.scopeOf(ctx, hosted.Agent))
 		if ierr != nil {
 			log.Printf("skill-router: classify intent failed: %v — reading intent and abilities together", ierr)
 		} else {
@@ -2058,6 +2058,21 @@ func promisesLookup(result *domain.LoopResult) bool {
 // ordinary questions in the same field (a bank's support agent scored 0.04 on "what are your
 // opening hours"), while the description alone separates in-area (0.92 and up) from off-topic
 // (0.20 and under) cleanly.
+// scopeOf is what the agent is for, as the first sorting of a message is told it when deciding whether a message is
+// unrelated: its description and what it can do (the lines it tells people, from what it may use now). The description
+// alone was written when the agent was made, so an app given to it later wasn't in it: a minion given FinOS declined
+// "Check the EURCHF trade signals" as unrelated (2026-10-27), with trading in its own list of what it can do.
+func (h *Host) scopeOf(ctx context.Context, agent *domain.Agent) string {
+	about := scopeContext(agent)
+	if about == "" {
+		return "" // nothing written about what it is for: "unrelated" isn't judged at all, as before
+	}
+	if can := h.abilitiesOf(ctx, agent); len(can) > 0 {
+		about += "\nWhat it can do: " + strings.Join(can, "; ")
+	}
+	return about
+}
+
 func scopeContext(agent *domain.Agent) string {
 	about := strings.TrimSpace(agent.Description)
 	if about == "" {
