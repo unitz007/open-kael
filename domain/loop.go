@@ -135,6 +135,16 @@ func (l *NativeLoop) Run(ctx context.Context, messages []Message, actions []*Bou
 		reqs = nil
 	}
 	bounces := 0
+	// The reply as it is written, for a chat app that shows it: only this loop's own calls (an action's own loop never
+	// sees it), and only the thinking when the reply is checked before it is sent.
+	callCtx := WithCallWatcher(ctx, nil)
+	if w := replyWatchFrom(ctx); w != nil {
+		if reqs != nil {
+			w = thinkingOnly{w}
+		}
+		callCtx = WithCallWatcher(ctx, w)
+	}
+	ctx = WithCallWatcher(WithReplyWatch(ctx, nil), nil)
 
 	giveUp := func(reason string) (*LoopResult, []Message, error) {
 		log.Printf("loop: gave up (%s) — what ran: %s", reason, describeRecords(records))
@@ -150,7 +160,7 @@ func (l *NativeLoop) Run(ctx context.Context, messages []Message, actions []*Bou
 		}
 		log.Printf("loop: wrapping up (%s) — what ran: %s", reason, describeRecords(records))
 		msgs := append(answerOpenCalls(messages), Message{Role: RoleUser, Internal: true, Content: wrapUpNote})
-		resp, err := l.callLLM(ctx, msgs, []ActionSpec{fin.Spec})
+		resp, err := l.callLLM(callCtx, msgs, []ActionSpec{fin.Spec})
 		if err != nil || resp == nil || len(resp.ToolCalls) == 0 || resp.ToolCalls[0].Name != FinishActionName {
 			return giveUp(reason)
 		}
@@ -175,7 +185,7 @@ func (l *NativeLoop) Run(ctx context.Context, messages []Message, actions []*Bou
 			return wrapUp("no progress: it only repeated what it had already done")
 		}
 		progressed := false
-		resp, err := l.callLLM(ctx, messages, specs)
+		resp, err := l.callLLM(callCtx, messages, specs)
 		if err != nil {
 			return nil, messages, fmt.Errorf("native loop: call llm: %w", err)
 		}

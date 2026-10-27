@@ -1272,6 +1272,9 @@ func (h *Host) HandleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 	steps := h.beginSteps(hosted, conv) // and the abilities it uses as it goes, and where it came in
 	defer steps.end()
 	ctx = domain.WithStepObserver(ctx, steps)
+	if w := steps.replyWatch(); w != nil {
+		ctx = domain.WithReplyWatch(ctx, w)
+	}
 	res, err := h.handleTurn(ctx, hosted, conv, userText)
 	h.noteTurn(ctx, steps, err)
 	return res, err

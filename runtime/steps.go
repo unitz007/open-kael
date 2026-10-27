@@ -27,6 +27,7 @@ type turnSteps struct {
 	tools   map[string]string // the name the model calls an ability → its id; anything else is not an ability
 	plain   map[string]string // the name the model calls an ability → its plain name, for the person
 	shower  domain.StepShower // the chat app, when it shows the person what is happening
+	live    domain.LiveShower // the chat app, when it shows what the agent is thinking about and its reply as written
 	conv    domain.ConversationRef
 
 	mu    sync.Mutex
@@ -51,6 +52,7 @@ func (h *Host) beginSteps(hosted *HostedAgent, conv domain.ConversationRef) *tur
 	if _, integration := resolveIdentityAndIntegration(hosted, conv); integration != nil && hosted.Deps.Executors != nil {
 		if ex, ok := hosted.Deps.Executors.For(integration.Service); ok {
 			t.shower, _ = ex.(domain.StepShower)
+			t.live, _ = ex.(domain.LiveShower)
 		}
 	}
 	if t.shower != nil {
@@ -93,6 +95,17 @@ func (t *turnSteps) Step(action string, state domain.StepState) {
 	if t.shower != nil {
 		t.shower.ShowStep(t.conv, t.plain[action], state)
 	}
+}
+
+// replyWatch is what the agent loop tells as the model writes, when the chat app shows it (nil otherwise): the
+// abilities its thinking names, by their plain names, and the reply so far.
+func (t *turnSteps) replyWatch() domain.CallWatcher {
+	if t.live == nil {
+		return nil
+	}
+	return domain.WatchReply(t.plain,
+		func(abilities []string) { t.live.ThinkingAbout(t.conv, abilities) },
+		func(text string) { t.live.ShowDraft(t.conv, text) })
 }
 
 // setCapabilities notes which capabilities (ids) routing chose for this piece of work.
