@@ -359,7 +359,8 @@ func (s *Server) routes() {
 
 	// User routes: public (register/login) and authenticated (me/logout).
 	s.mux.HandleFunc("POST /users", s.registerUser)
-	s.mux.HandleFunc("GET /users/verify", s.verifyEmail)
+	s.mux.HandleFunc("GET /users/verify", s.lookVerification)
+	s.mux.HandleFunc("POST /users/verify", s.confirmEmail)
 	s.mux.HandleFunc("POST /sessions", s.loginUser)
 	s.mux.HandleFunc("POST /users/verify/resend", s.resendVerification)
 	s.mux.HandleFunc("POST /users/password/forgot", s.forgotPassword)

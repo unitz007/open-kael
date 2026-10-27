@@ -56,12 +56,55 @@ func mailRig(t *testing.T) (*api.Server, *inbox) {
 	return api.NewServer(store, api.WithMailer(box, "https://app.test")), box
 }
 
-func verify(t *testing.T, srv *api.Server, token string) {
+// verify presses Continue on the confirmation link, which signs its owner in; it returns that session's token.
+func verify(t *testing.T, srv *api.Server, token string) string {
 	t.Helper()
-	req := httpGet("/users/verify?token=" + token)
-	rec := serve(srv, req)
+	rec := postJSON(t, srv, "/users/verify", map[string]string{"token": token})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("verify: %d %s", rec.Code, rec.Body.String())
+	}
+	var s struct{ Token string }
+	_ = json.Unmarshal(rec.Body.Bytes(), &s)
+	return s.Token
+}
+
+// Opening the confirmation link only says whose address it is (mail scanners open links); pressing Continue confirms
+// it and signs its owner in, once.
+func TestVerify_OpeningShowsPressingConfirmsAndSignsIn(t *testing.T) {
+	srv, box := mailRig(t)
+	postJSON(t, srv, "/users", map[string]string{"email": "Lin@example.com", "password": "a long password", "first_name": "Lin"})
+	link := linkIn(t, box.take()[0], "verify")
+
+	for i := 0; i < 2; i++ {
+		rec := serve(srv, httpGet("/users/verify?token="+link))
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"email":"lin@example.com"`) {
+			t.Fatalf("opening it says whose: %d %s", rec.Code, rec.Body.String())
+		}
+	}
+	if rec := postJSON(t, srv, "/sessions", map[string]string{"email": "lin@example.com", "password": "a long password"}); rec.Code != http.StatusForbidden {
+		t.Errorf("opening it confirms nothing: %d", rec.Code)
+	}
+
+	rec := postJSON(t, srv, "/users/verify", map[string]string{"token": link})
+	var got struct{ Token, Email string }
+	_ = json.Unmarshal(rec.Body.Bytes(), &got)
+	if rec.Code != http.StatusOK || got.Token == "" || got.Email != "lin@example.com" {
+		t.Fatalf("pressing it: %d %s", rec.Code, rec.Body.String())
+	}
+	req := httpGet("/users/me")
+	req.Header.Set("Authorization", "Bearer "+got.Token)
+	if me := serve(srv, req); me.Code != http.StatusOK || !strings.Contains(me.Body.String(), `"email_verified":true`) {
+		t.Errorf("signed in, confirmed: %d %s", me.Code, me.Body.String())
+	}
+
+	if rec := postJSON(t, srv, "/users/verify", map[string]string{"token": link}); rec.Code != http.StatusBadRequest {
+		t.Errorf("the link works once: %d", rec.Code)
+	}
+	if rec := serve(srv, httpGet("/users/verify?token="+link)); rec.Code != http.StatusBadRequest {
+		t.Errorf("and then says so when opened: %d", rec.Code)
+	}
+	if rec := postJSON(t, srv, "/users/verify", map[string]string{"token": "nope"}); rec.Code != http.StatusBadRequest {
+		t.Errorf("a made-up link: %d", rec.Code)
 	}
 }
 

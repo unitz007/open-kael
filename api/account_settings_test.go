@@ -17,12 +17,11 @@ import (
 
 var changeRE = regexp.MustCompile(`https://app\.test/change-email\?token=([0-9a-f]+)`)
 
-// signedUp registers and confirms a login and signs it in, returning its session token.
+// signedUp registers and confirms a login, which signs it in, returning its session token.
 func signedUp(t *testing.T, srv *api.Server, box *inbox, email, password string) string {
 	t.Helper()
 	postJSON(t, srv, "/users", map[string]string{"email": email, "password": password, "first_name": "Ada", "last_name": "Lovelace"})
-	verify(t, srv, linkIn(t, box.take()[0], "verify"))
-	return signIn(t, srv, email, password)
+	return verify(t, srv, linkIn(t, box.take()[0], "verify"))
 }
 
 func signIn(t *testing.T, srv *api.Server, email, password string) string {

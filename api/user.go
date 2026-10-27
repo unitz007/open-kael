@@ -122,30 +122,72 @@ func (s *Server) registerUser(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, meResponse(account, person))
 }
 
-func (s *Server) verifyEmail(w http.ResponseWriter, r *http.Request) {
+// lookVerification says whose address a confirmation link is for, without confirming it: mail scanners and link
+// previews open links, so only pressing Continue (confirmEmail) does anything.
+func (s *Server) lookVerification(w http.ResponseWriter, r *http.Request) {
 	token := r.URL.Query().Get("token")
 	if token == "" {
-		writeError(w, http.StatusBadRequest, errors.New("token is required"))
+		writeError(w, http.StatusBadRequest, errVerifyLink)
 		return
 	}
-
 	account, err := s.store.GetAccountByVerificationToken(r.Context(), token)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, errors.New("invalid or expired token"))
+	if err != nil || account.EmailVerified {
+		writeError(w, http.StatusBadRequest, errVerifyLink)
 		return
 	}
-	if account.EmailVerified {
-		writeJSON(w, http.StatusOK, map[string]string{"message": "email already verified"})
-		return
-	}
+	writeJSON(w, http.StatusOK, map[string]string{"email": account.Email})
+}
 
+type confirmRequest struct {
+	Token string `json:"token"`
+}
+
+type confirmedResponse struct {
+	sessionResponse
+	Email string `json:"email"`
+}
+
+// confirmEmail confirms the address the link was sent to and signs its owner in: they have just proved they own it,
+// so asking for the password again only stood between them and their first Mini You. The link works once.
+func (s *Server) confirmEmail(w http.ResponseWriter, r *http.Request) {
+	var req confirmRequest
+	if err := decodeJSON(r, &req); err != nil || strings.TrimSpace(req.Token) == "" {
+		writeError(w, http.StatusBadRequest, errVerifyLink)
+		return
+	}
+	account, err := s.store.GetAccountByVerificationToken(r.Context(), req.Token)
+	if err != nil || account.EmailVerified {
+		writeError(w, http.StatusBadRequest, errVerifyLink)
+		return
+	}
 	account.EmailVerified = true
 	account.VerificationToken = ""
 	if err := s.store.SaveAccount(r.Context(), account); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"message": "email verified"})
+	sess, err := s.startSession(r, account.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.signins.clear("email:" + account.Email)
+	writeJSON(w, http.StatusOK, confirmedResponse{sessionResponse{Token: sess.Token, ExpiresAt: sess.ExpiresAt}, account.Email})
+}
+
+var errVerifyLink = errors.New("This link has been used or has expired.")
+
+// startSession signs an account in for 30 days.
+func (s *Server) startSession(r *http.Request, accountID string) (*domain.Session, error) {
+	token, err := newToken()
+	if err != nil {
+		return nil, err
+	}
+	sess := &domain.Session{Token: token, AccountID: accountID, ExpiresAt: time.Now().Add(30 * 24 * time.Hour)}
+	if err := s.store.SaveSession(r.Context(), sess); err != nil {
+		return nil, err
+	}
+	return sess, nil
 }
 
 func verificationEmailHTML(firstName, link string) string {
@@ -196,17 +238,8 @@ func (s *Server) loginUser(w http.ResponseWriter, r *http.Request) {
 	}
 	s.signins.clear("email:" + email)
 
-	token, err := newToken()
+	sess, err := s.startSession(r, account.ID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
-	sess := &domain.Session{
-		Token:     token,
-		AccountID: account.ID,
-		ExpiresAt: time.Now().Add(30 * 24 * time.Hour),
-	}
-	if err := s.store.SaveSession(r.Context(), sess); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
