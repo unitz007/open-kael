@@ -40,6 +40,14 @@ func TestParseProposalChoices_ALabelSaysWhen(t *testing.T) {
 		choice("Check it now", "Check my USD/CAD order now"),
 		choice("Summarise my whole inbox every week", "Summarise my whole inbox every Friday"),
 	})
+	for _, c := range []struct{ label, say string }{
+		{"Weekly on Fridays", "Make this a weekly summary every Friday."},
+		{"Morning rain timing", "When exactly will it stop raining tomorrow morning?"},
+	} {
+		if l := withTiming(c.label, c.say); l != c.label {
+			t.Errorf("a label that says when in its own way is left as it is: %q → %q", c.label, l)
+		}
+	}
 	want := []string{"Check USD/CAD order later", "Check EUR/CHF trade this evening", "Remind me tomorrow at 9", "Move dentist to 10:15", "Check it now", "Summarise my whole inbox every week"}
 	if len(got) != MaxProposalChoices {
 		t.Fatalf("%+v", got)

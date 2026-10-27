@@ -121,7 +121,7 @@ func ParseProposalChoices(raw any) []ProposalChoice {
 var timing = regexp.MustCompile(`(?i)\b(later( on| today)?|tonight|this (morning|afternoon|evening|week|weekend)|tomorrow( (morning|afternoon|evening|at \d{1,2}(:\d{2})?( ?[ap]m)?))?|next (week|month|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|every (day|morning|evening|week|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|in (an?|\d+) (minute|hour|day|week)s?|at \d{1,2}(:\d{2})?( ?[ap]m| utc)?|on (monday|tuesday|wednesday|thursday|friday|saturday|sunday))\b`)
 
 // saysWhen is a label that already says when in its own way: a clock time, a day, "today", "now".
-var saysWhen = regexp.MustCompile(`(?i)\b(\d{1,2}:\d{2}|\d{1,2} ?[ap]m|now|today|tonight|tomorrow|later|monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|wed|thu|fri|sat|sun)\b`)
+var saysWhen = regexp.MustCompile(`(?i)\b(\d{1,2}:\d{2}|\d{1,2} ?[ap]m|now|today|tonight|tomorrow|later|morning|afternoon|evening|daily|weekly|monthly|hourly|(mon|tues|wednes|thurs|fri|satur|sun)days?|mon|tue|wed|thu|fri|sat|sun)\b`)
 
 // withTiming keeps a button honest about when: if what it says happens at some time ("Check back on my USD/CAD order
 // later") and its label doesn't say when ("Check USD/CAD order"), the time is added to the label, so tapping it can't
