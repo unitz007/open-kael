@@ -27,7 +27,7 @@ func TestOneShotGuard_OnlyARealSuccessUsesUpTheShot(t *testing.T) {
 	placed := map[string]any{"changed": true, "message": "Bought 10000 EUR/USD"}
 	calls := 0
 	outputs := []any{refused, OutputNotApproved, OutputAuthPendingPrefix + " connect", placed}
-	guard := withOneShotGuard(func(_ context.Context, _ map[string]any) (any, error) {
+	guard := withOneShotGuard(nil, func(_ context.Context, _ map[string]any) (any, error) {
 		out := outputs[calls]
 		calls++
 		return out, nil
@@ -80,5 +80,26 @@ func TestFinishCheck_TheRefusalReadsCleanly(t *testing.T) {
 	_, any := finishCheck(map[string]any{"outcome": OutcomeDone}, &Requirements{AnyChange: true}, nil)
 	if !strings.Contains(any, "the action you were asked to carry out has not succeeded this turn") {
 		t.Errorf("unnamed action: %q", any)
+	}
+}
+
+// A change that acts on one thing at a time (onceFor: which order) goes through once for each thing in a reply: a
+// second call for the same order is a repeat and doesn't run; one for another order runs. Cancelling three orders
+// cancelled one and answered the others "already completed" until 2026-10-27.
+func TestOneShotGuard_OncePerThingItActsOn(t *testing.T) {
+	var ran []string
+	guard := withOneShotGuard([]string{"order_id"}, func(_ context.Context, in map[string]any) (any, error) {
+		ran = append(ran, in["order_id"].(string))
+		return map[string]any{"changed": true}, nil
+	})
+	for _, id := range []string{"W-NZD", "W-GBP", "w-nzd ", "W-GBP2"} {
+		_, _ = guard(context.Background(), map[string]any{"order_id": id})
+	}
+	if strings.Join(ran, ",") != "W-NZD,W-GBP,W-GBP2" {
+		t.Errorf("each order once, a repeat not: %v", ran)
+	}
+	out, _ := guard(context.Background(), map[string]any{"order_id": "W-GBP"})
+	if s, _ := out.(string); !strings.Contains(s, "not made again") {
+		t.Errorf("a repeat says it wasn't made again: %v", out)
 	}
 }

@@ -65,6 +65,12 @@ type ToolDefinition struct {
 	// player coming in through the player list): wherever it is offered, they are offered too, so trimming what an agent
 	// sees never leaves it without the way to its own inputs.
 	With []string `json:"with,omitempty"`
+	// OnceFor names the inputs that say which thing a change that asks first acts on (an order's order_id; a trade's
+	// symbol, direction and levels). In one reply it goes through once for each such thing: a second call for the same
+	// values is a repeat and doesn't run, one for other values is another change and does (asking first again). Empty:
+	// once per reply, whatever the values. Cancelling all three of a person's waiting orders cancelled the first and
+	// answered the other two "already completed", which the model reported as all three done (2026-10-27).
+	OnceFor []string `json:"once_for,omitempty"`
 
 	// ApprovalTimeoutSeconds bounds how long the runtime host waits for a
 	// response before treating an approval request as declined — never

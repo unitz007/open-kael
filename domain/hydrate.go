@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
-	"sync/atomic"
 )
 
 // HydrateTool resolves a stored ToolDefinition into a real, callable
@@ -68,9 +68,9 @@ func BindTool(def *ToolDefinition, identity *Identity, integration *Integration,
 	invoke = withUserApprovalGate(def, invoke)
 	if def.RequiresApproval {
 		invoke = withApprovalGate(def, invoke)
-		// Outermost wrapper: short-circuit re-calls after first success so
-		// the model cannot loop on an approved write action.
-		invoke = withOneShotGuard(invoke)
+		// Outermost wrapper: short-circuit a repeat of a change that already went through in this reply, so the model
+		// cannot loop on an approved write action (once for each thing it acts on: def.OnceFor).
+		invoke = withOneShotGuard(def.OnceFor, invoke)
 	}
 	// A tool that depends on the person's own clock asks for their time zone first, once, before
 	// anyone is asked to approve anything: the approval would otherwise be asked for twice.
@@ -157,17 +157,22 @@ func withApprovalGate(def *ToolDefinition, inner func(ctx context.Context, input
 	}
 }
 
-// withOneShotGuard wraps a RequiresApproval action so it can only execute
-// once per BoundAction lifetime (one turn). After the first successful call,
-// subsequent calls return a directive telling the model to call finish rather
-// than re-running the action — preventing approval-gated write tools from
-// looping when the model generates slightly different arguments each time.
-func withOneShotGuard(inner func(ctx context.Context, input map[string]any) (any, error)) func(ctx context.Context, input map[string]any) (any, error) {
-	var done atomic.Bool
+// withOneShotGuard wraps a RequiresApproval action so that, in one turn, a change that went through is not made
+// again: after a successful call, another call for the same thing returns a directive telling the model to call
+// finish rather than re-running it — preventing approval-gated write tools from looping when the model generates
+// slightly different arguments each time. onceFor names the inputs that say which thing a call acts on: a call for
+// other values is another change and runs (asking first again). With none, the action runs once per turn.
+func withOneShotGuard(onceFor []string, inner func(ctx context.Context, input map[string]any) (any, error)) func(ctx context.Context, input map[string]any) (any, error) {
+	var mu sync.Mutex
+	done := map[string]bool{}
 	return func(ctx context.Context, input map[string]any) (any, error) {
-		if done.Load() {
+		key := onceKey(onceFor, input)
+		mu.Lock()
+		already := done[key]
+		mu.Unlock()
+		if already {
 			log.Printf("one-shot guard: blocking re-call (already succeeded)")
-			return "already completed — call finish to deliver the result to the user", nil
+			return "already completed: this exact change went through earlier in this reply, so it was not made again — call finish to tell the person what was done", nil
 		}
 		output, err := inner(ctx, input)
 		// Only a call that really went through uses up the one shot. A refusal that
@@ -176,12 +181,27 @@ func withOneShotGuard(inner func(ctx context.Context, input map[string]any) (any
 		// "already completed".
 		if ok, _, why := OutcomeOf(output, err); ok {
 			log.Printf("one-shot guard: success, marking done")
-			done.Store(true)
+			mu.Lock()
+			done[key] = true
+			mu.Unlock()
 		} else {
 			log.Printf("one-shot guard: did not go through (%s), done stays false", why)
 		}
 		return output, err
 	}
+}
+
+// onceKey is which thing a call acts on: the values of the inputs that say so, as text that ignores case and spacing
+// (an id typed "w-nzd " is "W-NZD"); "" when none are named (once per turn).
+func onceKey(onceFor []string, input map[string]any) string {
+	if len(onceFor) == 0 {
+		return ""
+	}
+	parts := make([]string, len(onceFor))
+	for i, k := range onceFor {
+		parts[i] = strings.ToUpper(strings.TrimSpace(fmt.Sprint(input[k])))
+	}
+	return strings.Join(parts, "\x1f")
 }
 
 // WrapOneShotGuard wraps action so it can only execute once per BoundAction
@@ -192,7 +212,7 @@ func withOneShotGuard(inner func(ctx context.Context, input map[string]any) (any
 func WrapOneShotGuard(action *BoundAction) *BoundAction {
 	return &BoundAction{
 		Spec:   action.Spec,
-		Invoke: withOneShotGuard(action.Invoke),
+		Invoke: withOneShotGuard(nil, action.Invoke),
 	}
 }
 
