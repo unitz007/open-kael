@@ -132,3 +132,54 @@ func TestSteps_EveryConversationInProgressIsSeenWithItsChatApp(t *testing.T) {
 		t.Errorf("nothing is left once both are done: %+v", left)
 	}
 }
+
+// showingOutbox is a chat app that shows the person what the agent is doing while it works.
+type showingOutbox struct {
+	*outbox
+	mu    sync.Mutex
+	shown []string
+}
+
+func (s *showingOutbox) ShowStep(conv domain.ConversationRef, ability string, state domain.StepState) {
+	s.mu.Lock()
+	s.shown = append(s.shown, conv.ChatID+" "+ability+" "+string(state))
+	s.mu.Unlock()
+}
+
+func (s *showingOutbox) WorkDone(conv domain.ConversationRef) {
+	s.mu.Lock()
+	s.shown = append(s.shown, conv.ChatID+" done")
+	s.mu.Unlock()
+}
+
+// A chat app that shows the person what is happening is told each ability as it runs, by its plain name and in their
+// own conversation, and when the work is over; the platform's own actions (replying) are never shown.
+func TestSteps_AChatAppThatShowsThemIsToldEachStepAndTheEnd(t *testing.T) {
+	r := newIntentRig(t, &intentRouter{
+		intents:      map[string]domain.Intent{"Check audusd": domain.IntentRecommend},
+		followRouter: followRouter{byText: map[string][]string{"Check audusd": {"analyse_pair"}}},
+	})
+	shower := &showingOutbox{outbox: r.box}
+	r.hosted.Deps.Executors.Register("slack", shower)
+	r.hosted.Deps.ToolsByID["q"].Name = "Live Quote"
+	r.hosted.Agent.LLMs = []domain.LLM{&funcLLM{call: func(n int) (*domain.LLMResponse, error) {
+		if n == 1 {
+			return &domain.LLMResponse{ToolCalls: []domain.ToolCall{{ID: "1", Name: "get_live_quote", Arguments: map[string]any{}}}}, nil
+		}
+		return &domain.LLMResponse{ToolCalls: []domain.ToolCall{{ID: "2", Name: domain.FinishActionName, Arguments: map[string]any{"content": "1.0412"}}}}, nil
+	}}}
+
+	r.say(t, "C1", "Check audusd")
+
+	shower.mu.Lock()
+	defer shower.mu.Unlock()
+	want := []string{"C1 Live Quote running", "C1 Live Quote done", "C1 done"}
+	if len(shower.shown) != len(want) {
+		t.Fatalf("shown %q, want %q", shower.shown, want)
+	}
+	for i := range want {
+		if shower.shown[i] != want[i] {
+			t.Errorf("shown %q, want %q", shower.shown, want)
+		}
+	}
+}

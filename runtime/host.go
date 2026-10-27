@@ -1261,7 +1261,7 @@ const unattendedFailure = "I couldn't finish your repeating task just now. I'll 
 func (h *Host) HandleTurn(ctx context.Context, hosted *HostedAgent, conv domain.ConversationRef, userText string) (*domain.LoopResult, error) {
 	done := h.beginWork(hosted.Agent.ID) // a screen can show the agent at work while this runs
 	defer done()
-	steps := h.beginSteps(hosted, conv.IdentityID) // and the abilities it uses as it goes, and where it came in
+	steps := h.beginSteps(hosted, conv) // and the abilities it uses as it goes, and where it came in
 	defer steps.end()
 	ctx = domain.WithStepObserver(ctx, steps)
 	res, err := h.handleTurn(ctx, hosted, conv, userText)

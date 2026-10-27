@@ -25,20 +25,34 @@ type turnSteps struct {
 	agentID string
 	chat    string            // the chat app (identity id) it came in on
 	tools   map[string]string // the name the model calls an ability → its id; anything else is not an ability
+	plain   map[string]string // the name the model calls an ability → its plain name, for the person
+	shower  domain.StepShower // the chat app, when it shows the person what is happening
+	conv    domain.ConversationRef
 
 	mu    sync.Mutex
 	caps  []string
 	steps []domain.LiveStep
 }
 
-// beginSteps starts following a piece of work, as the agent's latest; chat is the chat app it came in on.
-func (h *Host) beginSteps(hosted *HostedAgent, chat string) *turnSteps {
+// beginSteps starts following a piece of work, as the agent's latest, in the conversation it came in on; its chat app
+// is told each step too when it shows them (domain.StepShower).
+func (h *Host) beginSteps(hosted *HostedAgent, conv domain.ConversationRef) *turnSteps {
 	tools, _, _ := hosted.View()
 	names := make(map[string]string, len(tools))
+	plain := make(map[string]string, len(tools))
 	for id, def := range tools {
 		names[def.ModelName()] = id
+		plain[def.ModelName()] = def.Name
+		if def.Name == "" {
+			plain[def.ModelName()] = def.ModelName()
+		}
 	}
-	t := &turnSteps{h: h, agentID: hosted.Agent.ID, chat: chat, tools: names}
+	t := &turnSteps{h: h, agentID: hosted.Agent.ID, chat: conv.IdentityID, tools: names, plain: plain, conv: conv}
+	if _, integration := resolveIdentityAndIntegration(hosted, conv); integration != nil && hosted.Deps.Executors != nil {
+		if ex, ok := hosted.Deps.Executors.For(integration.Service); ok {
+			t.shower, _ = ex.(domain.StepShower)
+		}
+	}
 	b := &h.work
 	b.mu.Lock()
 	if b.live == nil {
@@ -73,6 +87,9 @@ func (t *turnSteps) Step(action string, state domain.StepState) {
 	}
 	t.mu.Unlock()
 	t.h.work.notify(t.agentID)
+	if t.shower != nil {
+		t.shower.ShowStep(t.conv, t.plain[action], state)
+	}
 }
 
 // setCapabilities notes which capabilities (ids) routing chose for this piece of work.
@@ -89,8 +106,11 @@ func (t *turnSteps) snapshot() domain.LiveTurn {
 	return domain.LiveTurn{Capabilities: append([]string{}, t.caps...), Steps: append([]domain.LiveStep{}, t.steps...), Chat: t.chat}
 }
 
-// end stops following it.
+// end stops following it, and tells its chat app the work is over.
 func (t *turnSteps) end() {
+	if t.shower != nil {
+		t.shower.WorkDone(t.conv)
+	}
 	b := &t.h.work
 	b.mu.Lock()
 	list := b.live[t.agentID]
