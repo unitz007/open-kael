@@ -37,12 +37,16 @@ type scriptedModel struct {
 	step   func(n int) *domain.LLMResponse
 	finish *domain.ActionSpec
 	names  []string
+	system string // the instructions it was last given
 }
 
-func (m *scriptedModel) Call(_ context.Context, _ []domain.Message, actions []domain.ActionSpec) (*domain.LLMResponse, error) {
+func (m *scriptedModel) Call(_ context.Context, msgs []domain.Message, actions []domain.ActionSpec) (*domain.LLMResponse, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.n++
+	if len(msgs) > 0 && msgs[0].Role == domain.RoleSystem {
+		m.system = msgs[0].Content
+	}
 	if m.n == 1 {
 		for i := range actions {
 			if actions[i].Name == domain.FinishActionName {
@@ -99,6 +103,7 @@ type rig struct {
 	host    *runtime.Host
 	mem     *memMemory            // kept between turns, so a conversation has a history
 	prereqs []domain.Prerequisite // what the capability says must run first
+	user    string                // who is talking (none when empty)
 }
 
 func (r *rig) turn(t *testing.T, intent domain.Intent, text string) *domain.LoopResult {
@@ -123,7 +128,7 @@ func (r *rig) turn(t *testing.T, intent domain.Intent, text string) *domain.Loop
 	hosted := &runtime.HostedAgent{Agent: agent, Deps: deps}
 	r.host.SetSkillRouter(oneSkillRouter{skill: "forex", intent: intent})
 	r.host.Register(hosted)
-	res, err := r.host.HandleTurn(context.Background(), hosted, domain.ConversationRef{Provider: "slack", ChatID: "C1"}, text)
+	res, err := r.host.HandleTurn(context.Background(), hosted, domain.ConversationRef{Provider: "slack", ChatID: "C1", UserID: r.user}, text)
 	if err != nil {
 		t.Fatalf("turn: %v", err)
 	}
@@ -339,7 +344,7 @@ func (r *rig) turnWith(t *testing.T, router runtime.SkillRouter, text string) *d
 	hosted := &runtime.HostedAgent{Agent: agent, Deps: deps}
 	r.host.SetSkillRouter(router)
 	r.host.Register(hosted)
-	res, err := r.host.HandleTurn(context.Background(), hosted, domain.ConversationRef{Provider: "slack", ChatID: "C1"}, text)
+	res, err := r.host.HandleTurn(context.Background(), hosted, domain.ConversationRef{Provider: "slack", ChatID: "C1", UserID: r.user}, text)
 	if err != nil {
 		t.Fatalf("turn: %v", err)
 	}

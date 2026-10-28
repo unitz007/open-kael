@@ -254,6 +254,9 @@ type Host struct {
 
 	// repeatingTasksNote describes a person's repeating tasks for the agent's instructions.
 	repeatingTasksNote func(ctx context.Context, userID, agentID string) string
+	// promptNotes add to an agent's instructions for a person (AddPromptNote); turnLearners hear each exchange.
+	promptNotes  []func(ctx context.Context, userID, agentID string) string
+	turnLearners []TurnLearning
 
 	// greetingJudge tells a bare hello from a real message (see GreetingJudge).
 	greetingJudge GreetingJudge
@@ -1405,6 +1408,14 @@ func (h *Host) handleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 			systemPrompt += "\n\n" + note
 		}
 	}
+	if conv.UserID != "" {
+		for _, f := range h.promptNotes {
+			if note := strings.TrimSpace(f(ctx, conv.UserID, hosted.Agent.ID)); note != "" {
+				systemPrompt += "\n\n" + note
+			}
+		}
+	}
+	prevReply := lastAssistantText(prior) // the reply this message answers, for what is learned from it
 	messages = append(messages, domain.Message{Role: domain.RoleSystem, Content: systemPrompt})
 	messages = append(messages, prior...)
 	messages = append(messages, domain.Message{Role: domain.RoleUser, Content: userText})
@@ -1500,7 +1511,7 @@ func (h *Host) handleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 			}
 			h.attachChoices(ctx, hosted, conv, identity, connRef, executor, messageID, content, h.withDerived(ctx, hosted, result, userText, content, choices))
 			if !unattended {
-				h.maybeLearn(ctx, conv, hosted, userText, content)
+				h.afterTurn(ctx, conv, hosted, prevReply, userText, content)
 			}
 			return result, nil
 		}
@@ -1509,7 +1520,7 @@ func (h *Host) handleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 	messageID := h.deliverBestEffortID(ctx, hosted, conv, content)
 	h.attachChoices(ctx, hosted, conv, identity, connRef, executor, messageID, content, h.withDerived(ctx, hosted, result, userText, content, choices))
 	if !unattended {
-		h.maybeLearn(ctx, conv, hosted, userText, content)
+		h.afterTurn(ctx, conv, hosted, prevReply, userText, content)
 	}
 
 	return result, nil
