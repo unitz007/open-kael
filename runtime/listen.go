@@ -471,7 +471,7 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 			for _, identityID := range missingIDs {
 				var connectURL string
 				if h.connectURLGenerator != nil {
-					if u, err := h.connectURLGenerator(ctx, msg.Conversation.UserID, identityID); err == nil {
+					if u, err := h.connectURLGenerator(domain.WithAgentID(ctx, hosted.Agent.ID), msg.Conversation.UserID, identityID); err == nil {
 						connectURL = u
 					}
 				}

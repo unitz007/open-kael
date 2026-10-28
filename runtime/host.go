@@ -2388,7 +2388,7 @@ func (h *Host) resolveConnectRequester(ctx context.Context, hosted *HostedAgent,
 
 		// No sign-in can be offered: nothing is held back (it could never be replayed) and no prompt is counted as sent,
 		// so the agent answers without the tool. Checked before the prompt is counted: a second try must not be held.
-		url, err := h.connectURLGenerator(ctx, userID, identity.ID)
+		url, err := h.connectURLGenerator(domain.WithAgentID(ctx, hosted.Agent.ID), userID, identity.ID)
 		if err != nil {
 			return "", fmt.Errorf("%w: %v", domain.ErrSignInUnavailable, err)
 		}

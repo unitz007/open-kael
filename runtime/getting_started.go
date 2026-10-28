@@ -90,7 +90,7 @@ func (h *Host) ConnectionsNeeded(ctx context.Context, userID string, agent *doma
 	}
 	var out []NeededConnection
 	for _, id := range missing {
-		link, err := h.connectURLGenerator(ctx, userID, id)
+		link, err := h.connectURLGenerator(domain.WithAgentID(ctx, agent.ID), userID, id)
 		if err != nil || link == "" {
 			continue
 		}

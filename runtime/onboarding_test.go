@@ -515,3 +515,32 @@ func TestGetStartedButton_NothingToRemoveIsQuiet(t *testing.T) {
 		t.Errorf("nothing was sent, so nothing is removed: %v %v", box.removed, box2.removed)
 	}
 }
+
+func TestConnectLink_IsToldWhichAgentAsks(t *testing.T) {
+	llm := finishOnlyLLM("Hi")
+	agent := &domain.Agent{ID: "a1", Name: "Desk", LLMs: []domain.LLM{llm}, MaxIterations: 5, IdentityIDs: []string{"id_aegis"}}
+	host, hosted, _ := onboardingRig(t, agent)
+	host.SetSetupChecker(func(context.Context, string, *domain.Agent) ([]string, error) { return []string{"id_aegis"}, nil })
+	var mu sync.Mutex
+	var asked []string
+	host.SetConnectURLGenerator(func(ctx context.Context, _, _ string) (string, error) {
+		mu.Lock()
+		asked = append(asked, domain.AgentIDFromContext(ctx))
+		mu.Unlock()
+		return "https://app.example/connect", nil
+	})
+
+	host.DispatchInbound(context.Background(), hosted, firstMessage("buy 10000 EURUSD"))
+	_ = host.ConnectionsNeeded(context.Background(), "u1", agent)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(asked) < 2 {
+		t.Fatalf("the link maker was asked %d times", len(asked))
+	}
+	for _, a := range asked {
+		if a != "a1" {
+			t.Fatalf("the link maker was told agent %q, want a1 (all: %v)", a, asked)
+		}
+	}
+}
