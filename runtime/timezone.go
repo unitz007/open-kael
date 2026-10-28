@@ -47,10 +47,10 @@ func (h *Host) timezoneRequester(hosted *HostedAgent) domain.TimezoneRequester {
 		}
 		text := timezonePrompt
 		var extra map[string]any
-		if isLocalhostURL(link) {
-			text += "\n\n" + link
-		} else {
+		if buttonURLOK(conv.Provider, link) {
 			extra = map[string]any{"web_app_button": map[string]any{"text": "Set my time zone", "url": link}}
+		} else {
+			text += "\n\n" + link
 		}
 		h.deliverBestEffort(ctx, hosted, conv, text, extra)
 		return nil

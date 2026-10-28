@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -275,5 +276,37 @@ func TestConnectRequester_NoSignInHoldsNothing(t *testing.T) {
 	}
 	if n := exec.count(); n != 0 {
 		t.Errorf("sent %d prompts", n)
+	}
+}
+
+// A sign-in to a local address goes on a button on the web link (its page runs where its links do) and in the text on
+// Telegram, which refuses a button to one.
+func TestConnectPrompt_LocalLinkIsAButtonOnlyOnTheWebLink(t *testing.T) {
+	for _, provider := range []string{"web", "telegram"} {
+		exec := &sendExec{result: map[string]any{"message_id": "1"}}
+		execs := domain.NewExecutorRegistry()
+		execs.Register(provider, exec)
+		hosted := &HostedAgent{Agent: &domain.Agent{ID: "a1"}, Deps: AgentDeps{
+			IdentitiesByID:   map[string]*domain.Identity{"chat": {ID: "chat", IntegrationID: "app"}},
+			IntegrationsByID: map[string]*domain.Integration{"app": {ID: "app", Service: provider}},
+			Executors:        execs,
+		}}
+		h := NewHost()
+		conv := domain.ConversationRef{Provider: provider, ChatID: "c1", IdentityID: "chat"}
+		h.connectURLGenerator = func(context.Context, string, string) (string, error) {
+			return "http://localhost:8443/connect/paystack?s=x", nil
+		}
+		req := h.resolveConnectRequester(context.Background(), hosted, conv, "u1")
+		if _, err := req.RequestConnect(context.Background(), conv, &domain.Identity{ID: "paystack"}, "u1"); err != nil {
+			t.Fatal(err)
+		}
+		btn, _ := exec.sent[0]["web_app_button"].(map[string]any)
+		text, _ := exec.sent[0]["text"].(string)
+		if provider == "web" && (btn == nil || strings.Contains(text, "localhost")) {
+			t.Errorf("web: a button, not the link in the text: %v", exec.sent[0])
+		}
+		if provider == "telegram" && (btn != nil || !strings.Contains(text, "localhost")) {
+			t.Errorf("telegram: the link in the text: %v", exec.sent[0])
+		}
 	}
 }

@@ -2316,6 +2316,13 @@ func isLocalhostURL(u string) bool {
 	return strings.Contains(u, "localhost") || strings.Contains(u, "127.0.0.1")
 }
 
+// buttonURLOK says whether a link can go on a button in this chat app. Telegram refuses a button to a local address,
+// so there it goes in the text; the web link's page runs where its links do, so a local one is fine on its buttons
+// (in development, a sign-in there is a card like anywhere else).
+func buttonURLOK(provider, u string) bool {
+	return provider == "web" || !isLocalhostURL(u)
+}
+
 func skillDisplayName(name string) string {
 	words := strings.Split(name, "_")
 	for i, w := range words {
@@ -2410,7 +2417,7 @@ func (h *Host) resolveConnectRequester(ctx context.Context, hosted *HostedAgent,
 		h.noteEvent(domain.WithConversation(ctx, conv), hosted, domain.ActivitySignIn, integrationName)
 		promptText, buttonLabel := connectPrompt(integrationName)
 		var extra map[string]any
-		if url != "" && !isLocalhostURL(url) {
+		if url != "" && buttonURLOK(conv.Provider, url) {
 			extra = map[string]any{
 				"web_app_button": map[string]any{
 					"text": buttonLabel,

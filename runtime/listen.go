@@ -498,7 +498,7 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 				h.noteEvent(domain.WithConversation(ctx, msg.Conversation), hosted, domain.ActivitySignIn, integrationName)
 				text, buttonLabel := connectPrompt(integrationName)
 				var extra map[string]any
-				if !isLocalhostURL(connectURL) {
+				if buttonURLOK(msg.Conversation.Provider, connectURL) {
 					extra = map[string]any{
 						"web_app_button": map[string]any{
 							"text": buttonLabel,
