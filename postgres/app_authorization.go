@@ -16,15 +16,16 @@ func (s *Store) SaveAppAuthorization(ctx context.Context, a *domain.AppAuthoriza
 		a.UserID = live
 	}
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO app_authorizations (id, identity_id, user_id, scope, name, credential_ref, external_user_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		INSERT INTO app_authorizations (id, identity_id, user_id, scope, name, credential_ref, external_user_id, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
 		ON CONFLICT (id) DO UPDATE SET
 			identity_id      = EXCLUDED.identity_id,
 			user_id          = EXCLUDED.user_id,
 			scope            = EXCLUDED.scope,
 			name             = EXCLUDED.name,
 			credential_ref   = EXCLUDED.credential_ref,
-			external_user_id = EXCLUDED.external_user_id
+			external_user_id = EXCLUDED.external_user_id,
+			updated_at       = NOW()
 	`, a.ID, a.IdentityID, a.UserID, a.Scope, a.Name, a.CredentialRef, a.ExternalUserID)
 	if err != nil {
 		return err

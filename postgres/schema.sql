@@ -126,6 +126,9 @@ CREATE TABLE IF NOT EXISTS app_authorizations (
 
 ALTER TABLE app_authorizations ADD COLUMN IF NOT EXISTS name             TEXT NOT NULL DEFAULT '';
 ALTER TABLE app_authorizations ADD COLUMN IF NOT EXISTS external_user_id TEXT NOT NULL DEFAULT '';
+-- When the connection was last saved (NULL for ones saved before this was kept): when two people are merged and both
+-- have one to the same app, the newer wins.
+ALTER TABLE app_authorizations ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ;
 
 CREATE INDEX IF NOT EXISTS idx_app_authorizations_user_id ON app_authorizations (user_id);
 

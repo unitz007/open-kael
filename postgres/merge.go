@@ -142,6 +142,13 @@ func mergePersonsTx(ctx context.Context, tx pgx.Tx, s *Store, fromID, toID strin
 	if err != nil {
 		return err
 	}
+	// A connection both have to the same app: the newer stands (the one just made, not a stale one from long ago).
+	// Saved before this was kept (no time), the survivor's stands, as for any other row.
+	if _, err := tx.Exec(ctx, `DELETE FROM app_authorizations t USING app_authorizations f
+		WHERE t.user_id = $2 AND f.user_id = $1 AND f.identity_id = t.identity_id
+		AND f.updated_at IS NOT NULL AND (t.updated_at IS NULL OR f.updated_at > t.updated_at)`, fromID, toID); err != nil {
+		return fmt.Errorf("postgres: merge persons: newer connections: %w", err)
+	}
 	for _, t := range append(append([]personTable(nil), keyedPersonTables...), extras...) {
 		if err := moveKeyedRows(ctx, tx, t, fromID, toID); err != nil {
 			return fmt.Errorf("postgres: merge persons: move %s: %w", t.table, err)

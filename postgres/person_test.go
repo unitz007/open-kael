@@ -520,3 +520,49 @@ func TestMigrate_OlderEmailsAreBroughtToLowerCaseAndCollisionsLeftAlone(t *testi
 		t.Errorf("and it is repeatable: %v", err)
 	}
 }
+
+// When both have a connection to the same app, the newer one stands, whichever person remains: someone who connects an
+// app on the web and then carries on in Telegram, where an old connection to it lingers, keeps the one they just made.
+func TestMergePersons_TheNewerConnectionWins(t *testing.T) {
+	s, pool := world(t)
+	ctx := context.Background()
+	person(t, s, "web")
+	person(t, s, "tg")
+	person(t, s, "x1")
+	person(t, s, "x2")
+	exec(t, pool, `INSERT INTO app_authorizations (id, identity_id, user_id, credential_ref, updated_at) VALUES
+		('old_fpl', 'id1', 'tg', 'stale', NOW() - INTERVAL '90 days'),
+		('new_fpl', 'id1', 'web', 'fresh', NOW()),
+		('tg_only', 'id2', 'tg', 'mail', NULL),
+		('x1_new', 'id1', 'x1', 'newer', NOW()),
+		('x2_unknown', 'id1', 'x2', 'older-unknown', NULL)`)
+	if err := s.MergePersons(ctx, "web", "tg"); err != nil {
+		t.Fatal(err)
+	}
+	var cred string
+	if err := pool.QueryRow(ctx, `SELECT credential_ref FROM app_authorizations WHERE user_id = 'tg' AND identity_id = 'id1'`).Scan(&cred); err != nil || cred != "fresh" {
+		t.Errorf("the one just made stands: %q %v", cred, err)
+	}
+	var n int
+	_ = pool.QueryRow(ctx, `SELECT count(*) FROM app_authorizations WHERE user_id = 'tg'`).Scan(&n)
+	if n != 2 {
+		t.Errorf("the rest stays: %d", n)
+	}
+	// One saved with a time beats one saved before times were kept.
+	if err := s.MergePersons(ctx, "x1", "x2"); err != nil {
+		t.Fatal(err)
+	}
+	_ = pool.QueryRow(ctx, `SELECT credential_ref FROM app_authorizations WHERE user_id = 'x2' AND identity_id = 'id1'`).Scan(&cred)
+	if cred != "newer" {
+		t.Errorf("a connection with a time beats one without: %q", cred)
+	}
+	// And a saved connection is stamped.
+	if err := s.SaveAppAuthorization(ctx, &domain.AppAuthorization{ID: "stamped", IdentityID: "id2", UserID: "x2", CredentialRef: "c"}); err != nil {
+		t.Fatal(err)
+	}
+	var stamped bool
+	_ = pool.QueryRow(ctx, `SELECT updated_at IS NOT NULL FROM app_authorizations WHERE id = 'stamped'`).Scan(&stamped)
+	if !stamped {
+		t.Error("saving stamps the time")
+	}
+}
