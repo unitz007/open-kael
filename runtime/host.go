@@ -1926,12 +1926,32 @@ func (h *Host) runRoutedTurn(ctx context.Context, hosted *HostedAgent, userText 
 				readTools = append(readTools, t)
 			}
 		}
+		// A question that is the kind of thing a learned skill is for may have that skill's changes done as its steps
+		// say ("catch me up" with a step that adds a task): those changes, and only those, stay offered.
+		learned := 0
+		if names := learnedChanges(ctx, hosted); len(names) > 0 {
+			offered := map[string]bool{}
+			for _, t := range readTools {
+				offered[t.Spec.Name] = true
+			}
+			for _, t := range allTools {
+				if names[t.Spec.Name] && !offered[t.Spec.Name] {
+					offered[t.Spec.Name] = true
+					readTools = append(readTools, t)
+					learned++
+				}
+			}
+		}
 		if len(readTools) == 0 {
 			log.Printf("skill-router: recommend intent — no read-only tools, responding directly")
 			return h.respondDirectly(ctx, hosted, withRecommendHint(messages), []*domain.BoundAction{h.finishFor(ctx, hosted, false)})
 		}
-		log.Printf("skill-router: recommend intent — running with %d read-only tool(s)", len(readTools))
-		messages = withRecommendHint(messages)
+		log.Printf("skill-router: recommend intent — running with %d read-only tool(s), %d change(s) its learned skills use", len(readTools)-learned, learned)
+		if learned > 0 {
+			messages = withLearnedRecommendHint(messages)
+		} else {
+			messages = withRecommendHint(messages)
+		}
 		mergedTools = readTools
 	}
 
@@ -2005,6 +2025,37 @@ func limitUnattended(tools []*domain.BoundAction, allowed []string) []*domain.Bo
 // withRecommendHint prepends a system-level directive so the LLM knows the
 // user wants advice, not action — it should answer directly without invoking
 // action tools.
+// learnedChanges is the changes (by the names the model calls them) that the learned skills a person's message may
+// follow use: everyone's and the person's own (Agent.Learned). Never on an unattended run: nobody asked.
+func learnedChanges(ctx context.Context, hosted *HostedAgent) map[string]bool {
+	conv, ok := domain.ConversationFromContext(ctx)
+	if !ok || conv.UserID == "" || domain.IsUnattended(ctx) || len(hosted.Agent.Learned) == 0 {
+		return nil
+	}
+	tools, _, _ := hosted.View()
+	names := map[string]bool{}
+	for _, sk := range hosted.Agent.Learned {
+		if sk.PersonID != "" && sk.PersonID != conv.UserID {
+			continue
+		}
+		for _, st := range sk.Steps {
+			if def := tools[st.Ability]; def != nil && !def.ReadOnly {
+				names[def.ModelName()] = true
+			}
+		}
+	}
+	return names
+}
+
+// withLearnedRecommendHint is withRecommendHint when the changes of the ways it learned are offered too.
+func withLearnedRecommendHint(messages []domain.Message) []domain.Message {
+	const hint = "The person wants advice or information. Abilities that look things up are offered, and the few changes " +
+		"the ways you learned use: use the look-ups to get the facts the answer depends on before answering. Make one of " +
+		"those changes only when the request is the kind of thing one of those ways is for and you are following its " +
+		"steps; otherwise change nothing."
+	return withSystemNoteBeforeLast(messages, hint)
+}
+
 func withRecommendHint(messages []domain.Message) []domain.Message {
 	// Only look-ups are offered here, so the note says to use them: "answer directly from your knowledge" and "do not
 	// invoke tools" read as "don't look anything up", and half the time "who should I captain?" was answered with general
@@ -2013,13 +2064,18 @@ func withRecommendHint(messages []domain.Message) []domain.Message {
 		"here, and nothing you use can change anything: use them to get the facts the answer depends on (the person's own " +
 		"data, what is current) before answering, rather than giving general advice or asking them for what you can look up. " +
 		"Change nothing."
+	return withSystemNoteBeforeLast(messages, hint)
+}
+
+// withSystemNoteBeforeLast puts a note from the platform just before the person's message.
+func withSystemNoteBeforeLast(messages []domain.Message, note string) []domain.Message {
 	out := make([]domain.Message, 0, len(messages)+1)
 	if len(messages) > 0 {
 		out = append(out, messages[:len(messages)-1]...)
-		out = append(out, domain.Message{Role: domain.RoleSystem, Content: hint})
+		out = append(out, domain.Message{Role: domain.RoleSystem, Content: note})
 		out = append(out, messages[len(messages)-1])
 	} else {
-		out = append(out, domain.Message{Role: domain.RoleSystem, Content: hint})
+		out = append(out, domain.Message{Role: domain.RoleSystem, Content: note})
 	}
 	return out
 }
