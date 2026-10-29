@@ -198,6 +198,8 @@ type Host struct {
 	// UserID. domain.ErrNotFound means the text is not a code — fall through
 	// to normal HandleTurn. Any other error is a redemption failure.
 	channelRedeemer func(ctx context.Context, code, identityID, channelRef string) (userID string, err error)
+	// handoff hears each person's message first (SetHandoff).
+	handoff Handoff
 
 	// autoProvisioner, when set, is called when an inbound message arrives from
 	// an unrecognised channelRef. It creates a new platform User and a

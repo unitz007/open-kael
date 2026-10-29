@@ -387,6 +387,11 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 		}
 	}
 
+	// A code carrying a chat over from somewhere else is answered before anything else.
+	if h.tryHandoff(ctx, hosted, msg) {
+		return
+	}
+
 	// Key for the pending credential collection state machine.
 	setupKey := msg.Conversation.IdentityID + ":" + msg.Conversation.ChatID
 
