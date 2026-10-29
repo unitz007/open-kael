@@ -159,6 +159,12 @@ type ProposalStore interface {
 	DeleteExpiredProposals(ctx context.Context, before time.Time) (int, error)
 }
 
+// OpenProposalFinder finds the newest choices still open in a chat (not chosen, not run out), so choices a chat app
+// sends back as the person's own words (Telegram's reply keyboard) are taken as tapped. ErrNotFound when there are none.
+type OpenProposalFinder interface {
+	LatestOpenProposal(ctx context.Context, agentID, identityID, chatID string, now time.Time) (*Proposal, error)
+}
+
 // Button is one tappable button under a message.
 type Button struct {
 	Label string

@@ -391,6 +391,10 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 	if h.tryHandoff(ctx, hosted, msg) {
 		return
 	}
+	// One of the choices it offered, sent back as the person's own words, is that choice.
+	if h.takeTypedChoice(ctx, hosted, msg) {
+		return
+	}
 
 	// Key for the pending credential collection state machine.
 	setupKey := msg.Conversation.IdentityID + ":" + msg.Conversation.ChatID

@@ -139,3 +139,29 @@ func TestProposals_FollowThePersonThroughAMergeAndGoWithThem(t *testing.T) {
 		t.Error("deleting a person removes their proposals")
 	}
 }
+
+// The newest choices still open in a chat: not one already chosen, run out, or in another chat.
+func TestProposals_LatestOpenInAChat(t *testing.T) {
+	s, pool := world(t)
+	ctx := context.Background()
+	person(t, s, "p1")
+	now := time.Now()
+	for _, p := range []*domain.Proposal{newProposal("old", "p1", now.Add(time.Hour)), newProposal("new", "p1", now.Add(time.Hour)), newProposal("gone", "p1", now.Add(-time.Minute))} {
+		if err := s.SaveProposal(ctx, p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exec(t, pool, `UPDATE proposals SET created_at = NOW() - INTERVAL '1 hour' WHERE id = 'old'`)
+	if p, err := s.LatestOpenProposal(ctx, "a1", "id1", "chat1", now); err != nil || p.ID != "new" {
+		t.Fatalf("the newest: %+v %v", p, err)
+	}
+	if _, err := s.ChooseProposal(ctx, "new", 0, now); err != nil {
+		t.Fatal(err)
+	}
+	if p, err := s.LatestOpenProposal(ctx, "a1", "id1", "chat1", now); err != nil || p.ID != "old" {
+		t.Errorf("chosen ones are closed: %+v %v", p, err)
+	}
+	if _, err := s.LatestOpenProposal(ctx, "a1", "id1", "another-chat", now); !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("another chat has none: %v", err)
+	}
+}

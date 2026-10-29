@@ -82,3 +82,14 @@ func (s *Store) DeleteExpiredProposals(ctx context.Context, before time.Time) (i
 	tag, err := s.pool.Exec(ctx, `DELETE FROM proposals WHERE expires_at < $1`, before)
 	return int(tag.RowsAffected()), err
 }
+
+// LatestOpenProposal is the newest choices still open in a chat (domain.OpenProposalFinder).
+func (s *Store) LatestOpenProposal(ctx context.Context, agentID, identityID, chatID string, now time.Time) (*domain.Proposal, error) {
+	p, err := scanProposal(s.pool.QueryRow(ctx, `SELECT `+proposalCols+` FROM proposals
+		WHERE agent_id = $1 AND identity_id = $2 AND chat_id = $3 AND chosen IS NULL AND expires_at > $4
+		ORDER BY created_at DESC LIMIT 1`, agentID, identityID, chatID, now))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, domain.ErrNotFound
+	}
+	return p, err
+}

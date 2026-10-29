@@ -171,6 +171,33 @@ func (h *Host) handleProposalTap(ctx context.Context, hosted *HostedAgent, msg d
 	h.proposalDispatch(ctx, hosted, domain.InboundMessage{Conversation: conv, Text: choice.Say})
 }
 
+// takeTypedChoice: a message that is, word for word, one of the newest choices still open in this chat (a chat app
+// whose buttons send their words as the person's message) is that choice, chosen once as a tap would be, and what it
+// says is handled as if they had typed it. Anything else is an ordinary message.
+func (h *Host) takeTypedChoice(ctx context.Context, hosted *HostedAgent, msg domain.InboundMessage) bool {
+	finder, ok := h.proposals.(domain.OpenProposalFinder)
+	text := strings.TrimSpace(msg.Text)
+	if !ok || msg.Conversation.UserID == "" || text == "" {
+		return false
+	}
+	p, err := finder.LatestOpenProposal(ctx, hosted.Agent.ID, msg.Conversation.IdentityID, msg.Conversation.ChatID, time.Now())
+	if err != nil || p.PersonID != msg.Conversation.UserID {
+		return false
+	}
+	for i, c := range p.Choices {
+		if !strings.EqualFold(strings.TrimSpace(c.Label), text) {
+			continue
+		}
+		chosen, err := h.proposals.ChooseProposal(ctx, p.ID, i, time.Now())
+		if err != nil {
+			return false // answered a moment ago, or run out: an ordinary message
+		}
+		h.proposalDispatch(ctx, hosted, domain.InboundMessage{Conversation: msg.Conversation, Text: chosen.Choices[i].Say})
+		return true
+	}
+	return false
+}
+
 func errorsIs(err, target error) bool { return errors.Is(err, target) }
 
 // connectionFor resolves the bot and per-person connection for a conversation.

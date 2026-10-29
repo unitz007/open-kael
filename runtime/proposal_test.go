@@ -366,3 +366,52 @@ func TestWriteOnly_AFailureSendsNothing(t *testing.T) {
 		t.Errorf("nothing sent: %q", texts)
 	}
 }
+
+// finderProposals also finds the newest open choices in a chat (a store that can, like Postgres).
+type finderProposals struct{ *memProposals }
+
+func (s finderProposals) LatestOpenProposal(_ context.Context, agentID, identityID, chatID string, now time.Time) (*domain.Proposal, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var best *domain.Proposal
+	for _, p := range s.m {
+		if p.AgentID == agentID && p.IdentityID == identityID && p.ChatID == chatID && p.Chosen == nil && now.Before(p.ExpiresAt) &&
+			(best == nil || p.ExpiresAt.After(best.ExpiresAt)) {
+			best = p
+		}
+	}
+	if best == nil {
+		return nil, domain.ErrNotFound
+	}
+	c := *best
+	return &c, nil
+}
+
+// A choice sent back as the person's own words (Telegram's reply keyboard) is that choice: the sentence behind it is
+// what the agent hears, once; other words are an ordinary message.
+func TestChoices_TheirWordsAreTheChoice(t *testing.T) {
+	host, hosted, box, mem := choiceRig(t, finishWithChoices("Clash.", twoChoices(), "ok"), false)
+	host.SetProposalStore(finderProposals{mem})
+	var mu sync.Mutex
+	var heard []string
+	host.SetProposalDispatch(func(_ context.Context, _ *runtime.HostedAgent, m domain.InboundMessage) {
+		mu.Lock()
+		defer mu.Unlock()
+		heard = append(heard, m.Text)
+	})
+	host.DispatchInbound(context.Background(), hosted, firstMessage("go"))
+	waitFor(t, "buttons", func() bool { b, _ := box.snapshot(); return len(b) == 1 })
+	host.DispatchInbound(context.Background(), hosted, firstMessage(" keep it "))
+	waitFor(t, "dispatch", func() bool { mu.Lock(); defer mu.Unlock(); return len(heard) == 1 })
+	if heard[0] != "Keep my dentist appointment as it is." {
+		t.Errorf("heard %q", heard)
+	}
+	// Chosen now: the same words again are an ordinary message (answered by the agent, not taken as a choice).
+	host.DispatchInbound(context.Background(), hosted, firstMessage("Keep it"))
+	time.Sleep(50 * time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(heard) != 1 {
+		t.Errorf("once: %q", heard)
+	}
+}
