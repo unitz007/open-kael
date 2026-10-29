@@ -251,6 +251,12 @@ ALTER TABLE skills ADD COLUMN IF NOT EXISTS rules JSONB NOT NULL DEFAULT '[]';
 ALTER TABLE skills ADD COLUMN IF NOT EXISTS all_look_ups BOOLEAN NOT NULL DEFAULT FALSE;
 -- The short name the creator gave a capability, shown on screens ('' for capabilities made before titles existed).
 ALTER TABLE skills ADD COLUMN IF NOT EXISTS title TEXT NOT NULL DEFAULT '';
+-- A skill learned in its chats ('learned'; '' for the agent's own capabilities), whose it is (NULL: everyone's) and
+-- its steps. Learned skills are never listed as capabilities.
+ALTER TABLE skills ADD COLUMN IF NOT EXISTS origin TEXT NOT NULL DEFAULT '';
+ALTER TABLE skills ADD COLUMN IF NOT EXISTS person_id TEXT REFERENCES persons (id) ON DELETE CASCADE;
+ALTER TABLE skills ADD COLUMN IF NOT EXISTS steps JSONB NOT NULL DEFAULT '[]';
+CREATE INDEX IF NOT EXISTS idx_skills_person_id ON skills (person_id) WHERE person_id IS NOT NULL;
 
 -- The many-to-many join between Skill and Tool (ToolBinding) — a Tool is
 -- defined once and referenced by any number of Skills. ON DELETE RESTRICT

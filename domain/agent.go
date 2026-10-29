@@ -42,6 +42,9 @@ type Agent struct {
 	Loop Loop `json:"-"`
 
 	Skills []*Skill `json:"skills"`
+	// Learned are the skills it learned in its chats (Skill.Origin): steps it follows when asked for that kind of thing,
+	// never capabilities. They grant nothing and are never routed to.
+	Learned []*Skill `json:"-"`
 
 	// Rules are what the creator has said about how this agent may use its tools (see ToolRule).
 	Rules []ToolRule `json:"rules,omitempty"`

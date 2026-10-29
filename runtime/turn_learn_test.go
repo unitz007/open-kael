@@ -70,3 +70,32 @@ func TestTurnLearner_HearsTheExchangeAndNotesReachThePrompt(t *testing.T) {
 		t.Errorf("the note reaches the instructions: %q", r.model.system)
 	}
 }
+
+// A learner is told each ability the reply used, in order, with what kind it is, how it went and what it was given.
+func TestTurnLearner_HearsTheStepsInOrderWithWhatEachWasGiven(t *testing.T) {
+	r := newRig(func(n int) *domain.LLMResponse {
+		switch n {
+		case 1:
+			return calls(domain.ToolCall{ID: "c1", Name: "get_live_quote", Arguments: map[string]any{"pair": "EURUSD"}})
+		case 2:
+			return calls(domain.ToolCall{ID: "c2", Name: "place_trade", Arguments: map[string]any{"pair": "EURUSD", "side": "buy"}})
+		}
+		return calls(finishCall("Bought EURUSD.", "done"))
+	}, placed)
+	r.user = "p1"
+	heard := &heardTurns{}
+	r.host.AddTurnLearner(heard)
+	r.turn(t, domain.IntentExecute, "buy EURUSD")
+
+	steps := heard.wait(t, 1)[0].Steps
+	if len(steps) != 2 {
+		t.Fatalf("two abilities used: %+v", steps)
+	}
+	q, tr := steps[0], steps[1]
+	if q.Tool != "q" || q.Name != "get_live_quote" || q.Changes || q.State != domain.StepDone || q.Input["pair"] != "EURUSD" || q.App != "int-fx" {
+		t.Errorf("the look-up first: %+v", q)
+	}
+	if tr.Tool != "t" || !tr.Changes || tr.State != domain.StepDone || tr.Input["side"] != "buy" {
+		t.Errorf("then the change: %+v", tr)
+	}
+}

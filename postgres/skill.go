@@ -24,6 +24,15 @@ func (s *Store) SaveSkill(ctx context.Context, skill *domain.Skill) error {
 		return fmt.Errorf("postgres: encode skill %q output schema: %w", skill.ID, err)
 	}
 
+	steps := skill.Steps
+	if steps == nil {
+		steps = []domain.SkillStep{}
+	}
+	stepsJSON, err := json.Marshal(steps)
+	if err != nil {
+		return fmt.Errorf("postgres: encode skill %q steps: %w", skill.ID, err)
+	}
+
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("postgres: begin: %w", err)
@@ -56,8 +65,8 @@ func (s *Store) SaveSkill(ctx context.Context, skill *domain.Skill) error {
 	}
 
 	_, err = tx.Exec(ctx, `
-		INSERT INTO skills (id, agent_id, name, description, instructions, input_schema, output_schema, visibility, schedulable, integrations, limited_integrations, title, prerequisites, rules, all_look_ups)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+		INSERT INTO skills (id, agent_id, name, description, instructions, input_schema, output_schema, visibility, schedulable, integrations, limited_integrations, title, prerequisites, rules, all_look_ups, origin, person_id, steps)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, NULLIF($17, ''), $18)
 		ON CONFLICT (id) DO UPDATE SET
 			agent_id = EXCLUDED.agent_id,
 			name = EXCLUDED.name,
@@ -72,9 +81,13 @@ func (s *Store) SaveSkill(ctx context.Context, skill *domain.Skill) error {
 			title = EXCLUDED.title,
 			prerequisites = EXCLUDED.prerequisites,
 			rules = EXCLUDED.rules,
-			all_look_ups = EXCLUDED.all_look_ups
+			all_look_ups = EXCLUDED.all_look_ups,
+			origin = EXCLUDED.origin,
+			person_id = EXCLUDED.person_id,
+			steps = EXCLUDED.steps
 	`, skill.ID, skill.AgentID, skill.Name, skill.Description, skill.Instructions,
-		inputJSON, outputJSON, string(skill.Visibility), skill.Schedulable, integrations, limited, skill.Title, prereqJSON, rulesJSON, skill.AllLookUps)
+		inputJSON, outputJSON, string(skill.Visibility), skill.Schedulable, integrations, limited, skill.Title, prereqJSON, rulesJSON, skill.AllLookUps,
+		string(skill.Origin), skill.PersonID, stepsJSON)
 	if err != nil {
 		return fmt.Errorf("postgres: save skill %q: %w", skill.ID, err)
 	}
@@ -96,7 +109,7 @@ func (s *Store) SaveSkill(ctx context.Context, skill *domain.Skill) error {
 
 func (s *Store) GetSkill(ctx context.Context, id string) (*domain.Skill, error) {
 	row := s.pool.QueryRow(ctx, `
-		SELECT id, agent_id, name, description, instructions, input_schema, output_schema, visibility, schedulable, integrations, limited_integrations, title, prerequisites, rules, all_look_ups
+		SELECT id, agent_id, name, description, instructions, input_schema, output_schema, visibility, schedulable, integrations, limited_integrations, title, prerequisites, rules, all_look_ups, origin, person_id, steps
 		FROM skills WHERE id = $1
 	`, id)
 	skill, err := scanSkill(row)
@@ -114,11 +127,24 @@ func (s *Store) GetSkill(ctx context.Context, id string) (*domain.Skill, error) 
 	return skill, nil
 }
 
+// ListSkillsByAgent returns an agent's capabilities: never the skills it learned in its chats (ListLearnedSkills).
 func (s *Store) ListSkillsByAgent(ctx context.Context, agentID string) ([]*domain.Skill, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT id, agent_id, name, description, instructions, input_schema, output_schema, visibility, schedulable, integrations, limited_integrations, title, prerequisites, rules, all_look_ups
-		FROM skills WHERE agent_id = $1 ORDER BY id
+	return s.listSkills(ctx, `
+		SELECT id, agent_id, name, description, instructions, input_schema, output_schema, visibility, schedulable, integrations, limited_integrations, title, prerequisites, rules, all_look_ups, origin, person_id, steps
+		FROM skills WHERE agent_id = $1 AND origin = '' ORDER BY id
 	`, agentID)
+}
+
+// ListLearnedSkills returns the skills an agent learned in its chats, everyone's and each person's own, oldest first.
+func (s *Store) ListLearnedSkills(ctx context.Context, agentID string) ([]*domain.Skill, error) {
+	return s.listSkills(ctx, `
+		SELECT id, agent_id, name, description, instructions, input_schema, output_schema, visibility, schedulable, integrations, limited_integrations, title, prerequisites, rules, all_look_ups, origin, person_id, steps
+		FROM skills WHERE agent_id = $1 AND origin <> '' ORDER BY id
+	`, agentID)
+}
+
+func (s *Store) listSkills(ctx context.Context, query, agentID string) ([]*domain.Skill, error) {
+	rows, err := s.pool.Query(ctx, query, agentID)
 	if err != nil {
 		return nil, err
 	}
@@ -154,8 +180,8 @@ func (s *Store) ListSkillsByAgents(ctx context.Context, agentIDs []string) (map[
 		return out, nil
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, agent_id, name, description, instructions, input_schema, output_schema, visibility, schedulable, integrations, limited_integrations, title, prerequisites, rules, all_look_ups
-		FROM skills WHERE agent_id = ANY($1) ORDER BY agent_id, id
+		SELECT id, agent_id, name, description, instructions, input_schema, output_schema, visibility, schedulable, integrations, limited_integrations, title, prerequisites, rules, all_look_ups, origin, person_id, steps
+		FROM skills WHERE agent_id = ANY($1) AND origin = '' ORDER BY agent_id, id
 	`, agentIDs)
 	if err != nil {
 		return nil, err
@@ -224,11 +250,26 @@ func scanSkill(row rowScanner) (*domain.Skill, error) {
 	var inputJSON, outputJSON []byte
 	var visibility string
 	var integrations, limited []string
-	var prereqJSON, rulesJSON []byte
+	var prereqJSON, rulesJSON, stepsJSON []byte
+	var origin string
+	var person *string
 
 	if err := row.Scan(&skill.ID, &skill.AgentID, &skill.Name, &skill.Description, &skill.Instructions,
-		&inputJSON, &outputJSON, &visibility, &skill.Schedulable, &integrations, &limited, &skill.Title, &prereqJSON, &rulesJSON, &skill.AllLookUps); err != nil {
+		&inputJSON, &outputJSON, &visibility, &skill.Schedulable, &integrations, &limited, &skill.Title, &prereqJSON, &rulesJSON, &skill.AllLookUps,
+		&origin, &person, &stepsJSON); err != nil {
 		return nil, err
+	}
+	skill.Origin = domain.SkillOrigin(origin)
+	if person != nil {
+		skill.PersonID = *person
+	}
+	if len(stepsJSON) > 0 {
+		if err := json.Unmarshal(stepsJSON, &skill.Steps); err != nil {
+			return nil, fmt.Errorf("postgres: decode skill %q steps: %w", skill.ID, err)
+		}
+		if len(skill.Steps) == 0 {
+			skill.Steps = nil
+		}
 	}
 	if len(rulesJSON) > 0 {
 		if err := json.Unmarshal(rulesJSON, &skill.Rules); err != nil {

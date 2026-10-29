@@ -23,6 +23,20 @@ type TurnLearn struct {
 	// Apps is the apps this agent works with (id → name); UsedApps the ones this reply used, by id.
 	Apps     map[string]string
 	UsedApps []string
+	// Steps are the abilities this reply used, in order, with how each went.
+	Steps []TurnStep
+}
+
+// TurnStep is one ability a reply used: which, what kind, how it went, and what it was given. Input is there for a
+// learner to check what it keeps against (never to be stored or sent anywhere).
+type TurnStep struct {
+	Tool      string // its id
+	Name      string // its plain name
+	App       string // its integration's id
+	Changes   bool   // it changes something (it doesn't only look things up)
+	AsksFirst bool   // it asks the person before it runs
+	State     domain.StepState
+	Input     map[string]any
 }
 
 // TurnLearning hears each exchange a person has with an agent (never unattended runs). It runs in the background and
@@ -50,7 +64,7 @@ func (h *Host) afterTurn(ctx context.Context, conv domain.ConversationRef, hoste
 	for id, i := range hosted.usedIntegrations() {
 		apps[id] = i.Name
 	}
-	t := TurnLearn{Conv: conv, AgentID: hosted.Agent.ID, PrevReply: prevReply, UserMessage: userText, Reply: reply, Apps: apps, UsedApps: usedAppsOf(ctx, hosted)}
+	t := TurnLearn{Conv: conv, AgentID: hosted.Agent.ID, PrevReply: prevReply, UserMessage: userText, Reply: reply, Apps: apps, UsedApps: usedAppsOf(ctx, hosted), Steps: turnStepsOf(ctx, hosted)}
 	bg := domain.WithConversation(context.Background(), conv)
 	if cr, ok := domain.ChoiceRequesterFromContext(ctx); ok {
 		bg = domain.WithChoiceRequester(bg, cr)
@@ -82,5 +96,29 @@ func usedAppsOf(ctx context.Context, hosted *HostedAgent) []string {
 		out = append(out, id)
 	}
 	sort.Strings(out)
+	return out
+}
+
+// turnStepsOf is the abilities this piece of work used, in order.
+func turnStepsOf(ctx context.Context, hosted *HostedAgent) []TurnStep {
+	t, ok := stepsOf(ctx)
+	if !ok {
+		return nil
+	}
+	tools, _, _ := hosted.View()
+	var out []TurnStep
+	steps, inputs := t.stepsWithInputs()
+	for i, s := range steps {
+		def, ok := tools[s.Tool]
+		if !ok {
+			continue
+		}
+		name := def.Name
+		if name == "" {
+			name = def.ModelName()
+		}
+		out = append(out, TurnStep{Tool: s.Tool, Name: name, App: def.IntegrationID, Changes: !def.ReadOnly,
+			AsksFirst: def.RequiresApproval, State: s.State, Input: inputs[i]})
+	}
 	return out
 }

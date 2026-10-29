@@ -931,6 +931,7 @@ func (h *Host) ReloadAgent(ctx context.Context, agentID string, loader func(cont
 		return
 	}
 	hosted.Agent.Skills = fresh.Skills
+	hosted.Agent.Learned = fresh.Learned
 	hosted.Agent.Greeting = fresh.Greeting
 	hosted.Agent.Description = fresh.Description
 	hosted.Agent.Instructions = fresh.Instructions

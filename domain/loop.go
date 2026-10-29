@@ -322,6 +322,7 @@ func (l *NativeLoop) Run(ctx context.Context, messages []Message, actions []*Bou
 				}
 			}
 
+			noteStepInput(ctx, call.Name, call.Arguments)
 			noteStep(ctx, call.Name, StepRunning)
 			progressed = true // something new ran (a failure is counted by its own rule)
 			output, err := action.Invoke(ctx, call.Arguments)

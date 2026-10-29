@@ -66,6 +66,9 @@ func (s *Store) LoadAll(ctx context.Context) (agents []*domain.Agent, toolsByID 
 			return nil, nil, nil, nil, fmt.Errorf("postgres: load all: list skills for agent %q: %w", stub.ID, err)
 		}
 		stub.Skills = skills
+		if stub.Learned, err = s.ListLearnedSkills(ctx, stub.ID); err != nil {
+			return nil, nil, nil, nil, fmt.Errorf("postgres: load all: list learned skills for agent %q: %w", stub.ID, err)
+		}
 		agents = append(agents, stub)
 	}
 

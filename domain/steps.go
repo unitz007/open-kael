@@ -32,6 +32,12 @@ type StepObserver interface {
 	Step(action string, state StepState)
 }
 
+// StepInputObserver is a StepObserver that is also told what each ability is given, just before it runs (the name the
+// model calls it and its inputs). Optional; what it is told must never be stored.
+type StepInputObserver interface {
+	StepInput(action string, input map[string]any)
+}
+
 // StepShower is a chat app that shows the person what the agent is doing on their message while it works: that it has
 // begun, which of its abilities it is using (by its plain name) and how that went, and when the work is over, before
 // and around its reply. Optional; a chat app without it shows nothing until the reply. No call may block.
@@ -58,6 +64,15 @@ func StepObserverFromContext(ctx context.Context) (StepObserver, bool) {
 func noteStep(ctx context.Context, action string, state StepState) {
 	if o, ok := StepObserverFromContext(ctx); ok {
 		o.Step(action, state)
+	}
+}
+
+// noteStepInput tells the run's observer what an ability is given, when it wants to know.
+func noteStepInput(ctx context.Context, action string, input map[string]any) {
+	if o, ok := StepObserverFromContext(ctx); ok {
+		if io, ok := o.(StepInputObserver); ok {
+			io.StepInput(action, input)
+		}
 	}
 }
 

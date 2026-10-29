@@ -50,6 +50,7 @@ func (s *Store) DeleteEmptyPeople(ctx context.Context, grace time.Duration) (int
 	}
 	none = append(none,
 		`NOT EXISTS (SELECT 1 FROM accounts WHERE person_id = p.id)`,
+		`NOT EXISTS (SELECT 1 FROM skills WHERE person_id = p.id)`,
 		`NOT EXISTS (SELECT 1 FROM user_profiles WHERE user_id = p.id AND btrim(notes) <> '')`,
 		`NOT EXISTS (SELECT 1 FROM user_integration_notes WHERE user_id = p.id AND btrim(notes) <> '')`,
 		`NOT EXISTS (SELECT 1 FROM persons m WHERE m.merged_into = p.id)`,

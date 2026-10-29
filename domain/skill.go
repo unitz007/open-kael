@@ -1,6 +1,9 @@
 package domain
 
-import "strings"
+import (
+	"context"
+	"strings"
+)
 
 type SkillVisibility string
 
@@ -8,6 +11,25 @@ const (
 	SkillPrivate SkillVisibility = "private"
 	SkillPublic  SkillVisibility = "public"
 )
+
+// SkillOrigin says where a skill came from.
+type SkillOrigin string
+
+// SkillLearned is a skill an agent learned in its chats: steps of work it did, kept on a person's yes.
+const SkillLearned SkillOrigin = "learned"
+
+// SkillStep is one step of a learned skill: what to do, and the ability (tool id) it uses, or none for a step that is
+// only how to go about it ("leave it as a draft").
+type SkillStep struct {
+	Text    string `json:"text"`
+	Ability string `json:"ability,omitempty"`
+}
+
+// LearnedSkillStore keeps the skills agents learned in their chats (SaveSkill and DeleteSkill as any skill). They are
+// apart from capabilities: nothing that reads an agent's capabilities (routing, what it may use, readiness) sees them.
+type LearnedSkillStore interface {
+	ListLearnedSkills(ctx context.Context, agentID string) ([]*Skill, error)
+}
 
 // ToolBinding references a Tool by ID so a Skill doesn't duplicate the Tool
 // definition — Tools are reusable across many Skills.
@@ -70,6 +92,15 @@ type Skill struct {
 	AllLookUps bool `json:"all_look_ups,omitempty"`
 
 	Visibility SkillVisibility `json:"visibility"`
+
+	// Origin is SkillLearned for steps an agent learned in its chats and was told to keep; empty for its own
+	// capabilities. A learned skill grants nothing and is never routed to: it is kept apart from Agent.Skills
+	// (Agent.Learned), and ListSkillsByAgent never returns one.
+	Origin SkillOrigin `json:"origin,omitempty"`
+	// PersonID is whose a learned skill is: empty for everyone who talks to the agent, else that person's own.
+	PersonID string `json:"person_id,omitempty"`
+	// Steps are a learned skill's steps in order; Instructions is them written out.
+	Steps []SkillStep `json:"steps,omitempty"`
 
 	// Schedulable declares that users may configure a personal schedule for
 	// this skill (time + timezone). The creator sets this flag; the actual

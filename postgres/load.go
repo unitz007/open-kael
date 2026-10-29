@@ -41,5 +41,8 @@ func (s *Store) LoadAgent(ctx context.Context, id string) (*domain.Agent, error)
 		return nil, fmt.Errorf("postgres: load skills for agent %q: %w", id, err)
 	}
 	agent.Skills = skills
+	if agent.Learned, err = s.ListLearnedSkills(ctx, id); err != nil {
+		return nil, fmt.Errorf("postgres: load learned skills for agent %q: %w", id, err)
+	}
 	return agent, nil
 }

@@ -10,6 +10,7 @@ import (
 var (
 	_ domain.StepWatcher         = (*Host)(nil)
 	_ domain.ConversationWatcher = (*Host)(nil)
+	_ domain.StepInputObserver   = (*turnSteps)(nil)
 )
 
 // Steps: what an agent is doing right now (the abilities it uses in what it is handling, and how each went), for its
@@ -33,6 +34,9 @@ type turnSteps struct {
 	mu    sync.Mutex
 	caps  []string
 	steps []domain.LiveStep
+	// inputs[i] is what steps[i] was given, held only while the work is followed, for the learners after the reply.
+	inputs []map[string]any
+	given  map[string]map[string]any // what an ability is about to be given, until its step begins
 }
 
 // beginSteps starts following a piece of work, as the agent's latest, in the conversation it came in on; its chat app
@@ -89,12 +93,28 @@ func (t *turnSteps) Step(action string, state domain.StepState) {
 			return
 		}
 		t.steps = append(t.steps, domain.LiveStep{Tool: id, State: state})
+		t.inputs = append(t.inputs, t.given[id])
+		delete(t.given, id)
 	}
 	t.mu.Unlock()
 	t.h.work.notify(t.agentID)
 	if t.shower != nil {
 		t.shower.ShowStep(t.conv, t.plain[action], state)
 	}
+}
+
+// StepInput implements domain.StepInputObserver: what an ability is given, kept with its step for the learners.
+func (t *turnSteps) StepInput(action string, input map[string]any) {
+	id, ok := t.tools[action]
+	if !ok {
+		return
+	}
+	t.mu.Lock()
+	if t.given == nil {
+		t.given = map[string]map[string]any{}
+	}
+	t.given[id] = input
+	t.mu.Unlock()
 }
 
 // replyWatch is what the agent loop tells as the model writes, when the chat app shows it (nil otherwise): the
@@ -120,6 +140,13 @@ func (t *turnSteps) snapshot() domain.LiveTurn {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return domain.LiveTurn{Capabilities: append([]string{}, t.caps...), Steps: append([]domain.LiveStep{}, t.steps...), Chat: t.chat}
+}
+
+// stepsWithInputs is the steps so far, each with what it was given.
+func (t *turnSteps) stepsWithInputs() ([]domain.LiveStep, []map[string]any) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return append([]domain.LiveStep{}, t.steps...), append([]map[string]any{}, t.inputs...)
 }
 
 // end stops following it, and tells its chat app the work is over.
