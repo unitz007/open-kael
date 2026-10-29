@@ -114,7 +114,7 @@ func TestEmailLinkReply_AnAddressStartsTheVerification(t *testing.T) {
 	if len(w.started) != 1 || w.started[0] != "p1 id_slack C1 ada@example.com" {
 		t.Errorf("verification starts for the person who asked: %v", w.started)
 	}
-	if w.state != "sent" || !strings.Contains(w.says.last(), "Check your inbox") {
+	if w.state != "sent" || !strings.Contains(w.says.last(), "Open the link and say yes") {
 		t.Errorf("%q %q", w.state, w.says.last())
 	}
 	if _, still := w.h.pendingEmailLinks.Load(chatKey); still {
@@ -214,5 +214,24 @@ func TestEmailLinkAwaitingState(t *testing.T) {
 		if got := c.ch.EffectiveEmailLinkState(now); got != c.want {
 			t.Errorf("%s: %q, want %q", name, got, c.want)
 		}
+	}
+}
+
+// "I already use … on the web" (the welcome's key) asks for the email, and the next message is taken as it.
+func TestLinkElsewhere_TheKeyAsksForTheEmail(t *testing.T) {
+	w := newLinkWorld(t)
+	w.hosted.Agent.Name = "Kael"
+	conv := domain.ConversationRef{Provider: "slack", IdentityID: "id_slack", ChatID: "C1", UserID: "p1"}
+	if w.h.takeLinkElsewhere(context.Background(), w.hosted, domain.InboundMessage{Text: "What's in my inbox?", Conversation: conv}) {
+		t.Fatal("anything else is an ordinary message")
+	}
+	if !w.h.takeLinkElsewhere(context.Background(), w.hosted, domain.InboundMessage{Text: " i already use kael on the web ", Conversation: conv}) {
+		t.Fatal("the key is taken")
+	}
+	if !strings.Contains(w.says.last(), "what's the email you use with Kael") || w.state != "awaiting" {
+		t.Errorf("asks for the email: %q %q", w.says.last(), w.state)
+	}
+	if !w.say("ada@example.com") || len(w.started) != 1 {
+		t.Errorf("the next message is the email: %v", w.started)
 	}
 }

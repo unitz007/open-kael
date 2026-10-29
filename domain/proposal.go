@@ -165,6 +165,10 @@ type OpenProposalFinder interface {
 	LatestOpenProposal(ctx context.Context, agentID, identityID, chatID string, now time.Time) (*Proposal, error)
 }
 
+// ExtraKeyboard is the extra (a []string) a chat app that can show taps above the person's keyboard reads with a
+// message: each sends its words as the person's own message. Chat apps that can't ignore it.
+const ExtraKeyboard = "keyboard"
+
 // Button is one tappable button under a message.
 type Button struct {
 	Label string

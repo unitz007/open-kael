@@ -200,6 +200,8 @@ type Host struct {
 	channelRedeemer func(ctx context.Context, code, identityID, channelRef string) (userID string, err error)
 	// handoff hears each person's message first (SetHandoff).
 	handoff Handoff
+	// welcomeShape gives what an agent's welcome is made from (SetWelcomeShape).
+	welcomeShape WelcomeShape
 
 	// autoProvisioner, when set, is called when an inbound message arrives from
 	// an unrecognised channelRef. It creates a new platform User and a
@@ -2255,7 +2257,7 @@ func (h *Host) withUserToolApprovals(ctx context.Context, userID string) context
 // (non-localhost); otherwise the URL is embedded in the text so local
 // development still works.
 func (h *Host) onboardingMessage(agent *domain.Agent, linkCode string) (text, linkURL string) {
-	body := greetingBody(agent, h.abilitiesOf(context.Background(), agent))
+	body := h.greetingFor(context.Background(), agent)
 
 	var b strings.Builder
 	b.WriteString(body)
@@ -2347,7 +2349,7 @@ func (h *Host) saysOf(ctx context.Context, agent *domain.Agent) []string {
 // Welcome is the message someone gets the first time they write to an agent: its creator's greeting, or its
 // introduction with what it can do (the same lines as the greeting the chat sends), for showing it to its creator.
 func (h *Host) Welcome(ctx context.Context, agent *domain.Agent) string {
-	return greetingBody(agent, h.abilitiesOf(ctx, agent))
+	return h.greetingFor(ctx, agent)
 }
 
 func (h *Host) abilitiesOf(ctx context.Context, agent *domain.Agent) []string {

@@ -395,6 +395,10 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 	if h.takeTypedChoice(ctx, hosted, msg) {
 		return
 	}
+	// "I already use … on the web" (the welcome's key) asks for the email to join this chat to.
+	if h.takeLinkElsewhere(ctx, hosted, msg) {
+		return
+	}
 
 	// Key for the pending credential collection state machine.
 	setupKey := msg.Conversation.IdentityID + ":" + msg.Conversation.ChatID
@@ -418,17 +422,13 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 			log.Printf("runtime: agent %q: onboarding checker: %v", hosted.Agent.ID, err)
 		}
 		if !onboarded {
-			greeting := greetingBody(hosted.Agent, h.abilitiesOf(ctx, hosted.Agent))
-			btn := h.gettingStartedButton(msg.Conversation, hosted.Agent.ID)
+			// Who it is and what it helps with, the notice about who runs it, and things to try asking above the keyboard
+			// (with "I already use … on the web"): nothing is asked up front. Apps, the time zone and other details are
+			// asked the first time something needs them.
+			greeting := h.greetingFor(ctx, hosted.Agent)
 			if notice != "" {
 				greeting += "\n\n" + notice
 				notice = ""
-			}
-			if btn != nil {
-				greeting += "\n\nTap Get started below to tell me your name and time zone and to connect what I need."
-			}
-			if h.hasSettings(hosted, msg) {
-				greeting += "\n\nType /settings to manage your preferences."
 			}
 			// Complete onboarding immediately — no "tell me about yourself" step.
 			if h.onboardingCompleter != nil {
@@ -439,13 +439,8 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 					log.Printf("runtime: agent %q: onboarding completer: %v", hosted.Agent.ID, err)
 				}
 			}
-			if btn != nil {
-				id := h.deliverBestEffortID(ctx, hosted, msg.Conversation, greeting, btn)
-				if id != "" && h.welcomeMessageStore != nil {
-					if err := h.welcomeMessageStore.SaveWelcomeMessage(ctx, msg.Conversation.IdentityID, msg.Conversation.ChatID, id); err != nil {
-						log.Printf("runtime: agent %q: remember welcome message: %v", hosted.Agent.ID, err)
-					}
-				}
+			if keys := h.welcomeKeys(ctx, hosted, msg.Conversation); len(keys) > 0 {
+				h.deliverBestEffort(ctx, hosted, msg.Conversation, greeting, map[string]any{domain.ExtraKeyboard: keys})
 			} else {
 				h.deliverBestEffort(ctx, hosted, msg.Conversation, greeting)
 			}
@@ -880,7 +875,7 @@ func (h *Host) handleEmailLinkReply(ctx context.Context, hosted *HostedAgent, ms
 	if h.emailLinkStateSetter != nil {
 		_ = h.emailLinkStateSetter(ctx, msg.Conversation.IdentityID, msg.Conversation.ChatID, "sent")
 	}
-	h.deliverBestEffort(ctx, hosted, msg.Conversation, "Check your inbox and click the link to verify your email address. Once verified your account will be linked across platforms.")
+	h.deliverBestEffort(ctx, hosted, msg.Conversation, "Sent. Open the link and say yes: then this chat has your apps and what I know about how you like things, wherever you chat with me.")
 	return true
 }
 

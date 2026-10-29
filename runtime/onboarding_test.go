@@ -111,20 +111,22 @@ func TestOnboarding_TheDefaultWelcomeIsFixedText(t *testing.T) {
 	}
 }
 
-// On Telegram the welcome explains the button under it and carries it; the creator's own
-// greeting still goes out word for word, with the same help appended.
-func TestOnboarding_TheWelcomeExplainsAndCarriesTheGetStartedButton(t *testing.T) {
+// On Telegram the welcome says who it is and what it helps with in a line, carries things to try asking above the
+// keyboard with "I already use … on the web" (it has a web link and emails can be sent), and asks nothing up front:
+// no Get started, no menu. The creator's own greeting still goes out word for word.
+func TestOnboarding_AShortWelcomeWithThingsToTry(t *testing.T) {
 	for name, greeting := range map[string]string{"default": "", "creator's words": "Welcome aboard, trader."} {
 		box := &outbox{}
 		executors := domain.NewExecutorRegistry()
 		executors.Register("telegram", box)
 		deps := runtime.AgentDeps{
-			IdentitiesByID:   map[string]*domain.Identity{"id_tg": {ID: "id_tg", IntegrationID: "int_tg"}},
-			IntegrationsByID: map[string]*domain.Integration{"int_tg": {ID: "int_tg", Service: "telegram"}},
-			Executors:        executors,
-			Memory:           newMemMemory(),
+			IdentitiesByID: map[string]*domain.Identity{"id_tg": {ID: "id_tg", IntegrationID: "int_tg"}, "id_web": {ID: "id_web", IntegrationID: "int_web"}},
+			IntegrationsByID: map[string]*domain.Integration{"int_tg": {ID: "int_tg", Service: "telegram"},
+				"int_web": {ID: "int_web", Service: "web"}},
+			Executors: executors,
+			Memory:    newMemMemory(),
 		}
-		agent := &domain.Agent{ID: "a1", Name: "Desk", Greeting: greeting, LLMs: []domain.LLM{finishOnlyLLM("ok")}, MaxIterations: 3}
+		agent := &domain.Agent{ID: "a1", Name: "Desk", Greeting: greeting, IdentityIDs: []string{"id_tg", "id_web"}, LLMs: []domain.LLM{finishOnlyLLM("ok")}, MaxIterations: 3}
 		hosted := &runtime.HostedAgent{Agent: agent, Deps: deps}
 		host := runtime.NewHost()
 		host.Register(hosted)
@@ -134,22 +136,30 @@ func TestOnboarding_TheWelcomeExplainsAndCarriesTheGetStartedButton(t *testing.T
 			func(context.Context, string, string, string) (bool, error) { return false, nil },
 			func(context.Context, string, string, string, string, string) error { return nil },
 		)
-		host.DispatchInbound(context.Background(), hosted, domain.InboundMessage{
-			Conversation: domain.ConversationRef{Provider: "telegram", ChatID: "C1", IdentityID: "id_tg"}, Text: "hi",
+		host.SetWelcomeShape(func(context.Context, *domain.Agent) (string, []string) {
+			return "your trades and your email", []string{"How is my account doing?", "What's in my inbox?", "Am I free tomorrow?", "A fourth one"}
 		})
-		if len(box.sent) == 0 {
-			t.Fatalf("%s: nothing sent", name)
+		host.SetEmailLinkFlow(func(context.Context, string) (bool, error) { return false, nil }, nil, nil,
+			func(context.Context, string, string, string, string) error { return nil })
+		host.DispatchInbound(context.Background(), hosted, domain.InboundMessage{
+			Conversation: domain.ConversationRef{Provider: "telegram", ChatID: "C1", IdentityID: "id_tg"}, Text: "/start",
+		})
+		if len(box.sent) != 1 {
+			t.Fatalf("%s: one welcome: %v", name, box.sent)
 		}
 		first := box.sent[0]["text"].(string)
-		if !strings.Contains(first, "Tap Get started below to tell me your name and time zone") {
-			t.Errorf("%s: the welcome must say what the button is for: %q", name, first)
+		if greeting == "" && first != "👋 Hi! I'm Desk. I can help with your trades and your email. Just tell me what you need." {
+			t.Errorf("%s: %q", name, first)
 		}
-		if greeting != "" && !strings.HasPrefix(first, greeting) {
-			t.Errorf("%s: the creator's words come first, unchanged: %q", name, first)
+		if greeting != "" && first != greeting {
+			t.Errorf("%s: the creator's words, unchanged: %q", name, first)
 		}
-		btn, _ := box.sent[0]["web_app_button"].(map[string]any)
-		if btn["text"] != "Get started" || btn["url"] != "https://app.example/miniapp/welcome?agent=a1" {
-			t.Errorf("%s: button: %v", name, box.sent[0]["web_app_button"])
+		if strings.Contains(first, "Get started") || strings.Contains(first, "/settings") || box.sent[0]["web_app_button"] != nil {
+			t.Errorf("%s: nothing asked up front: %v", name, box.sent[0])
+		}
+		keys, _ := box.sent[0][domain.ExtraKeyboard].([]string)
+		if strings.Join(keys, "|") != "How is my account doing?|What's in my inbox?|Am I free tomorrow?|I already use Desk on the web" {
+			t.Errorf("%s: keys %v", name, keys)
 		}
 	}
 }
@@ -479,29 +489,6 @@ func (o *idOutbox) Execute(_ context.Context, _ *domain.Identity, _ string, acti
 	}
 	o.sent = append(o.sent, input)
 	return map[string]any{"message_id": "77"}, nil
-}
-
-func TestGetStartedButton_IsTakenOffOnceTheyAreDone(t *testing.T) {
-	host, hosted, box := telegramRig(t, &memWelcomeStore{})
-	host.DispatchInbound(context.Background(), hosted, domain.InboundMessage{
-		Conversation: domain.ConversationRef{Provider: "telegram", ChatID: "C1", IdentityID: "id_tg"}, Text: "/start",
-	})
-	if len(box.sent) != 1 || box.sent[0]["web_app_button"] == nil {
-		t.Fatalf("the welcome carries the button: %v", box.sent)
-	}
-	if len(box.removed) != 0 {
-		t.Fatal("the button stays until they are done")
-	}
-
-	host.RemoveGettingStartedButton(context.Background(), "a1", "id_tg", "C1")
-	if len(box.removed) != 1 || box.removed[0]["message_id"] != "77" || box.removed[0]["recipient"] != "C1" {
-		t.Fatalf("the welcome message's button is removed: %v", box.removed)
-	}
-	// Done tapped again, or from another phone: nothing more to remove.
-	host.RemoveGettingStartedButton(context.Background(), "a1", "id_tg", "C1")
-	if len(box.removed) != 1 {
-		t.Errorf("only removed once: %v", box.removed)
-	}
 }
 
 func TestGetStartedButton_NothingToRemoveIsQuiet(t *testing.T) {
