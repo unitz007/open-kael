@@ -1633,6 +1633,16 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 		if ierr != nil {
 			log.Printf("skill-router: classify intent failed: %v — reading intent and abilities together", ierr)
 		} else {
+			// Unrelated to what it's for, but maybe not to what every minion does on a person's turn (looking back at
+			// earlier conversations, alerts, repeating tasks): asked once more with those before declining.
+			if in == domain.IntentOffTopic {
+				if wider := h.unrelatedScope(ctx, hosted.Agent); wider != h.scopeOf(ctx, hosted.Agent) {
+					if again, aerr := ic.ClassifyIntent(ctx, userText, earlier, wider); aerr == nil && again != domain.IntentOffTopic {
+						log.Printf("skill-router: unrelated to its apps, but not to what every minion does: intent=%q", again)
+						in = again
+					}
+				}
+			}
 			intent, classified = in, true
 			log.Printf("skill-router: intent=%q", intent)
 			if h.noIntentGates && intent == domain.IntentChat {
@@ -2207,6 +2217,29 @@ func (h *Host) scopeOf(ctx context.Context, agent *domain.Agent) string {
 	}
 	if can := h.abilitiesOf(ctx, agent); len(can) > 0 {
 		about += "\nWhat it can do: " + strings.Join(can, "; ")
+	}
+	return about
+}
+
+// unrelatedScope is what a message is judged against when deciding it is unrelated to the agent: what it is for and,
+// beside that, what every minion does on a person's turn (looking back at earlier conversations, alerts, repeating
+// tasks…). Without them "What can't Jo eat again?", a question about what was said before, was declined as unrelated
+// to a minion's apps before it could look back (2026-10-31, closed-kael TestMemorySearch MS_SET=fresh, 2 times in 3).
+// Asked only when a message was first read as unrelated: given to every reading, "Reply saying I'll send it on Friday"
+// was read as wanting information (look-ups only), and the minion said it couldn't send email (5 times in 6).
+func (h *Host) unrelatedScope(ctx context.Context, agent *domain.Agent) string {
+	about := h.scopeOf(ctx, agent)
+	if about == "" {
+		return ""
+	}
+	var also []string
+	for _, p := range platformSkillsFrom(ctx) {
+		if d := strings.TrimSpace(p.Skill.Description); d != "" {
+			also = append(also, d)
+		}
+	}
+	if len(also) > 0 {
+		about += "\nIt also, for anyone it talks to: " + strings.Join(also, " ")
 	}
 	return about
 }

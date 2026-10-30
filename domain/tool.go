@@ -61,6 +61,13 @@ type ToolDefinition struct {
 	// needs what only a look-up gives (a transfer needs the player ids from the person's team). Kept for every agent
 	// that has both, exactly like a creator's own "this before that" (prerequisite.go); one it doesn't have is ignored.
 	First []string `json:"first,omitempty"`
+	// FirstAny names look-ups (tool ids) of which one must have gone through in the same run before this change may run:
+	// a change acting on an id only a look-up gives (an email, an event) is refused until the minion has looked it up in
+	// this reply, so it never acts on an id it remembers wrongly or makes up. Measured 2026-10-31 (closed-kael
+	// TestFollowUps): "And the Acme one too", two messages after the inbox was listed and with no look-up of its own,
+	// binned another email once in three. Not held on unattended runs, whose ids come from what the event or task says.
+	// Those of them the agent doesn't have are ignored; with none left, nothing is held.
+	FirstAny []string `json:"first_any,omitempty"`
 	// With names look-ups (tool ids) it relies on for its inputs without having to run them first (a transfer finds the
 	// player coming in through the player list): wherever it is offered, they are offered too, so trimming what an agent
 	// sees never leaves it without the way to its own inputs.

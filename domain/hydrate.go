@@ -269,6 +269,15 @@ func HydrateSkillTools(skill *Skill, agent *Agent, toolsByID map[string]*ToolDef
 				}
 				rules = append(rules, Prerequisite{Before: id, First: first})
 			}
+			var anyOf []string
+			for _, first := range def.FirstAny {
+				if has[first] && first != id {
+					anyOf = append(anyOf, first)
+				}
+			}
+			if len(anyOf) > 0 {
+				rules = append(rules, Prerequisite{Before: id, OneOf: anyOf})
+			}
 		}
 		bound[i] = WrapPrerequisites(a, rules, names)
 	}

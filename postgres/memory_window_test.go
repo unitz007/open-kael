@@ -9,7 +9,7 @@ import (
 )
 
 // A long conversation with a look-up and the platform's note in every exchange: the minion is given the person's words
-// and its replies from far enough back, the latest exchange whole, and no note from the platform.
+// and its replies from far enough back, the latest three exchanges whole, and no note from the platform.
 func TestHistory_TheWordsOfTheConversationNotItsLookUps(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
@@ -38,7 +38,7 @@ func TestHistory_TheWordsOfTheConversationNotItsLookUps(t *testing.T) {
 			got += m.Content + " "
 		}
 	}
-	want := "q8 a8 q9 a9 q10 a10 q11 a11 q12 [call call12][result call12]a12 "
+	want := "q8 a8 q9 a9 q10 [call call10][result call10]a10 q11 [call call11][result call11]a11 q12 [call call12][result call12]a12 "
 	if got != want {
 		t.Fatalf("got  %s\nwant %s", got, want)
 	}

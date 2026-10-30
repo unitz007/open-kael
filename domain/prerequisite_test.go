@@ -71,8 +71,10 @@ func TestPrerequisite_TheTradeWaitsForTheCheckOnTheSamePair(t *testing.T) {
 	if m, _ := out.(map[string]any); m["status"] != "refused" || !strings.Contains(m["message"].(string), "run get_trading_status first for the same symbol EURUSD") {
 		t.Fatalf("refused, saying what to run first: %v", out)
 	}
-	if len(exec.seen) != 0 {
-		t.Fatalf("nothing reached the service: %v", exec.seen)
+	for _, seen := range exec.seen {
+		if strings.HasPrefix(seen, "place") {
+			t.Fatalf("nothing reached the service: %v", exec.seen)
+		}
 	}
 	if _, err := status.Invoke(ctx, map[string]any{"symbol": "GBPUSD"}); err != nil {
 		t.Fatal(err)
@@ -276,5 +278,39 @@ func TestHydrate_AnAppNotRunningHereIsLeftOut(t *testing.T) {
 		if got := strings.Join(names, ","); strings.Contains(got, "event") || !strings.Contains(got, "place_trade") {
 			t.Errorf("%s: the rest bound, the calendar left out: %s", name, got)
 		}
+	}
+}
+
+// A change acting on something only a look-up gives waits for any one of its look-ups in the same reply, so it never
+// acts on an id remembered wrongly; an unattended run, whose ids come from what the event or task says, isn't held.
+func TestPrerequisite_OneOfItsLookUpsFirst(t *testing.T) {
+	exec := &tradingExecutor{}
+	tools, ints, reg := tradingFixture(exec)
+	place := *tools["t:place"]
+	place.FirstAny = []string{"t:status", "t:news", "t:gone"}
+	tools["t:place"] = &place
+	bound, err := domain.HydrateSkillTools(&domain.Skill{ID: "s", Integrations: []string{"trading"}}, &domain.Agent{}, tools, nil, ints, reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := domain.WithRunJournal(context.Background())
+	out, _ := action(t, bound, "place_trade").Invoke(ctx, map[string]any{"symbol": "EURUSD"})
+	if m := out.(map[string]any); m["status"] != "refused" || !strings.Contains(m["message"].(string), "get_trading_status or news") {
+		t.Fatalf("waits for one of them, naming those it has: %v", out)
+	}
+	for _, seen := range exec.seen {
+		if strings.HasPrefix(seen, "place") {
+			t.Fatalf("nothing reached the service: %v", exec.seen)
+		}
+	}
+	if _, err := action(t, bound, "news").Invoke(ctx, map[string]any{"symbol": "EURUSD"}); err != nil {
+		t.Fatal(err)
+	}
+	if out, _ := action(t, bound, "place_trade").Invoke(ctx, map[string]any{"symbol": "EURUSD"}); out.(map[string]any)["ok"] != true {
+		t.Fatalf("after any one of them: %v", out)
+	}
+	unattended := domain.WithRunJournal(domain.WithUnattended(context.Background()))
+	if out, _ := action(t, bound, "place_trade").Invoke(unattended, map[string]any{"symbol": "EURUSD"}); out.(map[string]any)["ok"] != true {
+		t.Fatalf("an unattended run isn't held: %v", out)
 	}
 }

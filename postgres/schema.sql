@@ -206,6 +206,7 @@ ALTER TABLE tools ADD COLUMN IF NOT EXISTS prepared_inputs          JSONB NOT NU
 ALTER TABLE tools ADD COLUMN IF NOT EXISTS first_needed             TEXT[] NOT NULL DEFAULT '{}';
 ALTER TABLE tools ADD COLUMN IF NOT EXISTS comes_with               TEXT[] NOT NULL DEFAULT '{}';
 ALTER TABLE tools ADD COLUMN IF NOT EXISTS once_for                 TEXT[] NOT NULL DEFAULT '{}';
+ALTER TABLE tools ADD COLUMN IF NOT EXISTS first_any                TEXT[] NOT NULL DEFAULT '{}';
 -- How many times a tool may be called in one run (ToolDefinition.MaxCalls; 0 = no limit).
 ALTER TABLE tools ADD COLUMN IF NOT EXISTS max_calls                INT NOT NULL DEFAULT 0;
 

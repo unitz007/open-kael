@@ -12,9 +12,10 @@ import (
 )
 
 const (
-	// memoryReadRows is how many of the latest stored messages are read, and memorySaid how many messages of words
-	// (the person's and the minion's replies) a minion is given of them (domain.RecentWindow).
-	memoryReadRows        = 80
+	// memoryReadRows is how many of the latest stored messages are read; of them a minion is given the last memoryWhole
+	// exchanges whole and, before them, words, memorySaid messages of words in all (domain.RecentWindow).
+	memoryReadRows        = 150
+	memoryWhole           = 3
 	memorySaid            = 10
 	memoryMaxContentBytes = 4000
 	memoryContentOverflow = "[content too large — omitted]"
@@ -89,7 +90,7 @@ func (s *Store) History(ctx context.Context, key domain.ConversationKey) []domai
 	for i, msg := range reversed {
 		msgs[len(reversed)-1-i] = msg
 	}
-	return domain.RecentWindow(msgs, memorySaid)
+	return domain.RecentWindow(msgs, memoryWhole, memorySaid)
 }
 
 func (s *Store) Append(ctx context.Context, key domain.ConversationKey, messages ...domain.Message) {

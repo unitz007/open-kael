@@ -21,6 +21,9 @@ type Prerequisite struct {
 	First  string   `json:"first"`          // the ability that must have run first (a tool id); it only looks things up
 	Same   []string `json:"same,omitempty"` // inputs both have that must carry the same value ("symbol")
 	Text   string   `json:"text,omitempty"` // how the creator saw it, in plain words
+	// OneOf, set only by the platform from an ability's own FirstAny (never stored with a capability), holds the rule
+	// when any one of these has run, in place of First; it is not held on unattended runs.
+	OneOf []string `json:"-"`
 }
 
 // MaxPrerequisites bounds a capability's prerequisites.
@@ -120,6 +123,16 @@ func (j *RunJournal) Note(toolID string, input map[string]any) {
 	j.mu.Lock()
 	j.done = append(j.done, journalEntry{tool: toolID, input: copied})
 	j.mu.Unlock()
+}
+
+// HasAny reports whether any of these tools has run successfully in this run.
+func (j *RunJournal) HasAny(toolIDs []string) bool {
+	for _, id := range toolIDs {
+		if j.Has(id, nil, nil) {
+			return true
+		}
+	}
+	return false
 }
 
 // Has reports whether a tool ran successfully with the same values as input for each of same.
@@ -225,11 +238,30 @@ func WrapPrerequisites(action *BoundAction, rules []Prerequisite, names map[stri
 	inner := action.Invoke
 	wrapped := *action
 	for _, r := range rules {
+		if len(r.OneOf) > 0 {
+			for _, id := range r.OneOf {
+				wrapped.Needs = append(wrapped.Needs, names[id])
+			}
+			continue
+		}
 		wrapped.Needs = append(wrapped.Needs, names[r.First])
 	}
 	wrapped.Invoke = func(ctx context.Context, input map[string]any) (any, error) {
 		j := RunJournalFrom(ctx)
 		for _, r := range rules {
+			if len(r.OneOf) > 0 {
+				if IsUnattended(ctx) || j.HasAny(r.OneOf) {
+					continue
+				}
+				var ways []string
+				for _, id := range r.OneOf {
+					ways = append(ways, names[id])
+				}
+				return map[string]any{"status": "refused", "changed": false, "message": fmt.Sprintf(
+					"Not done: %s acts on something you haven't looked up in this reply. Look it up again now (%s) and use what "+
+						"that gives back, never an id you remember from earlier, then call %s again if it still makes sense.",
+					action.Spec.Name, strings.Join(ways, " or "), action.Spec.Name)}, nil
+			}
 			if j.Has(r.First, r.Same, input) {
 				continue
 			}
