@@ -16,6 +16,10 @@ import (
 // button: it goes through everything typing would, so a tap can never do what typing could not.
 
 // ProposalChoice is one button.
+// PlatformAnswerPrefix starts the Say of a choice the platform answers itself (Host.SetChoiceAnswerer): choosing it
+// never reaches the agent as something the person said.
+const PlatformAnswerPrefix = "kael:"
+
 type ProposalChoice struct {
 	// Label is what the button says: a few words.
 	Label string `json:"label"`

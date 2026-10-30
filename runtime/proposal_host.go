@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"time"
 
@@ -168,7 +169,7 @@ func (h *Host) handleProposalTap(ctx context.Context, hosted *HostedAgent, msg d
 	choice := chosen.Choices[i]
 	show("✅ " + choice.Label)
 	// As if they had typed it: it goes through everything typing would.
-	h.proposalDispatch(ctx, hosted, domain.InboundMessage{Conversation: conv, Text: choice.Say})
+	h.dispatchChoice(ctx, hosted, conv, choice.Say)
 }
 
 // takeTypedChoice: a message that is, word for word, one of the newest choices still open in this chat (a chat app
@@ -184,18 +185,89 @@ func (h *Host) takeTypedChoice(ctx context.Context, hosted *HostedAgent, msg dom
 	if err != nil || p.PersonID != msg.Conversation.UserID {
 		return false
 	}
+	// Choices the platform answers itself are numbered where the chat app has no buttons: their number is the choice too.
+	byNumber := -1
+	if n, err := strconv.Atoi(strings.Trim(text, ".) ")); err == nil && n >= 1 && n <= len(p.Choices) && platformAnswered(p.Choices) {
+		byNumber = n - 1
+	}
 	for i, c := range p.Choices {
-		if !strings.EqualFold(strings.TrimSpace(c.Label), text) {
+		if i != byNumber && !strings.EqualFold(strings.TrimSpace(c.Label), text) {
 			continue
 		}
 		chosen, err := h.proposals.ChooseProposal(ctx, p.ID, i, time.Now())
 		if err != nil {
 			return false // answered a moment ago, or run out: an ordinary message
 		}
-		h.proposalDispatch(ctx, hosted, domain.InboundMessage{Conversation: msg.Conversation, Text: chosen.Choices[i].Say})
+		h.dispatchChoice(ctx, hosted, msg.Conversation, chosen.Choices[i].Say)
 		return true
 	}
 	return false
+}
+
+// SetChoiceAnswerer registers what answers choices whose Say starts with domain.PlatformAnswerPrefix (offered with
+// OfferChoices): choosing one is handed to it, never to the agent.
+func (h *Host) SetChoiceAnswerer(f func(ctx context.Context, hosted *HostedAgent, conv domain.ConversationRef, say string)) {
+	h.choiceAnswerer = f
+}
+
+// dispatchChoice handles a chosen choice: the platform's own answer, or what the person is taken to have said.
+func (h *Host) dispatchChoice(ctx context.Context, hosted *HostedAgent, conv domain.ConversationRef, say string) {
+	if strings.HasPrefix(say, domain.PlatformAnswerPrefix) {
+		if h.choiceAnswerer != nil {
+			h.choiceAnswerer(ctx, hosted, conv, say)
+		}
+		return
+	}
+	h.proposalDispatch(ctx, hosted, domain.InboundMessage{Conversation: conv, Text: say})
+}
+
+func platformAnswered(choices []domain.ProposalChoice) bool {
+	for _, c := range choices {
+		if !strings.HasPrefix(c.Say, domain.PlatformAnswerPrefix) {
+			return false
+		}
+	}
+	return len(choices) > 0
+}
+
+// OfferChoices sends a message of an agent's to a conversation nobody is in right now (a person's other chat, say)
+// with choices under it, kept like the ones it offers in a reply: once, for domain.ProposalLifetime, across restarts.
+// Where the chat app has no buttons the choices are numbered in the text. A choice whose Say starts with
+// domain.PlatformAnswerPrefix is answered by SetChoiceAnswerer's function.
+func (h *Host) OfferChoices(ctx context.Context, agentID string, conv domain.ConversationRef, text string, choices []domain.ProposalChoice) error {
+	h.mu.RLock()
+	hosted, ok := h.agents[agentID]
+	h.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("OfferChoices: agent %q not registered", agentID)
+	}
+	if h.proposals == nil || conv.UserID == "" || len(choices) == 0 {
+		return errors.New("OfferChoices: nothing to keep the choices in, or nobody to offer them to")
+	}
+	if conv.Provider == "" {
+		if _, integration := resolveIdentityAndIntegration(hosted, conv); integration != nil {
+			conv.Provider = integration.Service
+		}
+	}
+	identity, executor, connRef := h.connectionFor(ctx, hosted, conv)
+	_, buttons := executor.(domain.ButtonAttacher)
+	body := text
+	if !buttons {
+		body = withNumberedChoices(text, choices)
+	}
+	messageID := h.deliverBestEffortID(ctx, hosted, conv, body)
+	if messageID == "" {
+		return errors.New("OfferChoices: could not be delivered")
+	}
+	if buttons {
+		h.attachChoices(ctx, hosted, conv, identity, connRef, executor, messageID, text, choices)
+		return nil
+	}
+	return h.proposals.SaveProposal(ctx, &domain.Proposal{
+		ID: domain.NewID(), PersonID: conv.UserID, AgentID: hosted.Agent.ID, IdentityID: conv.IdentityID,
+		ChatID: conv.ChatID, ThreadID: conv.ThreadID, MessageID: messageID, Text: body, Choices: choices,
+		ExpiresAt: time.Now().Add(domain.ProposalLifetime),
+	})
 }
 
 func errorsIs(err, target error) bool { return errors.Is(err, target) }

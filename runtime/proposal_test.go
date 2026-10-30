@@ -415,3 +415,47 @@ func TestChoices_TheirWordsAreTheChoice(t *testing.T) {
 		t.Errorf("once: %q", heard)
 	}
 }
+
+// Choices offered in someone's chat by the platform (OfferChoices), answered by it: a tap or the choice's number goes
+// to the answerer, never to the agent.
+func TestOfferChoices_AnsweredByThePlatform(t *testing.T) {
+	host, hosted, box, mem := choiceRig(t, finishWithChoices("never", twoChoices(), "never"), false)
+	host.SetProposalStore(finderProposals{mem})
+	var mu sync.Mutex
+	var answered, heard []string
+	host.SetChoiceAnswerer(func(_ context.Context, _ *runtime.HostedAgent, conv domain.ConversationRef, say string) {
+		mu.Lock()
+		defer mu.Unlock()
+		answered = append(answered, conv.UserID+" "+say)
+	})
+	host.SetProposalDispatch(func(_ context.Context, _ *runtime.HostedAgent, m domain.InboundMessage) {
+		mu.Lock()
+		defer mu.Unlock()
+		heard = append(heard, m.Text)
+	})
+	conv := domain.ConversationRef{ChatID: "C1", IdentityID: "id_slack", UserID: "u1"}
+	choices := []domain.ProposalChoice{{Label: "Yes, that's me", Say: "kael:join:j1:yes"}, {Label: "No", Say: "kael:join:j1:no"}}
+	if err := host.OfferChoices(context.Background(), "a1", conv, "Is that you?", choices); err != nil {
+		t.Fatal(err)
+	}
+	// This chat app has buttons: none were put up without a store that can find open ones? It has: tap the second.
+	b, _ := box.snapshot()
+	if len(b) != 1 || len(b[0]) != 2 {
+		t.Fatalf("the question with its buttons: %+v %q", b, box.texts())
+	}
+	host.DispatchInbound(context.Background(), hosted, tap(b[0][1].Data))
+	waitFor(t, "answered", func() bool { mu.Lock(); defer mu.Unlock(); return len(answered) == 1 })
+	if answered[0] != "u1 kael:join:j1:no" || len(heard) != 0 {
+		t.Errorf("answered by the platform, never heard by the agent: %q %q", answered, heard)
+	}
+
+	// Again, answered by its number.
+	if err := host.OfferChoices(context.Background(), "a1", conv, "Is that you?", choices); err != nil {
+		t.Fatal(err)
+	}
+	host.DispatchInbound(context.Background(), hosted, firstMessage("1"))
+	waitFor(t, "answered by number", func() bool { mu.Lock(); defer mu.Unlock(); return len(answered) == 2 })
+	if answered[1] != "u1 kael:join:j1:yes" || len(heard) != 0 {
+		t.Errorf("%q %q", answered, heard)
+	}
+}

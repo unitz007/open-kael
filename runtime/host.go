@@ -393,6 +393,8 @@ type Host struct {
 	proposals        domain.ProposalStore
 	choiceModel      domain.LLM // the platform's own model for turning an offer into choices; the agent's own when unset
 	proposalDispatch func(ctx context.Context, hosted *HostedAgent, msg domain.InboundMessage)
+	// choiceAnswerer answers choices whose Say starts with domain.PlatformAnswerPrefix (SetChoiceAnswerer).
+	choiceAnswerer func(ctx context.Context, hosted *HostedAgent, conv domain.ConversationRef, say string)
 
 	// intentHandlers maps a domain.Intent to a handler that intercepts turns
 	// before the skill loop. The handler receives the matched skill name (empty
