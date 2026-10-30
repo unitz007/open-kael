@@ -56,6 +56,9 @@ func choicesSchema() domain.Schema {
 			"\"want me to…?\", give 2 to 5 ready next steps instead, shown as buttons so they can tap rather than type. " +
 			"Do any look-ups first so each choice is specific (for example a real free time, not \"help with that\"). " +
 			"Do not offer a choice for something you can simply do now because it only looks something up. " +
+			"When you end with a question they would answer yes or no, the choices are that yes and that no, " +
+			"labelled 'Yes, …' and 'No, …' with what each does (\"Yes, book it\" / \"No, leave it\"). " +
+			"Never offer 'something else': they can write it. " +
 			"Put the question or situation in content, not in the buttons.",
 		Items: &domain.Schema{
 			Type: domain.SchemaTypeObject,

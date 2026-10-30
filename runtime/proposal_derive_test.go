@@ -70,8 +70,8 @@ func TestDerivedChoices_AnOfferAtTheEndOfAReplyBecomesButtonsAfterTheReplyIsSent
 	if len(llm.deriving) != 1 || !strings.Contains(llm.deriving[0], "what is on tomorrow") || !strings.Contains(llm.deriving[0], "Want me to move one of them?") {
 		t.Errorf("the extra step sees what the person wrote and the reply: %q", llm.deriving)
 	}
-	if !strings.Contains(llm.deriving[0], "Never make yes/no choices") {
-		t.Errorf("the extra step is told not to make yes/no buttons: %q", llm.deriving[0])
+	if !strings.Contains(llm.deriving[0], "its label starting 'Yes, '") || !strings.Contains(llm.deriving[0], "Never offer 'something else'") {
+		t.Errorf("the extra step is told a yes/no question gets Yes and No, and never 'something else': %q", llm.deriving[0])
 	}
 }
 

@@ -122,15 +122,15 @@ type ApprovalRequester interface {
 
 // ChoiceRequester is what a runtime host attaches to ctx so the agent can put a short
 // multiple-choice question to the person and wait for their pick, with buttons in messengers
-// that have them. It returns the position of the option they chose in options, or
-// len(options) when they chose "something else" (see ChoiceOther). A person who doesn't answer
+// that have them (one per option: someone who wants something else writes it). It returns the position of the option
+// they chose in options. A person who doesn't answer
 // within the timeout is an error, never a guess.
 type ChoiceRequester interface {
 	RequestChoice(ctx context.Context, conv ConversationRef, question string, options []string, timeoutSeconds int) (ChoiceAnswer, error)
 }
 
-// ChoiceAnswer is how a question was answered. Index is the position of the option tapped,
-// len(options) for "something else", or ChoiceSuperseded when the person wrote a new message
+// ChoiceAnswer is how a question was answered. Index is the position of the option tapped, or ChoiceSuperseded when
+// the person wrote a new message
 // instead of answering.
 type ChoiceAnswer struct {
 	Index int
@@ -146,10 +146,6 @@ const ChoiceSuperseded = -1
 type ChoiceSuperseder interface {
 	SupersedeChoice(conv ConversationRef) bool
 }
-
-// ChoiceOtherLabel is the extra last button every question carries, for a person whose answer
-// is none of the offered ones. Picking it returns index len(options).
-const ChoiceOtherLabel = "Something else"
 
 // WithUnattended marks a turn that runs with nobody there: a repeating task the person set up,
 // firing at its time. Such a turn can look things up and report, but never change anything, can't

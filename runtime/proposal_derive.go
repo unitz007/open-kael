@@ -23,6 +23,31 @@ const deriveTimeout = 15 * time.Second
 // offerEnding finds a reply that ends by asking or offering something.
 var offerEnding = regexp.MustCompile(`(?i)(\?|want me to|would you like|shall i|should i|let me know|if you'd like|if you want|i can (also )?(move|book|hold|set|add|change|cancel|analy[sz]e|check|look|run|place|send|schedule|remind)|just (name|tell|give|say)|(may|might|likely|probably|will|'ll) (want|need) to|(a few|some|several) (ways|options|things)|ways to)`)
 
+// lastQuestion is a reply's closing question, from where its sentence starts ("" when it doesn't end in one).
+var lastQuestion = regexp.MustCompile(`([^.!?\n:]*)\?\s*$`)
+
+// asksForWords finds a closing question that is answered in the person's own words, never yes or no ("What's your
+// landlord's email address?", "When should I remind you?").
+var asksForWords = regexp.MustCompile(`(?i)^\s*(what|what's|which|when|where|who|whose|whom|how|why)\b`)
+
+// yesNoAnswer is a choice that only says yes or no to the question.
+var yesNoAnswer = regexp.MustCompile(`(?i)^\s*(yes|no)\b`)
+
+// yesNoToAnOpenQuestion reports Yes / No buttons under a question that wants words: the model makes them now and then,
+// and they can't answer it.
+func yesNoToAnOpenQuestion(reply string, choices []domain.ProposalChoice) bool {
+	if len(choices) == 0 {
+		return false
+	}
+	for _, c := range choices {
+		if !yesNoAnswer.MatchString(c.Label) {
+			return false
+		}
+	}
+	m := lastQuestion.FindStringSubmatch(strings.TrimSpace(reply))
+	return m != nil && asksForWords.MatchString(m[1])
+}
+
 // endsInOffer reports whether the end of a reply asks or offers something.
 func endsInOffer(reply string) bool {
 	r := []rune(strings.TrimSpace(reply))
@@ -35,23 +60,29 @@ func endsInOffer(reply string) bool {
 const deriveInstruction = "You turn the end of an assistant's reply into buttons the person can tap. " +
 	"You are given what the person wrote and the assistant's reply. " +
 	"If the reply ends by offering or asking about a next step that has two to five clear answers, call offer_choices with those answers. " +
+	"When it ends with a question the person would answer yes or no ('Shall I book it?', 'Want me to draft a reply?', 'Archive all 12?'), " +
+	"call offer_choices with exactly two: the yes, its label starting 'Yes, ' and saying in a few words what it does ('Yes, book it'), " +
+	"and the no, its label starting 'No, ' ('No, leave it'); each say spells it out ('Yes, book the 10:15 slot on Tuesday', 'No, don't book it'). " +
 	"Each choice has a label (a few words, what the button says) and say (what the person would say if they typed it: first person, specific, " +
 	"using only names, times and amounts that appear in the reply or in what the person wrote). " +
 	"The label says the same thing as say, only shorter: it never drops when it would happen ('later', 'tomorrow at 9') or which one it is about, " +
 	"so tapping it can't be mistaken for something else ('Check USD/CAD order' for 'Check back on my USD/CAD order later' reads as checking it now). " +
 	"Offer only what the reply itself offers; never invent options, facts or actions. " +
-	"Every choice is a different, concrete thing to do. Never make yes/no choices, and never 'no thanks', 'just checking', 'something else' or 'not now': " +
-	"if the only thing on offer is to do one thing or not, call nothing. " +
-	"If the reply simply answers, or asks something that needs the person's own words (a name, a number, a free-form detail), do not call offer_choices."
+	"Otherwise every choice is a different, concrete thing to do. Never offer 'something else', 'just checking' or 'not now' as a choice: " +
+	"someone who wants something else writes it. " +
+	"If the reply simply answers, or asks something that needs the person's own words (a name, a number, an address, a free-form detail: 'What's their email address?'), do not call offer_choices."
 
 // SetChoiceModel sets the model that turns a reply's closing offer into choices. It belongs to the
 // platform, not to any agent: whichever model a creator gives their agent, the buttons come out the same.
 // Without it the agent's own model is used.
 func (h *Host) SetChoiceModel(m domain.LLM) { h.choiceModel = m }
 
-// DeriveChoices is the buttons the platform's model makes from a reply's closing offer, as after a real reply: for
-// measuring how they come out on a real model.
+// DeriveChoices is the buttons the platform's model makes from a reply's closing offer, as after a real reply (only a
+// reply that ends by asking or offering something is read): for measuring how they come out on a real model.
 func (h *Host) DeriveChoices(ctx context.Context, hosted *HostedAgent, userText, reply string) []domain.ProposalChoice {
+	if !endsInOffer(reply) {
+		return nil
+	}
 	return h.deriveChoices(ctx, hosted, userText, reply)
 }
 
@@ -86,7 +117,11 @@ func (h *Host) deriveChoices(ctx context.Context, hosted *HostedAgent, userText,
 		}
 		for _, call := range resp.ToolCalls {
 			if call.Name == spec.Name {
-				return domain.ParseProposalChoices(call.Arguments["choices"])
+				choices := domain.ParseProposalChoices(call.Arguments["choices"])
+				if yesNoToAnOpenQuestion(reply, choices) {
+					return nil
+				}
+				return choices
 			}
 		}
 		return nil

@@ -88,9 +88,9 @@ func NewMessengerChoiceRequester(messenger domain.InteractiveMessenger) *Messeng
 
 var _ TenantChoiceRequester = (*MessengerChoiceRequester)(nil)
 
-// RequestChoice posts the question with one button per option plus "something else", then
-// blocks until the person taps one or the timeout passes (defaultApprovalTimeout when <= 0).
-// It returns the position of the chosen option; len(options) means "something else".
+// RequestChoice posts the question with one button per option, then blocks until the person taps one, writes
+// instead (ChoiceSuperseded) or the timeout passes (defaultApprovalTimeout when <= 0). It returns the position of the
+// chosen option. There is no "something else" button: someone who wants something else writes it.
 func (r *MessengerChoiceRequester) RequestChoice(ctx context.Context, identity *domain.Identity, connectionRef string, conv domain.ConversationRef, question string, options []string, timeoutSeconds int) (domain.ChoiceAnswer, error) {
 	cm, ok := r.Messenger.(domain.ChoiceMessenger)
 	if !ok {
@@ -113,7 +113,7 @@ func (r *MessengerChoiceRequester) RequestChoice(ctx context.Context, identity *
 		r.mu.Unlock()
 	}
 
-	buttons := append(append([]string(nil), options...), domain.ChoiceOtherLabel)
+	buttons := append([]string(nil), options...)
 	messageID, err := cm.PostChoicePrompt(ctx, identity, connectionRef, conv, question, buttons, token)
 	if err != nil {
 		cleanup()
@@ -129,7 +129,7 @@ func (r *MessengerChoiceRequester) RequestChoice(ctx context.Context, identity *
 
 	select {
 	case ans := <-ch:
-		shown := domain.ChoiceOtherLabel
+		shown := ""
 		switch {
 		case ans.Index == domain.ChoiceSuperseded:
 			shown = "⏭ Replaced by your new message"
@@ -205,7 +205,7 @@ func askOptionsAction(requester domain.ChoiceRequester) *domain.BoundAction {
 			Description: "Ask the person to pick one of a few options, shown as buttons, and wait for their tap. " +
 				"Use it when you need their decision and there are 2 to 6 short, distinct choices (for example which of several matches they meant, or a size to go with). " +
 				"Do not use it for something they already told you, for a name or number they can simply type, or to confirm an action that already asks for approval. " +
-				"Ask one question at a time and never the same question twice: once they have answered, use the answer. The result is the option they chose; if they chose 'Something else' or did not answer, say so and ask in your own words.",
+				"Ask one question at a time and never the same question twice: once they have answered, use the answer. The result is the option they chose; if they did not answer, say so and ask in your own words.",
 			MaxCalls: maxQuestionsAsked,
 			InputSchema: domain.Schema{
 				Type: domain.SchemaTypeObject,
@@ -238,7 +238,7 @@ func askOptionsAction(requester domain.ChoiceRequester) *domain.BoundAction {
 				return nil, domain.ErrSuperseded
 			}
 			if ans.Index < 0 || ans.Index >= len(options) {
-				return map[string]any{"answer": "", "status": "other", "note": "The person chose 'Something else'. Ask them in a short message what they would like instead."}, nil
+				return map[string]any{"answer": "", "status": "no_answer", "note": "The person did not pick one of them. Ask in your own words."}, nil
 			}
 			return map[string]any{"answer": options[ans.Index], "position": ans.Index + 1, "status": "answered"}, nil
 		},

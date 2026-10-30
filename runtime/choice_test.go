@@ -57,28 +57,14 @@ func TestChoiceRequester_ReturnsTheTappedOptionAndShowsTheOutcome(t *testing.T) 
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if strings.Join(m.buttons, "|") != "10,000|50,000|"+domain.ChoiceOtherLabel {
-		t.Errorf("one button per option, then 'something else': %q", m.buttons)
+	if strings.Join(m.buttons, "|") != "10,000|50,000" {
+		t.Errorf("one button per option, nothing else (they write if they want something else): %q", m.buttons)
 	}
 	if !strings.Contains(m.updated, "Which size?") || !strings.Contains(m.updated, "50,000") {
 		t.Errorf("the message shows what was chosen: %q", m.updated)
 	}
 	if r.Resolve(token, 0) {
 		t.Error("a question can only be answered once")
-	}
-}
-
-func TestChoiceRequester_SomethingElseIsThePositionAfterTheOptions(t *testing.T) {
-	m := &buttonMessenger{tokens: make(chan string, 1)}
-	r := runtime.NewMessengerChoiceRequester(m)
-	got := make(chan int, 1)
-	go func() {
-		a, _ := r.RequestChoice(context.Background(), nil, "", domain.ConversationRef{}, "Which?", []string{"a", "b"}, 5)
-		got <- a.Index
-	}()
-	r.Resolve(<-m.tokens, 2)
-	if i := <-got; i != 2 {
-		t.Errorf("'something else' is len(options): %d", i)
 	}
 }
 
@@ -201,14 +187,14 @@ func TestAskOptions_NotOfferedWhereTheMessengerCannotAsk(t *testing.T) {
 	}
 }
 
-func TestAskOptions_SomethingElseAndNoAnswerAreToldToTheModelPlainly(t *testing.T) {
+func TestAskOptions_NoAnswerIsToldToTheModelPlainly(t *testing.T) {
 	for name, ex := range map[string]*choosingExecutor{
-		"something else": {tap: 2},
-		"no answer":      {err: context.DeadlineExceeded},
+		"not one of them": {tap: 2},
+		"no answer":       {err: context.DeadlineExceeded},
 	} {
 		llm := &askingLLM{args: map[string]any{"question": "Which?", "options": []any{"a", "b"}}}
 		got := choiceTurn(t, ex, llm)
-		want := map[string]string{"something else": "Something else", "no answer": "did not answer"}[name]
+		want := map[string]string{"not one of them": "did not pick", "no answer": "did not answer"}[name]
 		if len(got) != 1 || !strings.Contains(got[0], want) {
 			t.Errorf("%s: the model must be told %q: %q", name, want, got)
 		}
