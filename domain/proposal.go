@@ -169,6 +169,12 @@ type OpenProposalFinder interface {
 	LatestOpenProposal(ctx context.Context, agentID, identityID, chatID string, now time.Time) (*Proposal, error)
 }
 
+// ProposalCloser closes choices without one being chosen: the person wrote something else instead, so they are over.
+// A store that can lets the host take the buttons off the message too.
+type ProposalCloser interface {
+	CloseProposal(ctx context.Context, id string, now time.Time) error
+}
+
 // ExtraKeyboard is the extra (a []string) a chat app that can show taps above the person's keyboard reads with a
 // message: each sends its words as the person's own message. Chat apps that can't ignore it.
 const ExtraKeyboard = "keyboard"

@@ -57,6 +57,7 @@ func TestTurnLearner_HearsTheExchangeAndNotesReachThePrompt(t *testing.T) {
 		return "Learned with " + userID + " on " + agentID + ": never more than half a lot."
 	})
 	r.turn(t, domain.IntentRecommend, "what's EURUSD?")
+	heard.wait(t, 1) // learners hear in the background: the second exchange only follows once the first was heard
 	r.turn(t, domain.IntentRecommend, "no, I never trade more than half a lot")
 
 	turns := heard.wait(t, 2)

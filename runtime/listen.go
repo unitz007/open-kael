@@ -405,6 +405,8 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 	if h.takeTypedChoice(ctx, hosted, msg) {
 		return
 	}
+	// Anything else they write ends the choices offered before.
+	h.retireChoices(ctx, hosted, msg)
 	// "I already use … on the web" (the welcome's key) asks for the email to join this chat to.
 	if h.takeLinkElsewhere(ctx, hosted, msg) {
 		return

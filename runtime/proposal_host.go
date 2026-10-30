@@ -175,6 +175,39 @@ func (h *Host) handleProposalTap(ctx context.Context, hosted *HostedAgent, msg d
 	h.dispatchChoice(ctx, hosted, conv, choice.Say)
 }
 
+// retireChoices: the person wrote something that is not one of the choices offered before, so those are over: they
+// are closed and their buttons come off the message (a chat app that can take them off), as the web link does. Buttons
+// that sat on for a day were still tappable under a conversation that had moved on.
+func (h *Host) retireChoices(ctx context.Context, hosted *HostedAgent, msg domain.InboundMessage) {
+	finder, ok := h.proposals.(domain.OpenProposalFinder)
+	closer, canClose := h.proposals.(domain.ProposalCloser)
+	if !ok || !canClose || msg.CallbackQuery != nil || msg.Conversation.UserID == "" {
+		return
+	}
+	now := time.Now()
+	p, err := finder.LatestOpenProposal(ctx, hosted.Agent.ID, msg.Conversation.IdentityID, msg.Conversation.ChatID, now)
+	if err != nil || p.PersonID != msg.Conversation.UserID || p.MessageID == "" {
+		return
+	}
+	if err := closer.CloseProposal(ctx, p.ID, now); err != nil {
+		log.Printf("runtime: agent %q: could not close choices %q: %v", hosted.Agent.ID, p.ID, err)
+		return
+	}
+	executor, ok := h.executorForMessage(hosted, msg)
+	if !ok {
+		return
+	}
+	conv := domain.ConversationRef{Provider: msg.Conversation.Provider, ChatID: p.ChatID, ThreadID: p.ThreadID, IdentityID: p.IdentityID, UserID: p.PersonID}
+	identity, _, connRef := h.connectionFor(ctx, hosted, conv)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		if _, err := executor.Execute(ctx, identity, connRef, domain.ActionRemoveButtons, map[string]any{"recipient": p.ChatID, "message_id": p.MessageID}); err != nil {
+			log.Printf("runtime: agent %q: could not take the buttons off: %v", hosted.Agent.ID, err)
+		}
+	}()
+}
+
 // takeTypedChoice: a message that is, word for word, one of the newest choices still open in this chat (a chat app
 // whose buttons send their words as the person's message) is that choice, chosen once as a tap would be, and what it
 // says is handled as if they had typed it. Anything else is an ordinary message.

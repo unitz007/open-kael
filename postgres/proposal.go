@@ -83,6 +83,14 @@ func (s *Store) DeleteExpiredProposals(ctx context.Context, before time.Time) (i
 	return int(tag.RowsAffected()), err
 }
 
+var _ domain.ProposalCloser = (*Store)(nil)
+
+// CloseProposal ends choices nobody chose (domain.ProposalCloser): they are no longer open.
+func (s *Store) CloseProposal(ctx context.Context, id string, now time.Time) error {
+	_, err := s.pool.Exec(ctx, `UPDATE proposals SET expires_at = LEAST(expires_at, $2) WHERE id = $1 AND chosen IS NULL`, id, now)
+	return err
+}
+
 // LatestOpenProposal is the newest choices still open in a chat (domain.OpenProposalFinder).
 func (s *Store) LatestOpenProposal(ctx context.Context, agentID, identityID, chatID string, now time.Time) (*domain.Proposal, error) {
 	p, err := scanProposal(s.pool.QueryRow(ctx, `SELECT `+proposalCols+` FROM proposals

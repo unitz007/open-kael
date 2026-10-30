@@ -165,3 +165,35 @@ func TestProposals_LatestOpenInAChat(t *testing.T) {
 		t.Errorf("another chat has none: %v", err)
 	}
 }
+
+func TestProposals_ClosedWithoutAChoice(t *testing.T) {
+	s, _ := world(t)
+	ctx := context.Background()
+	person(t, s, "p1")
+	now := time.Now()
+	if err := s.SaveProposal(ctx, newProposal("pc1", "p1", now.Add(time.Hour))); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CloseProposal(ctx, "pc1", now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.LatestOpenProposal(ctx, "a1", "id1", "chat1", now.Add(time.Second)); !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("no longer open: %v", err)
+	}
+	if _, err := s.ChooseProposal(ctx, "pc1", 0, now.Add(time.Second)); !errors.Is(err, domain.ErrProposalExpired) {
+		t.Errorf("a late tap says they have run out: %v", err)
+	}
+	// One already chosen stays as it was.
+	if err := s.SaveProposal(ctx, newProposal("pc2", "p1", now.Add(time.Hour))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ChooseProposal(ctx, "pc2", 1, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CloseProposal(ctx, "pc2", now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if p, _ := s.GetProposal(ctx, "pc2"); p.ExpiresAt.Before(now.Add(30 * time.Minute)) {
+		t.Errorf("a chosen one is left alone: %v", p.ExpiresAt)
+	}
+}

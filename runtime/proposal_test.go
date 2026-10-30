@@ -387,6 +387,63 @@ func (s finderProposals) LatestOpenProposal(_ context.Context, agentID, identity
 	return &c, nil
 }
 
+func (s finderProposals) CloseProposal(_ context.Context, id string, now time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if p, ok := s.m[id]; ok && p.Chosen == nil {
+		p.ExpiresAt = now
+	}
+	return nil
+}
+
+// removeBox is a chat app that notes which messages had their buttons taken off.
+type removeBox struct {
+	*buttonOutbox
+	mu      sync.Mutex
+	removed []string
+}
+
+func (b *removeBox) Execute(ctx context.Context, i *domain.Identity, c string, a string, in map[string]any) (any, error) {
+	if a == domain.ActionRemoveButtons {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		b.removed = append(b.removed, in["message_id"].(string))
+		return map[string]any{}, nil
+	}
+	return b.buttonOutbox.Execute(ctx, i, c, a, in)
+}
+
+// The person writes something else instead of tapping: the choices offered before are over, and their buttons come
+// off the message; words that happen to match them later are an ordinary message.
+func TestChoices_WritingSomethingElseEndsThem(t *testing.T) {
+	host, hosted, box, mem := choiceRig(t, finishWithChoices("Clash.", twoChoices(), "ok"), false)
+	rm := &removeBox{buttonOutbox: box}
+	hosted.Deps.Executors.Register("slack", rm)
+	host.SetProposalStore(finderProposals{mem})
+	var mu sync.Mutex
+	var heard []string
+	host.SetProposalDispatch(func(_ context.Context, _ *runtime.HostedAgent, m domain.InboundMessage) {
+		mu.Lock()
+		defer mu.Unlock()
+		heard = append(heard, m.Text)
+	})
+	host.DispatchInbound(context.Background(), hosted, firstMessage("go"))
+	waitFor(t, "buttons", func() bool { b, _ := box.snapshot(); return len(b) == 1 })
+	host.DispatchInbound(context.Background(), hosted, firstMessage("actually, what about Friday?"))
+	waitFor(t, "buttons taken off", func() bool { rm.mu.Lock(); defer rm.mu.Unlock(); return len(rm.removed) == 1 })
+	if rm.removed[0] != "m1" {
+		t.Errorf("the message they were under: %q", rm.removed)
+	}
+	// Their old words are no longer a choice.
+	host.DispatchInbound(context.Background(), hosted, firstMessage("Keep it"))
+	time.Sleep(100 * time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(heard) != 0 {
+		t.Errorf("closed choices are not taken from their words: %q", heard)
+	}
+}
+
 // A choice sent back as the person's own words (Telegram's reply keyboard) is that choice: the sentence behind it is
 // what the agent hears, once; other words are an ordinary message.
 func TestChoices_TheirWordsAreTheChoice(t *testing.T) {
