@@ -531,3 +531,19 @@ func TestConnectLink_IsToldWhichAgentAsks(t *testing.T) {
 		}
 	}
 }
+
+// Start pressed again by someone it knows gets nothing at all: no answer, no model.
+func TestStart_FromSomeoneItKnowsIsNotAnswered(t *testing.T) {
+	host, hosted, box, llm := helloRig(t, &fakeJudge{just: true})
+	host.DispatchInbound(context.Background(), hosted, firstMessage("/start"))
+	for _, again := range []string{"/start", "/start abc123", "/start@DeskBot"} {
+		host.DispatchInbound(context.Background(), hosted, firstMessage(again))
+	}
+	if got := box.texts(); len(got) != 1 || got[0] != "Welcome!" || llm.n != 0 {
+		t.Errorf("only the first Start's welcome: %q, %d model calls", got, llm.n)
+	}
+	host.DispatchInbound(context.Background(), hosted, firstMessage("what's on today?"))
+	if llm.n != 1 {
+		t.Errorf("a real message is still answered: %d model calls", llm.n)
+	}
+}

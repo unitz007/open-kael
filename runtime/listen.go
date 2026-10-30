@@ -462,6 +462,12 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 		}
 	}
 
+	// Telegram's Start, pressed again by someone it already knows (or a link with a code nothing took), is not a message:
+	// nothing answers it. Someone new got the welcome above.
+	if isStartCommand(msg.Text) {
+		return
+	}
+
 	if notice != "" {
 		h.deliverBestEffort(ctx, hosted, msg.Conversation, notice)
 	}

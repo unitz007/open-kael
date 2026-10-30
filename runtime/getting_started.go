@@ -139,7 +139,7 @@ const maxGreetingRunes = 60
 // the answer is no, so a real request is never left unanswered.
 func (h *Host) onlySaysHello(ctx context.Context, text string) bool {
 	text = strings.TrimSpace(text)
-	if text == "" || text == "/start" || strings.HasPrefix(text, "/start ") {
+	if text == "" || isStartCommand(text) {
 		return true
 	}
 	if h.greetingJudge == nil || utf8.RuneCountInString(text) > maxGreetingRunes {
@@ -151,6 +151,13 @@ func (h *Host) onlySaysHello(ctx context.Context, text string) bool {
 		return false
 	}
 	return just
+}
+
+// isStartCommand is Telegram's /start: what it sends when someone presses Start, or opens the bot from a link
+// ("/start <code>"; "/start@TheBot" in a group).
+func isStartCommand(text string) bool {
+	text = strings.TrimSpace(text)
+	return text == "/start" || strings.HasPrefix(text, "/start ") || strings.HasPrefix(text, "/start@")
 }
 
 // WelcomeMessageStore remembers which message carries a person's "Get started" button,
