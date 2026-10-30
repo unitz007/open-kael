@@ -252,7 +252,8 @@ func PlainText(in []Inline) string {
 	return b.String()
 }
 
-var numeric = regexp.MustCompile(`^[-+−]?[£$€₦¥]?\s?[-+−]?\d[\d,.\s]*(%|[kKmMbB]n?|bn|pts?|x)?$`)
+// numeric is a number, an amount or a measure: "142", "£10.1m", "48%", "14.9°C", "12 km/h", "3 days".
+var numeric = regexp.MustCompile(`^[-+−]?[£$€₦¥]?\s?[-+−]?\d[\d,.]*(\s?(%|°[CF]?|[a-zA-Z/°]{1,5}))?$`)
 
 func grid(t *extast.Table, src []byte) *Grid {
 	g := &Grid{}

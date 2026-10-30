@@ -112,3 +112,10 @@ func TestParse_LinksCodeQuotesAndLineBreaks(t *testing.T) {
 		t.Errorf("%+v", bs[1:])
 	}
 }
+
+func TestNumbersAndMeasuresGoRight(t *testing.T) {
+	g := Parse("| Day | High | Wind | Rain | Note |\n|---|---|---|---|---|\n| Fri | 14.9°C | 12 km/h | 0% | Overcast |\n| Sat | 9°F | 8 mph | 15% | Fog 2 |")[0].Table
+	if fmt.Sprint(g.Right) != "[false true true true false]" {
+		t.Errorf("%v", g.Right)
+	}
+}
