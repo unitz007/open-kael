@@ -53,6 +53,21 @@ type ReplyReplacer interface {
 	ReplaceReply(ctx context.Context, identity *Identity, connectionRef string, conv ConversationRef, messageID, text string) error
 }
 
+// ProfileShower is a chat app whose bot has a profile of its own (Telegram: its name, a line on its profile, and what it
+// does, shown before anyone writes), set from the agent so people find it under the agent's name and words. Called
+// when the chat app is given to the agent and when its name or description changes; an empty field is left as it is.
+// A chat app that limits how often a profile may change only changes what differs.
+type ProfileShower interface {
+	ShowProfile(ctx context.Context, identity *Identity, p BotProfile) error
+}
+
+// BotProfile is what a chat app shows about the agent's bot.
+type BotProfile struct {
+	Name        string // the agent's name
+	About       string // a line about it (Telegram allows 120 characters)
+	Description string // what it does, shown before anyone writes (Telegram allows 512)
+}
+
 // MemberEmailer is a chat app that can tell the email it has for a member who writes ("" for none it may see).
 type MemberEmailer interface {
 	MemberEmail(ctx context.Context, identity *Identity, senderID string) (string, error)
