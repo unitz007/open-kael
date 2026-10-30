@@ -311,7 +311,16 @@ type Renderer interface {
 type Fits struct {
 	Tables bool // draws tables itself
 	Width  int  // characters a fixed-width line may take before it scrolls (a phone about 36, a computer about 60)
+	// TableLink, when set, is a page that shows a table in full: a table wider than WideColumns, given a line per row,
+	// ends with "See the full table ›" to it ("" for none).
+	TableLink func(g *Grid) string
 }
+
+// WideColumns is how many columns a table may have before a line per row also links to it in full.
+const WideColumns = 6
+
+// FullTable is the words of the link to a table in full.
+const FullTable = "See the full table ›"
 
 // Render draws markdown for a chat app.
 func Render(markdown string, r Renderer, f Fits) string {
@@ -360,6 +369,11 @@ func table(g *Grid, r Renderer, f Fits) []string {
 	var out []string
 	for _, row := range g.Rows {
 		out = append(out, r.Paragraph(r.Inlines(RowLine(g, row))))
+	}
+	if f.TableLink != nil && len(g.Right) > WideColumns {
+		if url := f.TableLink(g); url != "" {
+			out = append(out, r.Paragraph(r.Inlines([]Inline{{Text: FullTable, Link: url}})))
+		}
 	}
 	return out
 }

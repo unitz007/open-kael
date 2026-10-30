@@ -119,3 +119,31 @@ func TestNumbersAndMeasuresGoRight(t *testing.T) {
 		t.Errorf("%v", g.Right)
 	}
 }
+
+func TestRender_AWideTableLinksToItInFull(t *testing.T) {
+	wide := "| Player | Team | Pos | Pts | Price | Form | Next | Owned |\n|---|---|---|---|---|---|---|---|\n| Saka | Arsenal | MID | 142 | £10.1m | 7.2 | BUR | 48% |"
+	linked := 0
+	f := Fits{Width: 36, TableLink: func(g *Grid) string { linked++; return "https://x.test/t/1" }}
+	if got := Render(wide, linkR{}, f); !strings.HasSuffix(got, "\n[See the full table ›](https://x.test/t/1)") || linked != 1 {
+		t.Errorf("%q", got)
+	}
+	narrow := "| Player | Team | Points | Price | Form |\n|---|---|---|---|---|\n| Saka | Arsenal | 142 | £10.1m | 7.2 |"
+	if got := Render(narrow, linkR{}, Fits{Width: 20, TableLink: f.TableLink}); strings.Contains(got, "full table") {
+		t.Errorf("six columns or fewer: a line per row is enough: %q", got)
+	}
+}
+
+// linkR draws links as markdown, to see them.
+type linkR struct{ plainR }
+
+func (linkR) Inlines(in []Inline) string {
+	var b strings.Builder
+	for _, x := range in {
+		if x.Link != "" {
+			b.WriteString("[" + x.Text + "](" + x.Link + ")")
+		} else {
+			b.WriteString(x.Text)
+		}
+	}
+	return b.String()
+}
