@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/unitz007/open-kael/domain"
+	"github.com/unitz007/open-kael/postgres/pgtest"
 )
 
 func TestExchanges_KeptAndRewound(t *testing.T) {
@@ -32,5 +33,27 @@ func TestExchanges_KeptAndRewound(t *testing.T) {
 	}
 	if _, ok := s.LastExchange(ctx, key); ok {
 		t.Error("and the exchange itself")
+	}
+}
+
+func TestExchanges_AnIgnoredEditIsSaidOnceADay(t *testing.T) {
+	s, pool := pgtest.Store(t)
+	ctx := context.Background()
+	key := domain.ConversationKey{AgentID: "a1", IdentityID: "bot", ChatID: "c1", UserID: "p1"}
+	s.SetLastExchange(ctx, key, domain.LastExchange{MessageID: "m2", Text: "rain?", At: time.Now(), ReplyID: "r2"})
+	other := key
+	other.ChatID = "c2"
+	s.SetLastExchange(ctx, other, domain.LastExchange{MessageID: "m9", Text: "hi", At: time.Now(), ReplyID: "r9"})
+	if !s.MayNoteIgnoredEdit(ctx, key) || s.MayNoteIgnoredEdit(ctx, key) {
+		t.Fatal("once")
+	}
+	if !s.MayNoteIgnoredEdit(ctx, other) {
+		t.Error("each conversation its own")
+	}
+	if _, err := pool.Exec(ctx, `UPDATE conversations SET edit_note_at = NOW() - INTERVAL '25 hours' WHERE chat_id = 'c1'`); err != nil {
+		t.Fatal(err)
+	}
+	if !s.MayNoteIgnoredEdit(ctx, key) {
+		t.Error("again a day later")
 	}
 }

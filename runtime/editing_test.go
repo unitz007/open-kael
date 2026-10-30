@@ -15,8 +15,19 @@ import (
 // editMemory keeps exchanges, as Postgres does.
 type editMemory struct {
 	*memMemory
-	mu   sync.Mutex
-	last map[string]domain.LastExchange
+	mu    sync.Mutex
+	last  map[string]domain.LastExchange
+	noted map[string]bool
+}
+
+func (m *editMemory) MayNoteIgnoredEdit(_ context.Context, k domain.ConversationKey) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.noted[exKey(k)] {
+		return false
+	}
+	m.noted[exKey(k)] = true
+	return true
 }
 
 func exKey(k domain.ConversationKey) string { return k.AgentID + "|" + k.IdentityID + "|" + k.ChatID }
@@ -109,7 +120,7 @@ func editRig(t *testing.T, llm domain.LLM) (*runtime.Host, *runtime.HostedAgent,
 	box := &replyBox{}
 	executors := domain.NewExecutorRegistry()
 	executors.Register("slack", box)
-	mem := &editMemory{memMemory: newMemMemory(), last: map[string]domain.LastExchange{}}
+	mem := &editMemory{memMemory: newMemMemory(), last: map[string]domain.LastExchange{}, noted: map[string]bool{}}
 	deps := slackDeps(func(d *runtime.AgentDeps) { d.Executors = executors; d.Memory = mem })
 	hosted := &runtime.HostedAgent{Agent: &domain.Agent{ID: "a1", Name: "Kael", LLMs: []domain.LLM{llm}, MaxIterations: 5}, Deps: deps}
 	host := runtime.NewHost()
@@ -149,13 +160,31 @@ func TestEdit_AfterALookUpTheReplyIsRedoneInPlace(t *testing.T) {
 	if got := strings.Join(words, "|"); !strings.Contains(got, "rain in Leeds?") || strings.Contains(got, "London") {
 		t.Errorf("the conversation keeps the new words only: %q", got)
 	}
-	// Editing it again works the same; an older message's edit changes nothing.
+	// An older message's edit changes nothing, and the person is told so, once.
 	host.Receive(ctx, hosted, typed("m2", "and Paris?"))
 	waitFor(t, "second reply", func() bool { s, _ := box.snapshot(); return len(s) == 2 })
 	host.Receive(ctx, hosted, edited("m1", "rain in York?"))
+	waitFor(t, "told it was left alone", func() bool { s, _ := box.snapshot(); return len(s) == 3 })
+	host.Receive(ctx, hosted, edited("m1", "rain in Hull?"))
 	time.Sleep(100 * time.Millisecond)
-	if s, r := box.snapshot(); len(s) != 2 || len(r) != 1 {
-		t.Errorf("an older message's edit changes nothing: %q %q", s, r)
+	if s, r := box.snapshot(); len(s) != 3 || len(r) != 1 || !strings.HasPrefix(s[2], "I only take in a change to your latest message") {
+		t.Errorf("an older message's edit changes nothing, told once: %q %q", s, r)
+	}
+}
+
+func TestEdit_TooLateIsLeftAloneAndSaidSo(t *testing.T) {
+	host, hosted, box, mem := editRig(t, &echoLLM{})
+	ctx := context.Background()
+	host.Receive(ctx, hosted, typed("m1", "rain in London?"))
+	waitFor(t, "the reply", func() bool { s, _ := box.snapshot(); return len(s) == 1 })
+	key := domain.ConversationKey{AgentID: "a1", IdentityID: "id_slack", ChatID: "C1", UserID: "u1"}
+	e, _ := mem.LastExchange(ctx, key)
+	e.At = time.Now().Add(-domain.EditWindow - time.Minute)
+	mem.SetLastExchange(ctx, key, e)
+	host.Receive(ctx, hosted, edited("m1", "rain in Leeds?"))
+	waitFor(t, "told", func() bool { s, _ := box.snapshot(); return len(s) == 2 })
+	if s, r := box.snapshot(); len(r) != 0 || !strings.Contains(s[1], "15 minutes") {
+		t.Errorf("not answered again, said so: %q %q", s, r)
 	}
 }
 

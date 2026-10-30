@@ -91,9 +91,22 @@ func (h *Host) withPerson(ctx context.Context, msg domain.InboundMessage) domain
 	return conv
 }
 
+// ignoredEditNote is what a person is told when they change a message the agent no longer goes by.
+const ignoredEditNote = "I only take in a change to your latest message, for 15 minutes after you send it. Write it again as a new message if you'd like me to look at it."
+
+// noteIgnoredEdit tells the person, at most once a day in a conversation, that their edit was left alone: chat apps
+// such as Telegram let anyone change any old message, and a silent edit reads as one that was seen.
+func (h *Host) noteIgnoredEdit(ctx context.Context, hosted *HostedAgent, conv domain.ConversationRef, key domain.ConversationKey) {
+	notes, ok := hosted.Deps.Memory.(domain.EditNotes)
+	if !ok || !notes.MayNoteIgnoredEdit(ctx, key) {
+		return
+	}
+	h.deliverBestEffort(ctx, hosted, conv, ignoredEditNote)
+}
+
 // answerEdit answers an edit of the person's latest message within domain.EditWindow: in the old reply's place when it
 // only looked things up, else with look-ups only and told what was already done. An older message's edit changes
-// nothing.
+// nothing, and the person is told so (noteIgnoredEdit).
 func (h *Host) answerEdit(ctx context.Context, hosted *HostedAgent, msg domain.InboundMessage) {
 	ex, ok := hosted.Deps.Memory.(domain.Exchanges)
 	if !ok {
@@ -102,7 +115,14 @@ func (h *Host) answerEdit(ctx context.Context, hosted *HostedAgent, msg domain.I
 	conv := h.withPerson(ctx, msg)
 	key := domain.ConversationKey{AgentID: hosted.Agent.ID, IdentityID: conv.IdentityID, ChatID: conv.ChatID, ThreadID: conv.ThreadID, UserID: conv.UserID}
 	last, ok := ex.LastExchange(ctx, key)
-	if !ok || last.MessageID != msg.MessageID || time.Since(last.At) > domain.EditWindow || strings.TrimSpace(last.Text) == strings.TrimSpace(msg.Text) {
+	if !ok {
+		return
+	}
+	if last.MessageID != msg.MessageID || time.Since(last.At) > domain.EditWindow {
+		h.noteIgnoredEdit(ctx, hosted, conv, key)
+		return
+	}
+	if strings.TrimSpace(last.Text) == strings.TrimSpace(msg.Text) {
 		return
 	}
 	msg.Conversation = conv

@@ -306,6 +306,8 @@ ALTER TABLE conversations ADD COLUMN IF NOT EXISTS last_in_text    TEXT NOT NULL
 ALTER TABLE conversations ADD COLUMN IF NOT EXISTS last_in_at      TIMESTAMPTZ;
 ALTER TABLE conversations ADD COLUMN IF NOT EXISTS last_reply_id   TEXT NOT NULL DEFAULT '';
 ALTER TABLE conversations ADD COLUMN IF NOT EXISTS last_changed    TEXT[] NOT NULL DEFAULT '{}';
+-- When the person was last told an edit was left alone (domain.EditNotes).
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS edit_note_at    TIMESTAMPTZ;
 
 -- Drop the legacy single-column TEXT primary key if it exists (CASCADE removes
 -- any dependent constraints such as the old PRIMARY KEY on that column).

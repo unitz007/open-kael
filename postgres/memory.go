@@ -189,6 +189,22 @@ func (s *Store) SetLastExchange(ctx context.Context, key domain.ConversationKey,
 	}
 }
 
+var _ domain.EditNotes = (*Store)(nil)
+
+// MayNoteIgnoredEdit says whether the conversation may be told now that an edit was left alone, and marks it told
+// (domain.EditNotes): once in domain.EditNoteEvery, decided in one step.
+func (s *Store) MayNoteIgnoredEdit(ctx context.Context, key domain.ConversationKey) bool {
+	tag, err := s.pool.Exec(ctx, `UPDATE conversations SET edit_note_at = NOW()
+		WHERE agent_id = $1 AND identity_id = $2 AND chat_id = $3 AND thread_id = $4
+		AND (edit_note_at IS NULL OR edit_note_at < NOW() - make_interval(secs => $5))`,
+		key.AgentID, key.IdentityID, key.ChatID, key.ThreadID, domain.EditNoteEvery.Seconds())
+	if err != nil {
+		log.Printf("memory: edit note agent=%s chat=%s: %v", key.AgentID, key.ChatID, err)
+		return false
+	}
+	return tag.RowsAffected() == 1
+}
+
 // RewindLastExchange forgets the conversation's messages from the person's latest on (an edit's new answer takes
 // their place), and the exchange itself.
 func (s *Store) RewindLastExchange(ctx context.Context, key domain.ConversationKey) error {

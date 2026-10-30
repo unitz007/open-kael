@@ -38,6 +38,15 @@ type Exchanges interface {
 	RewindLastExchange(ctx context.Context, key ConversationKey) error
 }
 
+// EditNotes is kept by a Memory that can: whether a person may be told, now, that an edit was left alone (not their
+// latest message, or too old). At most once a day per conversation; asking takes the turn.
+type EditNotes interface {
+	MayNoteIgnoredEdit(ctx context.Context, key ConversationKey) bool
+}
+
+// EditNoteEvery is how often a conversation may be told that an edit was left alone.
+const EditNoteEvery = 24 * time.Hour
+
 // ReplyReplacer is a chat app that can put a new reply in the place of one it sent (showing it was edited, where it
 // shows that).
 type ReplyReplacer interface {
