@@ -12,7 +12,10 @@ import (
 )
 
 const (
-	memoryWindowSize      = 8
+	// memoryReadRows is how many of the latest stored messages are read, and memorySaid how many messages of words
+	// (the person's and the minion's replies) a minion is given of them (domain.RecentWindow).
+	memoryReadRows        = 80
+	memorySaid            = 10
 	memoryMaxContentBytes = 4000
 	memoryContentOverflow = "[content too large — omitted]"
 )
@@ -37,7 +40,7 @@ func (s *Store) History(ctx context.Context, key domain.ConversationKey) []domai
 			WHERE agent_id = $1 AND user_id = $2 AND thread_id = $3
 			ORDER BY id DESC
 			LIMIT $4
-		`, key.AgentID, key.UserID, key.ThreadID, memoryWindowSize)
+		`, key.AgentID, key.UserID, key.ThreadID, memoryReadRows)
 	} else {
 		rows, err = s.pool.Query(ctx, `
 			SELECT role, content, tool_calls, tool_call_id, name
@@ -45,7 +48,7 @@ func (s *Store) History(ctx context.Context, key domain.ConversationKey) []domai
 			WHERE agent_id = $1 AND user_id = $2
 			ORDER BY id DESC
 			LIMIT $3
-		`, key.AgentID, key.UserID, memoryWindowSize)
+		`, key.AgentID, key.UserID, memoryReadRows)
 	}
 	if err != nil {
 		log.Printf("memory: history agent=%s user=%s: %v", key.AgentID, key.UserID, err)
@@ -86,7 +89,7 @@ func (s *Store) History(ctx context.Context, key domain.ConversationKey) []domai
 	for i, msg := range reversed {
 		msgs[len(reversed)-1-i] = msg
 	}
-	return msgs
+	return domain.RecentWindow(msgs, memorySaid)
 }
 
 func (s *Store) Append(ctx context.Context, key domain.ConversationKey, messages ...domain.Message) {
