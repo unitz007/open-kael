@@ -413,6 +413,57 @@ func (b *removeBox) Execute(ctx context.Context, i *domain.Identity, c string, a
 	return b.buttonOutbox.Execute(ctx, i, c, a, in)
 }
 
+// textBox is a chat app that puts buttons under a message by writing it again with them (Slack), so it is given its
+// words; and notes the words it is given to take buttons off again.
+type textBox struct {
+	outbox
+	mu2      sync.Mutex
+	attached []string // text | labels
+	removed  []string // text
+}
+
+func (b *textBox) Execute(ctx context.Context, i *domain.Identity, c string, a string, in map[string]any) (any, error) {
+	if a == domain.ActionRemoveButtons {
+		b.mu2.Lock()
+		defer b.mu2.Unlock()
+		text, _ := in["text"].(string)
+		b.removed = append(b.removed, text)
+		return map[string]any{}, nil
+	}
+	_, _ = b.outbox.Execute(ctx, i, c, a, in)
+	return map[string]any{"message_id": "m1"}, nil
+}
+func (b *textBox) AttachButtonsToText(_ context.Context, _ *domain.Identity, _ string, _ domain.ConversationRef, messageID, text string, buttons []domain.Button) error {
+	var labels []string
+	for _, x := range buttons {
+		labels = append(labels, x.Label)
+	}
+	b.mu2.Lock()
+	defer b.mu2.Unlock()
+	b.attached = append(b.attached, messageID+" | "+text+" | "+strings.Join(labels, ","))
+	return nil
+}
+
+// A chat app that rewrites the message to add buttons is given the reply's words with them, and the words again when
+// they come off.
+func TestChoices_AChatAppThatRewritesTheMessageIsGivenItsWords(t *testing.T) {
+	host, hosted, box, mem := choiceRig(t, finishWithChoices("Clash.", twoChoices(), "ok"), false)
+	tb := &textBox{}
+	hosted.Deps.Executors.Register("slack", tb)
+	_ = box
+	host.SetProposalStore(finderProposals{mem})
+	host.DispatchInbound(context.Background(), hosted, firstMessage("go"))
+	waitFor(t, "buttons", func() bool { tb.mu2.Lock(); defer tb.mu2.Unlock(); return len(tb.attached) == 1 })
+	if tb.attached[0] != "m1 | Clash. | 10:15 tomorrow,Keep it" {
+		t.Errorf("the message, its words, the buttons: %q", tb.attached)
+	}
+	host.DispatchInbound(context.Background(), hosted, firstMessage("never mind"))
+	waitFor(t, "taken off", func() bool { tb.mu2.Lock(); defer tb.mu2.Unlock(); return len(tb.removed) == 1 })
+	if tb.removed[0] != "Clash." {
+		t.Errorf("taken off with the words it had: %q", tb.removed)
+	}
+}
+
 // The person writes something else instead of tapping: the choices offered before are over, and their buttons come
 // off the message; words that happen to match them later are an ordinary message.
 func TestChoices_WritingSomethingElseEndsThem(t *testing.T) {

@@ -32,7 +32,15 @@ func (h *Host) canOfferChoices(ctx context.Context, hosted *HostedAgent) bool {
 		return false
 	}
 	executor, _, _ := h.resolveExecutorForConv(ctx, hosted, conv)
-	_, can := executor.(domain.ButtonAttacher)
+	return canAttachButtons(executor)
+}
+
+// canAttachButtons says whether a messenger can show buttons under a message of its own.
+func canAttachButtons(executor domain.Executor) bool {
+	if _, can := executor.(domain.ButtonAttacher); can {
+		return true
+	}
+	_, can := executor.(domain.TextButtonAttacher)
 	return can
 }
 
@@ -98,8 +106,7 @@ func withNumberedChoices(content string, choices []domain.ProposalChoice) string
 
 // attachChoices saves the choices of the message just sent and puts the buttons under it.
 func (h *Host) attachChoices(ctx context.Context, hosted *HostedAgent, conv domain.ConversationRef, identity *domain.Identity, connRef string, executor domain.Executor, messageID, content string, choices []domain.ProposalChoice) {
-	attacher, ok := executor.(domain.ButtonAttacher)
-	if !ok || h.proposals == nil || messageID == "" || len(choices) == 0 {
+	if !canAttachButtons(executor) || h.proposals == nil || messageID == "" || len(choices) == 0 {
 		return
 	}
 	p := &domain.Proposal{
@@ -115,7 +122,13 @@ func (h *Host) attachChoices(ctx context.Context, hosted *HostedAgent, conv doma
 	for i, c := range choices {
 		buttons[i] = domain.Button{Label: c.Label, Data: domain.ProposalData(p.ID, i)}
 	}
-	if err := attacher.AttachButtons(ctx, identity, connRef, conv, messageID, buttons); err != nil {
+	var err error
+	if ta, ok := executor.(domain.TextButtonAttacher); ok {
+		err = ta.AttachButtonsToText(ctx, identity, connRef, conv, messageID, content, buttons)
+	} else {
+		err = executor.(domain.ButtonAttacher).AttachButtons(ctx, identity, connRef, conv, messageID, buttons)
+	}
+	if err != nil {
 		log.Printf("runtime: agent %q: could not put the buttons under the message: %v", hosted.Agent.ID, err)
 	}
 }
@@ -202,7 +215,7 @@ func (h *Host) retireChoices(ctx context.Context, hosted *HostedAgent, msg domai
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
-		if _, err := executor.Execute(ctx, identity, connRef, domain.ActionRemoveButtons, map[string]any{"recipient": p.ChatID, "message_id": p.MessageID}); err != nil {
+		if _, err := executor.Execute(ctx, identity, connRef, domain.ActionRemoveButtons, map[string]any{"recipient": p.ChatID, "message_id": p.MessageID, "text": p.Text}); err != nil {
 			log.Printf("runtime: agent %q: could not take the buttons off: %v", hosted.Agent.ID, err)
 		}
 	}()
@@ -286,7 +299,7 @@ func (h *Host) OfferChoices(ctx context.Context, agentID string, conv domain.Con
 		}
 	}
 	identity, executor, connRef := h.connectionFor(ctx, hosted, conv)
-	_, buttons := executor.(domain.ButtonAttacher)
+	buttons := canAttachButtons(executor)
 	body := text
 	if !buttons {
 		body = withNumberedChoices(text, choices)

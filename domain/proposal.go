@@ -186,6 +186,12 @@ type Button struct {
 	Data string
 }
 
+// TextButtonAttacher is a messenger that puts buttons under a message by writing the message again with them (Slack:
+// the buttons are part of its blocks), so it is given the message's own words. A messenger can be either kind.
+type TextButtonAttacher interface {
+	AttachButtonsToText(ctx context.Context, identity *Identity, connectionRef string, conv ConversationRef, messageID, text string, buttons []Button) error
+}
+
 // ButtonAttacher is a messenger that can put buttons under a message it has already sent.
 type ButtonAttacher interface {
 	AttachButtons(ctx context.Context, identity *Identity, connectionRef string, conv ConversationRef, messageID string, buttons []Button) error
