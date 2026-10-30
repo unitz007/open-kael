@@ -1,8 +1,8 @@
 package runtime
 
 import (
+	"context"
 	"strings"
-	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -10,79 +10,24 @@ import (
 )
 
 const (
-	// carryOverFor is how long the ability a conversation was just using stays with it,
-	// so a short follow-up still belongs to it.
-	carryOverFor = 30 * time.Minute
-	// maxCarryOverRunes: only a short message is treated as a follow-up. A longer one
-	// that matches nothing is a new subject, not a continuation.
+	// maxCarryOverRunes: only a short message is treated as a follow-up. A longer one that matches nothing is a new
+	// subject, not a continuation.
 	maxCarryOverRunes = 60
-	carryOverMax      = 2000 // conversations remembered at once
+	// followUpFor is how long what a conversation was just doing stays with it, so a short follow-up still belongs to it.
+	followUpFor = 30 * time.Minute
 )
 
-// carryOver remembers, per conversation, which abilities the last message used. It is in memory; after a restart
-// the conversation itself says what it last used (skillsLastUsed).
-type carryOver struct {
-	mu   sync.Mutex
-	last map[string]carryEntry
-	now  func() time.Time
-}
-
-type carryEntry struct {
-	skills []string
-	at     time.Time
-}
-
-func newCarryOver() *carryOver { return &carryOver{last: map[string]carryEntry{}, now: time.Now} }
-
-// carryKey names a conversation: one person, one agent, one chat.
-func carryKey(agentID string, conv domain.ConversationRef) string {
-	if conv.UserID == "" {
-		return ""
-	}
-	return agentID + "|" + conv.UserID + "|" + conv.IdentityID + "|" + conv.ChatID + "|" + conv.ThreadID
-}
-
-// remember records the abilities this conversation is using now.
-func (c *carryOver) remember(key string, skills []string) {
-	if key == "" || len(skills) == 0 {
-		return
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	now := c.now()
-	if len(c.last) >= carryOverMax {
-		for k, e := range c.last {
-			if now.Sub(e.at) > carryOverFor {
-				delete(c.last, k)
-			}
-		}
-		if len(c.last) >= carryOverMax { // still full: drop everything rather than grow
-			c.last = map[string]carryEntry{}
-		}
-	}
-	c.last[key] = carryEntry{skills: append([]string(nil), skills...), at: now}
-}
-
-// recall returns the abilities the conversation was using, if that was recent enough.
-func (c *carryOver) recall(key string) []string {
-	if key == "" {
-		return nil
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	e, ok := c.last[key]
-	if !ok || c.now().Sub(e.at) > carryOverFor {
-		delete(c.last, key)
-		return nil
-	}
-	return append([]string(nil), e.skills...)
+// followUpKey names a conversation for its follow-ups: one agent, one chat (and thread), one person.
+func followUpKey(ctx context.Context, hosted *HostedAgent) domain.ConversationKey {
+	conv, _ := domain.ConversationFromContext(ctx)
+	return domain.ConversationKey{AgentID: hosted.Agent.ID, IdentityID: conv.IdentityID, ChatID: conv.ChatID, ThreadID: conv.ThreadID, UserID: conv.UserID}
 }
 
 // lastUsedTurns is how many of the person's recent messages are looked back over for what the conversation used.
 const lastUsedTurns = 2
 
 // skillsLastUsed is which of the agent's abilities the conversation's latest turns used, read from the conversation
-// itself (which, unlike carryOver, outlives a restart): the abilities whose tools were called in the most recent of the
+// itself: the abilities whose tools were called in the most recent of the
 // last lastUsedTurns turns that called any. messages ends with the message being answered.
 func (h *Host) skillsLastUsed(hosted *HostedAgent, messages []domain.Message) []string {
 	used := map[string]bool{}

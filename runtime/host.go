@@ -252,10 +252,6 @@ type Host struct {
 	// welcomeMessageStore remembers which message carries the Get started button.
 	welcomeMessageStore WelcomeMessageStore
 
-	// carry remembers which abilities each conversation was just using, so a short
-	// follow-up that matches nothing on its own stays with them.
-	carry *carryOver
-
 	// repeatingTasksNote describes a person's repeating tasks for the agent's instructions.
 	repeatingTasksNote func(ctx context.Context, userID, agentID string) string
 	// promptNotes add to an agent's instructions for a person (AddPromptNote); turnLearners hear each exchange.
@@ -495,7 +491,6 @@ func NewHost() *Host {
 	h := &Host{
 		agents:         make(map[string]*HostedAgent),
 		intentHandlers: make(map[domain.Intent]IntentHandler),
-		carry:          newCarryOver(),
 		convQueues:     make(map[string]*convQueue),
 	}
 	h.proposalDispatch = h.dispatchInbound
@@ -1684,22 +1679,28 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 		return h.chatReply(ctx, hosted, messages, actions)
 	}
 
-	// A short follow-up that matches nothing on its own stays with what the conversation was
-	// just doing; and whatever matched is remembered for the next one.
-	carryConv, _ := domain.ConversationFromContext(ctx)
-	carryID := carryKey(hosted.Agent.ID, carryConv)
+	// A short follow-up that matches nothing on its own stays with what the conversation was just doing: what its last
+	// message was routed to, kept with the conversation (domain.FollowUps), else what its messages used. Nothing is kept
+	// in the server's memory, so it outlives a restart and is the same on every server.
+	followUps, _ := hosted.Deps.Memory.(domain.FollowUps)
+	followKey := followUpKey(ctx, hosted)
 	if len(skillNames) == 0 && isShortFollowUp(userText) {
-		if prev := h.carry.recall(carryID); len(prev) > 0 {
-			log.Printf("skill-router: nothing matched a short follow-up — staying with %v from the last message", prev)
-			skillNames = prev
-		} else if prev := h.skillsLastUsed(hosted, messages); len(prev) > 0 {
-			// What the last message used is kept in memory only, so a restart loses it: then the conversation itself
-			// says what it was doing ("Check for all pairs" after a deploy was answered from old prices, 2026-10-26).
-			log.Printf("skill-router: nothing matched a short follow-up — staying with %v, which the conversation last used", prev)
-			skillNames = prev
+		if followUps != nil && followKey.ChatID != "" {
+			if prev, at := followUps.LastSkills(ctx, followKey); len(prev) > 0 && time.Since(at) <= followUpFor {
+				log.Printf("skill-router: nothing matched a short follow-up — staying with %v from the last message", prev)
+				skillNames = prev
+			}
+		}
+		if len(skillNames) == 0 {
+			if prev := h.skillsLastUsed(hosted, messages); len(prev) > 0 {
+				log.Printf("skill-router: nothing matched a short follow-up — staying with %v, which the conversation last used", prev)
+				skillNames = prev
+			}
 		}
 	}
-	h.carry.remember(carryID, skillNames)
+	if followUps != nil && followKey.ChatID != "" && followKey.UserID != "" {
+		followUps.SetLastSkills(ctx, followKey, skillNames)
+	}
 
 	// Store intent on context so skills and prompt builders can read it.
 	ctx = domain.WithIntent(ctx, intent)

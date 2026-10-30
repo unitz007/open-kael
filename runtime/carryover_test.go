@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/unitz007/open-kael/domain"
 	"github.com/unitz007/open-kael/runtime"
@@ -53,14 +54,36 @@ type followRig struct {
 	hosted *runtime.HostedAgent
 	box    *outbox
 	spy    *toolSpy
-	mem    *memMemory
+	mem    *followMemory
+}
+
+// followMemory is a conversation memory that keeps follow-ups (domain.FollowUps), as Postgres does.
+type followMemory struct {
+	*memMemory
+	mu   sync.Mutex
+	last map[domain.ConversationKey][]string
+	at   map[domain.ConversationKey]time.Time
+}
+
+func (m *followMemory) LastSkills(_ context.Context, key domain.ConversationKey) ([]string, time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.last[key], m.at[key]
+}
+func (m *followMemory) SetLastSkills(_ context.Context, key domain.ConversationKey, skills []string) {
+	if len(skills) == 0 {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.last[key], m.at[key] = skills, time.Now()
 }
 
 func newFollowRig(t *testing.T, router runtime.SkillRouter) *followRig {
 	t.Helper()
 	spy := &toolSpy{}
 	box := &outbox{}
-	mem := newMemMemory()
+	mem := &followMemory{memMemory: newMemMemory(), last: map[domain.ConversationKey][]string{}, at: map[domain.ConversationKey]time.Time{}}
 	integ := &domain.Integration{ID: "int-fx", Service: "fx"}
 	skill := &domain.Skill{ID: "s1", Name: "analyse_pair", Description: "Analyses a currency pair", AgentID: "a1", Integrations: []string{integ.ID}}
 	agent := &domain.Agent{ID: "a1", Name: "Desk", LLMs: []domain.LLM{spy}, MaxIterations: 5, Skills: []*domain.Skill{skill}}

@@ -34,6 +34,10 @@ type InboundMessage struct {
 	// from a modal or form (e.g. Slack views.open). The host saves it as the
 	// user's personal agent instructions.
 	InstructionsSubmission *InstructionsSubmissionData
+	// SenderFirstName and SenderLastName are the name the chat app shows for the sender, when it gives one: a person
+	// made from this message is named so (see SenderNameFromContext).
+	SenderFirstName string
+	SenderLastName  string
 }
 
 // CallbackQueryData carries the payload from a messenger inline-button tap.
@@ -66,7 +70,22 @@ const (
 	originalMessageCtxKey
 	alertRunCtxKey
 	writeOnlyCtxKey
+	senderNameCtxKey
 )
+
+// WithSenderName carries the name the chat app shows for the sender of the message being handled, so whatever makes a
+// person from it (the host's auto-provisioner) can name them; SenderNameFromContext reads it ("" when none).
+func WithSenderName(ctx context.Context, first, last string) context.Context {
+	if first == "" && last == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, senderNameCtxKey, [2]string{first, last})
+}
+
+func SenderNameFromContext(ctx context.Context) (first, last string) {
+	n, _ := ctx.Value(senderNameCtxKey).([2]string)
+	return n[0], n[1]
+}
 
 // WithConversation/ConversationFromContext thread the active conversation
 // through ctx rather than every call site passing it explicitly — mirrors

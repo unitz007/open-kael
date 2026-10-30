@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -163,50 +162,6 @@ func TestRecentTurn_IsThePersonsPreviousMessageAndTheReplyToIt(t *testing.T) {
 	// Nothing earlier, or no reply yet.
 	if !recentTurn(nil).IsZero() || !recentTurn([]domain.Message{{Role: domain.RoleUser, Content: "hi"}}).IsZero() {
 		t.Error("nothing earlier means nothing to show")
-	}
-}
-
-func TestCarryOver_RemembersPerConversationForAWhile(t *testing.T) {
-	c := newCarryOver()
-	now := time.Date(2026, 10, 18, 9, 0, 0, 0, time.UTC)
-	c.now = func() time.Time { return now }
-	conv := domain.ConversationRef{UserID: "u1", IdentityID: "bot", ChatID: "C1"}
-	a, b := carryKey("agent", conv), carryKey("agent", domain.ConversationRef{UserID: "u1", IdentityID: "bot", ChatID: "C2"})
-	other := carryKey("agent2", conv)
-	if a == "" || a == b || a == other {
-		t.Fatalf("a conversation is one person, one agent, one chat: %q %q %q", a, b, other)
-	}
-	if carryKey("agent", domain.ConversationRef{ChatID: "C1"}) != "" {
-		t.Error("no person, no memory")
-	}
-
-	c.remember(a, []string{"forex"})
-	if got := c.recall(a); len(got) != 1 || got[0] != "forex" {
-		t.Fatalf("recall: %v", got)
-	}
-	if c.recall(b) != nil || c.recall(other) != nil {
-		t.Error("another chat or agent must not inherit it")
-	}
-	now = now.Add(carryOverFor + time.Second)
-	if c.recall(a) != nil {
-		t.Error("after the time is up the follow-up stands on its own")
-	}
-	c.remember(a, nil)
-	if c.recall(a) != nil {
-		t.Error("nothing matched, nothing to remember")
-	}
-}
-
-func TestCarryOver_NeverGrowsWithoutBound(t *testing.T) {
-	c := newCarryOver()
-	for i := 0; i < carryOverMax*2; i++ {
-		c.remember(fmt.Sprintf("k%d", i), []string{"s"})
-	}
-	c.mu.Lock()
-	n := len(c.last)
-	c.mu.Unlock()
-	if n > carryOverMax {
-		t.Errorf("memory must stay bounded: %d", n)
 	}
 }
 

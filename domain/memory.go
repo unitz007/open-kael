@@ -1,6 +1,9 @@
 package domain
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // ConversationKey uniquely identifies one conversation. UserID (when set)
 // broadens the scope to all channels for that user+agent pair, giving a
@@ -21,4 +24,13 @@ type ConversationKey struct {
 type Memory interface {
 	History(ctx context.Context, key ConversationKey) []Message
 	Append(ctx context.Context, key ConversationKey, messages ...Message)
+}
+
+// FollowUps is kept by a Memory that can: which of an agent's capabilities a conversation's latest message was routed
+// to, and when, so a short follow-up ("4h", "and tomorrow?") stays with them, also when the reply before used none of
+// their abilities (it asked something back), on every server and after a restart. A Memory without it falls back to
+// what the conversation's messages used.
+type FollowUps interface {
+	LastSkills(ctx context.Context, key ConversationKey) (skills []string, at time.Time)
+	SetLastSkills(ctx context.Context, key ConversationKey, skills []string)
 }

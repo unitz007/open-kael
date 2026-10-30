@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -125,5 +126,33 @@ func (s *Store) Append(ctx context.Context, key domain.ConversationKey, messages
 		if err != nil {
 			log.Printf("memory: insert agent=%s chat=%s role=%s: %v", key.AgentID, key.ChatID, msg.Role, err)
 		}
+	}
+}
+
+// LastSkills is which capabilities the conversation's latest message was routed to, and when (domain.FollowUps).
+func (s *Store) LastSkills(ctx context.Context, key domain.ConversationKey) ([]string, time.Time) {
+	var skills []string
+	var at *time.Time
+	err := s.pool.QueryRow(ctx, `SELECT last_skills, last_skills_at FROM conversations
+		WHERE agent_id = $1 AND identity_id = $2 AND chat_id = $3 AND thread_id = $4`,
+		key.AgentID, key.IdentityID, key.ChatID, key.ThreadID).Scan(&skills, &at)
+	if err != nil || at == nil {
+		return nil, time.Time{}
+	}
+	return skills, *at
+}
+
+// SetLastSkills keeps which capabilities the conversation's latest message was routed to.
+func (s *Store) SetLastSkills(ctx context.Context, key domain.ConversationKey, skills []string) {
+	if len(skills) == 0 {
+		return
+	}
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO conversations (agent_id, identity_id, chat_id, thread_id, updated_at, last_skills, last_skills_at)
+		VALUES ($1, $2, $3, $4, NOW(), $5, NOW())
+		ON CONFLICT (agent_id, identity_id, chat_id, thread_id) DO UPDATE SET last_skills = $5, last_skills_at = NOW()
+	`, key.AgentID, key.IdentityID, key.ChatID, key.ThreadID, skills)
+	if err != nil {
+		log.Printf("memory: last skills agent=%s chat=%s: %v", key.AgentID, key.ChatID, err)
 	}
 }
