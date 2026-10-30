@@ -300,6 +300,12 @@ ALTER TABLE conversations ADD COLUMN IF NOT EXISTS thread_id   TEXT NOT NULL DEF
 -- Which capabilities the latest message was routed to, for a short follow-up (domain.FollowUps).
 ALTER TABLE conversations ADD COLUMN IF NOT EXISTS last_skills    TEXT[] NOT NULL DEFAULT '{}';
 ALTER TABLE conversations ADD COLUMN IF NOT EXISTS last_skills_at TIMESTAMPTZ;
+-- The person's latest message and the reply to it, so an edit of the message can be answered (domain.Exchanges).
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS last_in_id      TEXT NOT NULL DEFAULT '';
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS last_in_text    TEXT NOT NULL DEFAULT '';
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS last_in_at      TIMESTAMPTZ;
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS last_reply_id   TEXT NOT NULL DEFAULT '';
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS last_changed    TEXT[] NOT NULL DEFAULT '{}';
 
 -- Drop the legacy single-column TEXT primary key if it exists (CASCADE removes
 -- any dependent constraints such as the old PRIMARY KEY on that column).

@@ -264,7 +264,16 @@ func (h *Host) StartListenerForAgent(agentID string, identity *domain.Identity, 
 // internally. Useful for testing and for any external trigger that produces
 // a message without going through a registered Listener.
 func (h *Host) DispatchInbound(ctx context.Context, hosted *HostedAgent, msg domain.InboundMessage) {
+	if msg.Edited {
+		h.dispatchEdit(ctx, hosted, msg)
+		return
+	}
 	h.handleInboundSafely(ctx, hosted, msg)
+}
+
+// Receive hands a message on as a chat app's listener does: in its conversation's line, without waiting for it.
+func (h *Host) Receive(ctx context.Context, hosted *HostedAgent, msg domain.InboundMessage) {
+	h.dispatchInbound(ctx, hosted, msg)
 }
 
 // pendingCredential tracks the state of an in-progress in-bot OAuth connection
@@ -590,6 +599,12 @@ func (h *Host) handleInboundSafely(ctx context.Context, hosted *HostedAgent, msg
 		msg.Conversation.MessageID = msg.MessageID
 	}
 	ctx = domain.WithOriginalMessage(ctx, msg.Text)
+	// An edit answered again (editing.go): in the old reply's place, or with look-ups only and told what was done.
+	ctx = domain.WithReplacingReply(ctx, msg.ReplacesReply)
+	if msg.LookUpsOnly {
+		ctx = domain.WithLookUpsOnly(ctx)
+	}
+	ctx = domain.WithTurnHint(ctx, msg.Hint)
 	if _, err := h.HandleTurn(ctx, hosted, msg.Conversation, msg.Text); err != nil {
 		log.Printf("runtime: agent %q: handling message from identity %s chat %s: %v", hosted.Agent.ID, msg.Conversation.IdentityID, msg.Conversation.ChatID, err)
 	}

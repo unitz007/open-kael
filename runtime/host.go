@@ -1417,6 +1417,9 @@ func (h *Host) handleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 			}
 		}
 	}
+	if hint := domain.TurnHint(ctx); hint != "" {
+		systemPrompt += "\n\n" + hint
+	}
 	prevReply := lastAssistantText(prior) // the reply this message answers, for what is learned from it
 	messages = append(messages, domain.Message{Role: domain.RoleSystem, Content: systemPrompt})
 	messages = append(messages, prior...)
@@ -1442,6 +1445,10 @@ func (h *Host) handleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 	// An unattended turn keeps only its reply: the "message" was the stored task, not something
 	// the person wrote, so it doesn't belong in their conversation (their follow-up questions
 	// still have the reply to refer to).
+	// The person edited the message this answered: its reply is dropped, never kept or sent (the new words are next).
+	if errors.Is(context.Cause(ctx), domain.ErrEdited) {
+		return result, nil
+	}
 	if !unattended && hosted.Deps.Memory != nil && len(final) >= 1+len(prior) {
 		// The loop's own nudges stay out: kept, they would read later as something the person wrote.
 		hosted.Deps.Memory.Append(ctx, convKey, domain.Kept(final[1+len(prior):])...)
@@ -1500,6 +1507,24 @@ func (h *Host) handleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 		choices = nil
 	}
 
+	if errors.Is(context.Cause(ctx), domain.ErrEdited) {
+		return result, nil
+	}
+	// An edit answered again: the new answer takes the old reply's place where the chat app can put it there.
+	if old := domain.ReplacingReply(ctx); old != "" && executor != nil {
+		if rr, ok := executor.(domain.ReplyReplacer); ok {
+			if err := rr.ReplaceReply(ctx, identity, connRef, conv, old, content); err == nil {
+				h.noteExchange(ctx, hosted, conv, convKey, userText, old)
+				if !unattended {
+					h.afterTurn(ctx, conv, hosted, prevReply, userText, content)
+				}
+				return result, nil
+			} else {
+				log.Printf("runtime: agent %q: putting the new answer in the old reply's place: %v (sending it instead)", hosted.Agent.ID, err)
+			}
+		}
+	}
+
 	// Deliver via streaming if the executor supports it, else fall back
 	// to a single atomic send.
 	if executor != nil {
@@ -1512,6 +1537,7 @@ func (h *Host) handleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 				messageID = h.deliverBestEffortID(ctx, hosted, conv, content)
 			}
 			h.attachChoices(ctx, hosted, conv, identity, connRef, executor, messageID, content, h.withDerived(ctx, hosted, result, userText, content, choices))
+			h.noteExchange(ctx, hosted, conv, convKey, userText, messageID)
 			if !unattended {
 				h.afterTurn(ctx, conv, hosted, prevReply, userText, content)
 			}
@@ -1521,6 +1547,7 @@ func (h *Host) handleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 	}
 	messageID := h.deliverBestEffortID(ctx, hosted, conv, content)
 	h.attachChoices(ctx, hosted, conv, identity, connRef, executor, messageID, content, h.withDerived(ctx, hosted, result, userText, content, choices))
+	h.noteExchange(ctx, hosted, conv, convKey, userText, messageID)
 	if !unattended {
 		h.afterTurn(ctx, conv, hosted, prevReply, userText, content)
 	}
@@ -1669,6 +1696,11 @@ func (h *Host) routeWithJev(ctx context.Context, hosted *HostedAgent, userText s
 		}
 	} else if domain.IsUnattended(ctx) && intent == domain.IntentRecommend && len(domain.UnattendedAllowed(ctx)) > 0 {
 		intent = domain.IntentExecute
+	}
+
+	// An edit whose old reply already changed something: answered with look-ups only, nothing more done without a yes.
+	if domain.IsLookUpsOnly(ctx) && intent != domain.IntentChat {
+		intent = domain.IntentRecommend
 	}
 
 	log.Printf("skill-router: skills=%v intent=%q", skillNames, intent)

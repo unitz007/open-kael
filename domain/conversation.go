@@ -34,6 +34,14 @@ type InboundMessage struct {
 	// from a modal or form (e.g. Slack views.open). The host saves it as the
 	// user's personal agent instructions.
 	InstructionsSubmission *InstructionsSubmissionData
+	// Edited marks words the person changed in a message they had sent: MessageID is that message, Text its new words
+	// (see editing.go).
+	Edited bool
+	// ReplacesReply, LookUpsOnly and Hint are set by the host for an edit it answers again: the reply the new answer
+	// takes the place of; answered with look-ups only; what the agent is told about this turn.
+	ReplacesReply string
+	LookUpsOnly   bool
+	Hint          string
 	// SenderFirstName and SenderLastName are the name the chat app shows for the sender, when it gives one: a person
 	// made from this message is named so (see SenderNameFromContext).
 	SenderFirstName string

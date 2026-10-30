@@ -156,3 +156,51 @@ func (s *Store) SetLastSkills(ctx context.Context, key domain.ConversationKey, s
 		log.Printf("memory: last skills agent=%s chat=%s: %v", key.AgentID, key.ChatID, err)
 	}
 }
+
+var _ domain.Exchanges = (*Store)(nil)
+
+// LastExchange is the conversation's latest message from the person and the reply to it (domain.Exchanges).
+func (s *Store) LastExchange(ctx context.Context, key domain.ConversationKey) (domain.LastExchange, bool) {
+	var e domain.LastExchange
+	var at *time.Time
+	err := s.pool.QueryRow(ctx, `SELECT last_in_id, last_in_text, last_in_at, last_reply_id, last_changed FROM conversations
+		WHERE agent_id = $1 AND identity_id = $2 AND chat_id = $3 AND thread_id = $4`,
+		key.AgentID, key.IdentityID, key.ChatID, key.ThreadID).Scan(&e.MessageID, &e.Text, &at, &e.ReplyID, &e.Changed)
+	if err != nil || at == nil || e.MessageID == "" {
+		return domain.LastExchange{}, false
+	}
+	e.At = *at
+	return e, true
+}
+
+// SetLastExchange keeps the conversation's latest message from the person and the reply to it.
+func (s *Store) SetLastExchange(ctx context.Context, key domain.ConversationKey, e domain.LastExchange) {
+	if e.Changed == nil {
+		e.Changed = []string{}
+	}
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO conversations (agent_id, identity_id, chat_id, thread_id, updated_at, last_in_id, last_in_text, last_in_at, last_reply_id, last_changed)
+		VALUES ($1, $2, $3, $4, NOW(), $5, $6, $7, $8, $9)
+		ON CONFLICT (agent_id, identity_id, chat_id, thread_id) DO UPDATE SET
+			last_in_id = $5, last_in_text = $6, last_in_at = $7, last_reply_id = $8, last_changed = $9`,
+		key.AgentID, key.IdentityID, key.ChatID, key.ThreadID, e.MessageID, e.Text, e.At, e.ReplyID, e.Changed)
+	if err != nil {
+		log.Printf("memory: last exchange agent=%s chat=%s: %v", key.AgentID, key.ChatID, err)
+	}
+}
+
+// RewindLastExchange forgets the conversation's messages from the person's latest on (an edit's new answer takes
+// their place), and the exchange itself.
+func (s *Store) RewindLastExchange(ctx context.Context, key domain.ConversationKey) error {
+	if _, err := s.pool.Exec(ctx, `DELETE FROM conversation_messages WHERE agent_id = $1 AND user_id = $2 AND chat_id = $3 AND thread_id = $4
+		AND id >= (SELECT COALESCE(MAX(id), 0) FROM conversation_messages
+			WHERE agent_id = $1 AND user_id = $2 AND chat_id = $3 AND thread_id = $4 AND role = 'user')
+		AND EXISTS (SELECT 1 FROM conversation_messages
+			WHERE agent_id = $1 AND user_id = $2 AND chat_id = $3 AND thread_id = $4 AND role = 'user')`,
+		key.AgentID, key.UserID, key.ChatID, key.ThreadID); err != nil {
+		return err
+	}
+	_, err := s.pool.Exec(ctx, `UPDATE conversations SET last_in_id = '', last_in_text = '', last_in_at = NULL, last_reply_id = '', last_changed = '{}'
+		WHERE agent_id = $1 AND identity_id = $2 AND chat_id = $3 AND thread_id = $4`, key.AgentID, key.IdentityID, key.ChatID, key.ThreadID)
+	return err
+}

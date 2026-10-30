@@ -19,6 +19,9 @@ import (
 // convQueue is the messages waiting behind the one being handled in a conversation.
 type convQueue struct {
 	msgs []domain.InboundMessage
+	// current is the message being handled and cancel stops its turn (an edit of it: domain.ErrEdited).
+	current string
+	cancel  context.CancelCauseFunc
 }
 
 // dispatchInbound takes one message off the agent's inbox and gets it handled, without ever
@@ -32,6 +35,11 @@ func (h *Host) dispatchInbound(ctx context.Context, hosted *HostedAgent, msg dom
 	// thing a waiting turn needs (an approval, a choice).
 	if msg.CallbackQuery != nil || msg.InstructionsSubmission != nil {
 		go h.handleInboundSafely(ctx, hosted, msg)
+		return
+	}
+	// The person changed a message they had sent (editing.go).
+	if msg.Edited {
+		h.dispatchEdit(ctx, hosted, msg)
 		return
 	}
 
@@ -81,9 +89,15 @@ func (h *Host) enqueueInbound(ctx context.Context, hosted *HostedAgent, msg doma
 	go func(msg domain.InboundMessage) {
 		defer h.serveWG.Done()
 		for {
-			h.handleInboundSafely(ctx, hosted, msg)
+			turnCtx, cancel := context.WithCancelCause(ctx)
+			h.convMu.Lock()
+			q.current, q.cancel = msg.MessageID, cancel
+			h.convMu.Unlock()
+			h.handleInboundSafely(turnCtx, hosted, msg)
+			cancel(nil)
 
 			h.convMu.Lock()
+			q.current, q.cancel = "", nil
 			if len(q.msgs) == 0 || ctx.Err() != nil {
 				if n := len(q.msgs); n > 0 {
 					log.Printf("runtime: agent %q: shutting down with %d message(s) still queued in %s", hosted.Agent.ID, n, key)
