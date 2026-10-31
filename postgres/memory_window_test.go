@@ -106,3 +106,26 @@ func TestHistory_ASharedChatIsOnlyWhatWasSaidThere(t *testing.T) {
 		t.Fatalf("their direct message is the whole conversation, the channel included: %q", got)
 	}
 }
+
+// The chats a person wrote to a minion in, the one they wrote in last first: only their own messages count (an alert
+// sent to a chat doesn't make it theirs to be reached in), never another person's or another minion's.
+func TestChatsOf_WhereTheyLastWrote(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	tg := domain.ConversationKey{AgentID: "a1", IdentityID: "tg", ChatID: "77", UserID: "p1"}
+	web := domain.ConversationKey{AgentID: "a1", IdentityID: "web", ChatID: "v1", UserID: "p1"}
+	slack := domain.ConversationKey{AgentID: "a1", IdentityID: "slack", ChatID: "D1", ThreadID: "1.2", UserID: "p1"}
+	s.Append(ctx, tg, domain.Message{Role: domain.RoleUser, Content: "hi"}, domain.Message{Role: domain.RoleAssistant, Content: "hello"})
+	s.Append(ctx, web, domain.Message{Role: domain.RoleUser, Content: "inbox?"}, domain.Message{Role: domain.RoleAssistant, Content: "3 new"})
+	s.Append(ctx, slack, domain.Message{Role: domain.RoleUser, Content: "and Slack"})
+	s.Append(ctx, tg, domain.Message{Role: domain.RoleAssistant, Content: "An alert: new signal on EURUSD"})
+	s.Append(ctx, domain.ConversationKey{AgentID: "a1", IdentityID: "tg", ChatID: "88", UserID: "p2"}, domain.Message{Role: domain.RoleUser, Content: "someone else"})
+	s.Append(ctx, domain.ConversationKey{AgentID: "a2", IdentityID: "tg", ChatID: "77", UserID: "p1"}, domain.Message{Role: domain.RoleUser, Content: "another minion"})
+	var got []string
+	for _, c := range s.ChatsOf(ctx, "a1", "p1") {
+		got = append(got, c.IdentityID+"/"+c.ChatID)
+	}
+	if strings.Join(got, " ") != "slack/D1 web/v1 tg/77" {
+		t.Fatalf("latest first, by their own messages: %v", got)
+	}
+}

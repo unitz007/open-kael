@@ -2643,6 +2643,43 @@ func (h *Host) RunScheduledTask(ctx context.Context, agentID, userID, identityID
 	return h.RunScheduledTaskThen(ctx, agentID, userID, identityID, channelRef, task, nil, allowChanges...)
 }
 
+// ReachAt says where to send a person something from a minion they didn't just ask for (an alert, a repeating task):
+// the chat they last wrote to it in, on any chat app it still has, not the one they set it up in (decided 2026-10-31:
+// everything they say to a minion is one conversation, so what it sends them follows them). A chat others read (a
+// Slack channel, domain.SharedChats) is passed over unless it is the one it was set up in; with nowhere else, it is the
+// chat given (identityID, channelRef). Needs a Memory that keeps domain.PersonChats.
+func (h *Host) ReachAt(ctx context.Context, agentID, userID, identityID, channelRef string) (string, string) {
+	h.mu.RLock()
+	hosted, ok := h.agents[agentID]
+	h.mu.RUnlock()
+	if !ok || userID == "" {
+		return identityID, channelRef
+	}
+	chats, ok := hosted.Deps.Memory.(domain.PersonChats)
+	if !ok {
+		return identityID, channelRef
+	}
+	own := map[string]bool{}
+	for _, id := range hosted.Agent.IdentityIDs {
+		own[id] = true
+	}
+	for _, c := range chats.ChatsOf(ctx, agentID, userID) {
+		if !own[c.IdentityID] {
+			continue // a chat app the minion no longer has
+		}
+		executor, _, _ := h.resolveExecutorForConv(ctx, hosted, domain.ConversationRef{IdentityID: c.IdentityID, ChatID: c.ChatID})
+		if executor == nil {
+			continue
+		}
+		set := c.IdentityID == identityID && c.ChatID == channelRef
+		if sc, ok := executor.(domain.SharedChats); ok && sc.Shared(c.ChatID) && !set {
+			continue
+		}
+		return c.IdentityID, c.ChatID
+	}
+	return identityID, channelRef
+}
+
 // RunScheduledTaskThen is RunScheduledTask that also calls then, when the run is over, with the error if it
 // failed (nil when it finished). then may be nil. It runs in the background, like the task.
 func (h *Host) RunScheduledTaskThen(ctx context.Context, agentID, userID, identityID, channelRef, task string, then func(err error), allowChanges ...string) error {

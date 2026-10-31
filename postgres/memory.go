@@ -20,6 +20,34 @@ const (
 )
 
 var _ domain.Memory = (*Store)(nil)
+var _ domain.PersonChats = (*Store)(nil)
+
+// ChatsOf gives the chats the person has written to the minion in, the one they wrote in last first (domain.PersonChats).
+// Only their own messages count: what the minion sent there (an alert) doesn't make a chat theirs to be reached in.
+func (s *Store) ChatsOf(ctx context.Context, agentID, userID string) []domain.PersonChat {
+	if agentID == "" || userID == "" {
+		return nil
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT identity_id, chat_id FROM conversation_messages
+		WHERE agent_id = $1 AND user_id = $2 AND role = 'user' AND identity_id <> '' AND chat_id <> ''
+		GROUP BY identity_id, chat_id
+		ORDER BY MAX(id) DESC
+		LIMIT 20`, agentID, userID)
+	if err != nil {
+		log.Printf("memory: chats of agent=%s user=%s: %v", agentID, userID, err)
+		return nil
+	}
+	defer rows.Close()
+	var out []domain.PersonChat
+	for rows.Next() {
+		var c domain.PersonChat
+		if rows.Scan(&c.IdentityID, &c.ChatID) == nil {
+			out = append(out, c)
+		}
+	}
+	return out
+}
 
 func (s *Store) History(ctx context.Context, key domain.ConversationKey) []domain.Message {
 	if key.UserID == "" {
