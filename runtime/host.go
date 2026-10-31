@@ -1318,6 +1318,11 @@ func (h *Host) handleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 
 	// Resolve executor early for streaming delivery.
 	executor, identity, connRef := h.resolveExecutorForConv(ctx, hosted, conv)
+	// A chat others read (a Slack channel): only what was said in it is known there (domain.SharedChats).
+	if sc, ok := executor.(domain.SharedChats); ok && conv.ChatID != "" && sc.Shared(conv.ChatID) {
+		conv.Shared = true
+		ctx = domain.WithConversation(ctx, conv)
+	}
 
 	convKey := domain.ConversationKey{
 		AgentID:    hosted.Agent.ID,
@@ -1325,6 +1330,7 @@ func (h *Host) handleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 		ChatID:     conv.ChatID,
 		ThreadID:   conv.ThreadID,
 		UserID:     conv.UserID,
+		Shared:     conv.Shared,
 	}
 	var prior []domain.Message
 	if hosted.Deps.Memory != nil {
@@ -1340,6 +1346,9 @@ func (h *Host) handleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 	}
 
 	userProfile, integrationNotes := h.profileForPrompt(ctx, conv.UserID, hosted)
+	if conv.Shared { // what it knows about them from elsewhere is theirs, not the chat's
+		userInstructions, userProfile, integrationNotes = "", "", nil
+	}
 
 	actions, err := h.actionsFor(ctx, hosted)
 	if err != nil {
@@ -1405,12 +1414,15 @@ func (h *Host) handleTurn(ctx context.Context, hosted *HostedAgent, conv domain.
 		ctx = domain.WithTimezoneRequester(ctx, h.timezoneRequester(hosted))
 	}
 	systemPrompt := buildSystemPrompt(hosted.Agent, userProfile, userInstructions, integrationNotes, promptIntegrations, messengerSkills, person, h.saysOf(ctx, hosted.Agent))
-	if conv.UserID != "" && h.repeatingTasksNote != nil {
+	if conv.Shared {
+		systemPrompt += "\n\n" + sharedChatNote
+	}
+	if conv.UserID != "" && !conv.Shared && h.repeatingTasksNote != nil {
 		if note := strings.TrimSpace(h.repeatingTasksNote(ctx, conv.UserID, hosted.Agent.ID)); note != "" {
 			systemPrompt += "\n\n" + note
 		}
 	}
-	if conv.UserID != "" {
+	if conv.UserID != "" && !conv.Shared {
 		for _, f := range h.promptNotes {
 			if note := strings.TrimSpace(f(ctx, conv.UserID, hosted.Agent.ID)); note != "" {
 				systemPrompt += "\n\n" + note
@@ -2220,6 +2232,12 @@ func (h *Host) scopeOf(ctx context.Context, agent *domain.Agent) string {
 	}
 	return about
 }
+
+// sharedChatNote is told to the minion in a chat others read (domain.SharedChats). It knows nothing of the person from
+// elsewhere there (their conversation, details and preferences are left out), and says so rather than guess.
+const sharedChatNote = "This chat is shared: other people read your reply. Here you only know what was said in this chat. " +
+	"If the person asks about something from your other conversations with them (their details, their apps, what they told " +
+	"you before), say you can go over it in a direct message, and don't guess."
 
 // unrelatedScope is what a message is judged against when deciding it is unrelated to the agent: what it is for and,
 // beside that, what every minion does on a person's turn (looking back at earlier conversations, alerts, repeating

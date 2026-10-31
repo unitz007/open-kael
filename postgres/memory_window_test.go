@@ -80,3 +80,29 @@ func TestHistory_OneConversationPerPersonAndMinion(t *testing.T) {
 		t.Fatalf("never another person's: %v", skills)
 	}
 }
+
+// In a chat others read (a Slack channel), only what the person said there: never their direct messages or other chats.
+func TestHistory_ASharedChatIsOnlyWhatWasSaidThere(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	dm := domain.ConversationKey{AgentID: "a1", IdentityID: "slack", ChatID: "D1", UserID: "p1"}
+	channel := domain.ConversationKey{AgentID: "a1", IdentityID: "slack", ChatID: "C9", ThreadID: "5.1", UserID: "p1", Shared: true}
+	s.Append(ctx, dm, domain.Message{Role: domain.RoleUser, Content: "I'm allergic to peanuts"}, domain.Message{Role: domain.RoleAssistant, Content: "Noted"})
+	s.Append(ctx, channel, domain.Message{Role: domain.RoleUser, Content: "team standup at 10?"}, domain.Message{Role: domain.RoleAssistant, Content: "Yes, 10:00"})
+	other := channel
+	other.ThreadID = "5.9" // another thread in the same channel is still the channel
+	var got []string
+	for _, m := range s.History(ctx, other) {
+		got = append(got, m.Content)
+	}
+	if strings.Join(got, "|") != "team standup at 10?|Yes, 10:00" {
+		t.Fatalf("the channel's own: %q", got)
+	}
+	got = nil
+	for _, m := range s.History(ctx, dm) {
+		got = append(got, m.Content)
+	}
+	if strings.Join(got, "|") != "I'm allergic to peanuts|Noted|team standup at 10?|Yes, 10:00" {
+		t.Fatalf("their direct message is the whole conversation, the channel included: %q", got)
+	}
+}

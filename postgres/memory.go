@@ -29,13 +29,14 @@ func (s *Store) History(ctx context.Context, key domain.ConversationKey) []domai
 	// One conversation per person and minion (decided 2026-10-31): everything the person said to this minion, on any
 	// chat app, in any chat or thread, is one conversation. A Slack thread used to narrow it to that thread, so each new
 	// message in a Slack direct message (its own thread) started a conversation with nothing in it.
+	// In a chat others read (a Slack channel, key.Shared), only what was said in it.
 	rows, err := s.pool.Query(ctx, `
 		SELECT role, content, tool_calls, tool_call_id, name
 		FROM conversation_messages
-		WHERE agent_id = $1 AND user_id = $2
+		WHERE agent_id = $1 AND user_id = $2 AND (NOT $4::bool OR (identity_id = $5 AND chat_id = $6))
 		ORDER BY id DESC
 		LIMIT $3
-	`, key.AgentID, key.UserID, memoryReadRows)
+	`, key.AgentID, key.UserID, memoryReadRows, key.Shared, key.IdentityID, key.ChatID)
 	if err != nil {
 		log.Printf("memory: history agent=%s user=%s: %v", key.AgentID, key.UserID, err)
 		return nil

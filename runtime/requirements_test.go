@@ -104,6 +104,7 @@ type rig struct {
 	mem     *memMemory            // kept between turns, so a conversation has a history
 	prereqs []domain.Prerequisite // what the capability says must run first
 	user    string                // who is talking (none when empty)
+	chatApp domain.Executor       // the chat app (a plain fake when nil)
 }
 
 func (r *rig) turn(t *testing.T, intent domain.Intent, text string) *domain.LoopResult {
@@ -112,7 +113,11 @@ func (r *rig) turn(t *testing.T, intent domain.Intent, text string) *domain.Loop
 	skill := &domain.Skill{ID: "s1", Name: "forex", AgentID: "a1", Integrations: []string{integration.ID}, Prerequisites: r.prereqs}
 	agent := &domain.Agent{ID: "a1", LLMs: []domain.LLM{r.model}, MaxIterations: 8, Skills: []*domain.Skill{skill}}
 	executors := domain.NewExecutorRegistry()
-	executors.Register("slack", &fakeExecutor{})
+	var chatApp domain.Executor = &fakeExecutor{}
+	if r.chatApp != nil {
+		chatApp = r.chatApp
+	}
+	executors.Register("slack", chatApp)
 	executors.Register("fx", r.exec)
 	quote := &domain.ToolDefinition{ID: "q", Name: "get_live_quote", FunctionName: "get_live_quote", Action: "q", ReadOnly: true, IntegrationID: integration.ID}
 	trade := &domain.ToolDefinition{ID: "t", Name: "place_trade", FunctionName: "place_trade", Action: "t", IntegrationID: integration.ID}

@@ -16,6 +16,8 @@ type ConversationKey struct {
 	ChatID     string
 	ThreadID   string
 	UserID     string
+	// Shared: others read this chat (ConversationRef.Shared), so its history is only what was said in it.
+	Shared bool
 }
 
 // Memory holds an Agent's conversation turns across separate inbound

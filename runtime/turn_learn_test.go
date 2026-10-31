@@ -100,3 +100,36 @@ func TestTurnLearner_HearsTheStepsInOrderWithWhatEachWasGiven(t *testing.T) {
 		t.Errorf("then the change: %+v", tr)
 	}
 }
+
+// sharedChatApp says every chat is read by others (a Slack channel).
+type sharedChatApp struct{ fakeExecutor }
+
+func (*sharedChatApp) Shared(string) bool { return true }
+
+// In a chat others read, the minion knows only what was said there: its history is asked for that chat alone, and
+// nothing kept for the person elsewhere (their notes) reaches its instructions; it is told the chat is shared.
+func TestSharedChat_OnlyWhatWasSaidThere(t *testing.T) {
+	for _, shared := range []bool{false, true} {
+		r := newRig(func(int) *domain.LLMResponse { return calls(finishCall("Hello.", "")) }, placed)
+		r.user = "p1"
+		if shared {
+			r.chatApp = &sharedChatApp{}
+		}
+		r.host.AddPromptNote(func(context.Context, string, string) string { return "Their own: allergic to peanuts." })
+		r.turn(t, domain.IntentRecommend, "lunch ideas for the team?")
+		private := strings.Contains(r.model.system, "allergic to peanuts")
+		told := strings.Contains(r.model.system, "This chat is shared")
+		var keyShared bool
+		r.mem.mu.Lock()
+		for k := range r.mem.store {
+			keyShared = keyShared || k.Shared
+		}
+		r.mem.mu.Unlock()
+		if shared && (private || !told || !keyShared) {
+			t.Errorf("shared chat: private note %v, told %v, history for the chat alone %v", private, told, keyShared)
+		}
+		if !shared && (!private || told || keyShared) {
+			t.Errorf("own chat: private note %v, told %v, shared key %v", private, told, keyShared)
+		}
+	}
+}

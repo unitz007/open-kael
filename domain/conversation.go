@@ -16,6 +16,18 @@ type ConversationRef struct {
 	UserID     string // optional; resolved by the host from MessengerChannel before HandleTurn
 	MessageID  string // optional; set from InboundMessage.MessageID so ConversationActionProvider can react to the triggering message
 	SenderID   string // optional; stable platform user identity (e.g. Slack user ID, Telegram user ID) — differs from ChatID when the channel is a public workspace channel
+	// Shared is set by the host when the chat app says other people read this chat (SharedChats: a Slack channel). There
+	// the minion knows only what was said in it: never the person's conversation elsewhere, details or preferences.
+	Shared bool
+}
+
+// SharedChats is implemented by a chat app whose chats may be read by others than the person the minion is talking to
+// (a Slack channel, as against a direct message). A person's conversation with a minion is one conversation on every
+// chat app (2026-10-31), so in a shared chat it is cut down to what was said there: measured (closed-kael
+// internal/capcompare TestSharedChannel), with their direct messages in its memory a minion brought up their peanut
+// allergy in a channel every time it was asked about team food, whatever it was told not to.
+type SharedChats interface {
+	Shared(chatID string) bool
 }
 
 // InboundMessage is what a Listener (runtime host, not this package — see
