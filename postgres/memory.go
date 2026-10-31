@@ -6,8 +6,6 @@ import (
 	"log"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/unitz007/open-kael/domain"
 )
 
@@ -28,29 +26,16 @@ func (s *Store) History(ctx context.Context, key domain.ConversationKey) []domai
 		return nil
 	}
 
-	// Memory is always user-scoped. Within a Slack thread (ThreadID set) we
-	// narrow to that thread so replies stay in context.
-	var (
-		rows pgx.Rows
-		err  error
-	)
-	if key.ThreadID != "" {
-		rows, err = s.pool.Query(ctx, `
-			SELECT role, content, tool_calls, tool_call_id, name
-			FROM conversation_messages
-			WHERE agent_id = $1 AND user_id = $2 AND thread_id = $3
-			ORDER BY id DESC
-			LIMIT $4
-		`, key.AgentID, key.UserID, key.ThreadID, memoryReadRows)
-	} else {
-		rows, err = s.pool.Query(ctx, `
-			SELECT role, content, tool_calls, tool_call_id, name
-			FROM conversation_messages
-			WHERE agent_id = $1 AND user_id = $2
-			ORDER BY id DESC
-			LIMIT $3
-		`, key.AgentID, key.UserID, memoryReadRows)
-	}
+	// One conversation per person and minion (decided 2026-10-31): everything the person said to this minion, on any
+	// chat app, in any chat or thread, is one conversation. A Slack thread used to narrow it to that thread, so each new
+	// message in a Slack direct message (its own thread) started a conversation with nothing in it.
+	rows, err := s.pool.Query(ctx, `
+		SELECT role, content, tool_calls, tool_call_id, name
+		FROM conversation_messages
+		WHERE agent_id = $1 AND user_id = $2
+		ORDER BY id DESC
+		LIMIT $3
+	`, key.AgentID, key.UserID, memoryReadRows)
 	if err != nil {
 		log.Printf("memory: history agent=%s user=%s: %v", key.AgentID, key.UserID, err)
 		return nil
@@ -99,10 +84,11 @@ func (s *Store) Append(ctx context.Context, key domain.ConversationKey, messages
 	}
 
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO conversations (agent_id, identity_id, chat_id, thread_id, updated_at)
-		VALUES ($1, $2, $3, $4, NOW())
-		ON CONFLICT (agent_id, identity_id, chat_id, thread_id) DO UPDATE SET updated_at = NOW()
-	`, key.AgentID, key.IdentityID, key.ChatID, key.ThreadID)
+		INSERT INTO conversations (agent_id, identity_id, chat_id, thread_id, updated_at, user_id)
+		VALUES ($1, $2, $3, $4, NOW(), $5)
+		ON CONFLICT (agent_id, identity_id, chat_id, thread_id) DO UPDATE SET updated_at = NOW(),
+			user_id = CASE WHEN EXCLUDED.user_id <> '' THEN EXCLUDED.user_id ELSE conversations.user_id END
+	`, key.AgentID, key.IdentityID, key.ChatID, key.ThreadID, key.UserID)
 	if err != nil {
 		log.Printf("memory: upsert conversation agent=%s chat=%s: %v", key.AgentID, key.ChatID, err)
 		return
@@ -133,13 +119,22 @@ func (s *Store) Append(ctx context.Context, key domain.ConversationKey, messages
 	}
 }
 
-// LastSkills is which capabilities the conversation's latest message was routed to, and when (domain.FollowUps).
+// LastSkills is which capabilities the latest message was routed to, and when (domain.FollowUps): the person's latest
+// message to this minion in any of their chats, so "and the next one?" on Telegram follows a question about email asked
+// on the web a moment before (2026-10-31: one conversation per person and minion). Without a person, this chat's.
 func (s *Store) LastSkills(ctx context.Context, key domain.ConversationKey) ([]string, time.Time) {
 	var skills []string
 	var at *time.Time
-	err := s.pool.QueryRow(ctx, `SELECT last_skills, last_skills_at FROM conversations
-		WHERE agent_id = $1 AND identity_id = $2 AND chat_id = $3 AND thread_id = $4`,
-		key.AgentID, key.IdentityID, key.ChatID, key.ThreadID).Scan(&skills, &at)
+	var err error
+	if key.UserID != "" {
+		err = s.pool.QueryRow(ctx, `SELECT last_skills, last_skills_at FROM conversations
+			WHERE agent_id = $1 AND user_id = $2 AND last_skills_at IS NOT NULL
+			ORDER BY last_skills_at DESC LIMIT 1`, key.AgentID, key.UserID).Scan(&skills, &at)
+	} else {
+		err = s.pool.QueryRow(ctx, `SELECT last_skills, last_skills_at FROM conversations
+			WHERE agent_id = $1 AND identity_id = $2 AND chat_id = $3 AND thread_id = $4`,
+			key.AgentID, key.IdentityID, key.ChatID, key.ThreadID).Scan(&skills, &at)
+	}
 	if err != nil || at == nil {
 		return nil, time.Time{}
 	}
@@ -152,10 +147,11 @@ func (s *Store) SetLastSkills(ctx context.Context, key domain.ConversationKey, s
 		return
 	}
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO conversations (agent_id, identity_id, chat_id, thread_id, updated_at, last_skills, last_skills_at)
-		VALUES ($1, $2, $3, $4, NOW(), $5, NOW())
-		ON CONFLICT (agent_id, identity_id, chat_id, thread_id) DO UPDATE SET last_skills = $5, last_skills_at = NOW()
-	`, key.AgentID, key.IdentityID, key.ChatID, key.ThreadID, skills)
+		INSERT INTO conversations (agent_id, identity_id, chat_id, thread_id, updated_at, last_skills, last_skills_at, user_id)
+		VALUES ($1, $2, $3, $4, NOW(), $5, NOW(), $6)
+		ON CONFLICT (agent_id, identity_id, chat_id, thread_id) DO UPDATE SET last_skills = $5, last_skills_at = NOW(),
+			user_id = CASE WHEN EXCLUDED.user_id <> '' THEN EXCLUDED.user_id ELSE conversations.user_id END
+	`, key.AgentID, key.IdentityID, key.ChatID, key.ThreadID, skills, key.UserID)
 	if err != nil {
 		log.Printf("memory: last skills agent=%s chat=%s: %v", key.AgentID, key.ChatID, err)
 	}

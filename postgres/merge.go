@@ -20,6 +20,7 @@ import (
 var bulkPersonTables = []personTable{
 	{"messenger_channels", "user_id"},
 	{"conversation_messages", "user_id"},
+	{"conversations", "user_id"}, // whose each chat is: what was last talked about follows the person
 	{"user_channels", "user_id"},
 	{"email_verifications", "user_id"},
 	{"proposals", "person_id"},

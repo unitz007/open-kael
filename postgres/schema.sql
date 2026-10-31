@@ -301,6 +301,10 @@ ALTER TABLE conversations ADD COLUMN IF NOT EXISTS thread_id   TEXT NOT NULL DEF
 -- Which capabilities the latest message was routed to, for a short follow-up (domain.FollowUps).
 ALTER TABLE conversations ADD COLUMN IF NOT EXISTS last_skills    TEXT[] NOT NULL DEFAULT '{}';
 ALTER TABLE conversations ADD COLUMN IF NOT EXISTS last_skills_at TIMESTAMPTZ;
+-- Whose chat it is (a person id), so what was last talked about follows the person across their chats with a minion,
+-- and moves with them in a merge. Filled for chats from before it from their messages.
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS user_id TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_conversations_person ON conversations (agent_id, user_id, last_skills_at DESC);
 -- The person's latest message and the reply to it, so an edit of the message can be answered (domain.Exchanges).
 ALTER TABLE conversations ADD COLUMN IF NOT EXISTS last_in_id      TEXT NOT NULL DEFAULT '';
 ALTER TABLE conversations ADD COLUMN IF NOT EXISTS last_in_text    TEXT NOT NULL DEFAULT '';
@@ -375,6 +379,14 @@ CREATE INDEX IF NOT EXISTS idx_conv_messages_composite
 
 CREATE INDEX IF NOT EXISTS idx_conv_messages_user
     ON conversation_messages (agent_id, user_id, id);
+
+-- Whose each chat is, for chats from before conversations.user_id, from their messages (safe to repeat).
+UPDATE conversations c SET user_id = COALESCE((
+    SELECT m.user_id FROM conversation_messages m
+    WHERE m.agent_id = c.agent_id AND m.identity_id = c.identity_id AND m.chat_id = c.chat_id AND m.thread_id = c.thread_id
+      AND m.user_id <> '' ORDER BY m.id DESC LIMIT 1), '')
+WHERE c.user_id = '';
+
 
 -- user_profiles: general facts about a user, learned by the agent over time.
 -- Shared across all agents — keyed only by user_id.
